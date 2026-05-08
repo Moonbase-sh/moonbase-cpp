@@ -62,7 +62,7 @@ jobs:
           cmake -S . -B build \
             -DCMAKE_TOOLCHAIN_FILE="$VCPKG_INSTALLATION_ROOT/scripts/buildsystems/vcpkg.cmake" \
             -DVCPKG_TARGET_TRIPLET=x64-windows \
-            -DOPENSSL_ROOT_DIR="C:/Program Files/OpenSSL-Win64"
+            -DOPENSSL_ROOT_DIR="C:/Program Files/OpenSSL"
 
       - name: Build
         run: cmake --build build --config Release
