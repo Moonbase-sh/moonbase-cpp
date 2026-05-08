@@ -13,6 +13,7 @@ jobs:
   build:
     name: ${{ matrix.os }}
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
     strategy:
       fail-fast: false
       matrix:
@@ -31,11 +32,17 @@ jobs:
         if: runner.os == 'macOS'
         run: brew install openssl@3
 
-      - name: Install dependencies (Windows)
+      - name: Install OpenSSL (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          choco install openssl --no-progress -y
+
+      - name: Install curl via vcpkg (Windows)
         if: runner.os == 'Windows'
         shell: bash
         run: |
-          "$VCPKG_INSTALLATION_ROOT/vcpkg" install --triplet x64-windows curl[ssl] openssl
+          "$VCPKG_INSTALLATION_ROOT/vcpkg" install --triplet x64-windows curl
 
       - name: Configure (Ubuntu)
         if: runner.os == 'Linux'
@@ -54,7 +61,8 @@ jobs:
         run: |
           cmake -S . -B build \
             -DCMAKE_TOOLCHAIN_FILE="$VCPKG_INSTALLATION_ROOT/scripts/buildsystems/vcpkg.cmake" \
-            -DVCPKG_TARGET_TRIPLET=x64-windows
+            -DVCPKG_TARGET_TRIPLET=x64-windows \
+            -DOPENSSL_ROOT_DIR="C:/Program Files/OpenSSL-Win64"
 
       - name: Build
         run: cmake --build build --config Release
