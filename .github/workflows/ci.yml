@@ -31,25 +31,11 @@ jobs:
         if: runner.os == 'macOS'
         run: brew install openssl@3
 
-      - name: Export GitHub Actions cache env (Windows)
-        if: runner.os == 'Windows'
-        uses: actions/github-script@v7
-        with:
-          script: |
-            core.exportVariable('ACTIONS_CACHE_URL', process.env.ACTIONS_CACHE_URL || '');
-            core.exportVariable('ACTIONS_RUNTIME_TOKEN', process.env.ACTIONS_RUNTIME_TOKEN || '');
-
       - name: Install dependencies (Windows)
-        if: runner.os == 'Windows'
-        uses: lukka/run-vcpkg@v11
-        with:
-          vcpkgGitCommitId: c82f74667287d3dc386bce81e44964370c91a289
-
-      - name: Install vcpkg packages (Windows)
         if: runner.os == 'Windows'
         shell: bash
         run: |
-          "$VCPKG_ROOT/vcpkg" install --triplet x64-windows curl[ssl] openssl
+          "$VCPKG_INSTALLATION_ROOT/vcpkg" install --triplet x64-windows curl[ssl] openssl
 
       - name: Configure (Ubuntu)
         if: runner.os == 'Linux'
@@ -67,7 +53,7 @@ jobs:
         shell: bash
         run: |
           cmake -S . -B build \
-            -DCMAKE_TOOLCHAIN_FILE="$VCPKG_ROOT/scripts/buildsystems/vcpkg.cmake" \
+            -DCMAKE_TOOLCHAIN_FILE="$VCPKG_INSTALLATION_ROOT/scripts/buildsystems/vcpkg.cmake" \
             -DVCPKG_TARGET_TRIPLET=x64-windows
 
       - name: Build
