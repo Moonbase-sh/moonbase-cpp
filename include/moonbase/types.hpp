@@ -11,6 +11,16 @@
 
 #include "moonbase/detail/time.hpp"
 
+// GCC predefines `linux` and `unix` as `1` on the respective platforms, which
+// would mangle the `platform` enumerators below. Drop the legacy macros; modern
+// code should use `__linux__` / `__unix__` instead.
+#ifdef linux
+#undef linux
+#endif
+#ifdef unix
+#undef unix
+#endif
+
 namespace moonbase {
 
 enum class activation_method {
