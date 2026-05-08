@@ -1,0 +1,166 @@
+#include <doctest/doctest.h>
+
+#include <chrono>
+#include <memory>
+
+#include "moonbase/fingerprint.hpp"
+#include "moonbase/validator.hpp"
+
+#include "test_helpers.hpp"
+
+using namespace moonbase;
+
+namespace {
+
+licensing_options options_for(const std::string& public_key)
+{
+    licensing_options options;
+    options.endpoint = "https://demo.moonbase.sh";
+    options.product_id = "demo-app";
+    options.public_key = public_key;
+    options.account_id = "tenant-1";
+    options.target_platform = platform::unknown;
+    return options;
+}
+
+license_validator make_validator(const std::string& public_key, const std::string& device_id = "device-id")
+{
+    return license_validator(
+        options_for(public_key),
+        std::make_shared<static_fingerprint_provider>("device-name", device_id));
+}
+
+} // namespace
+
+TEST_CASE("valid RS256 JWT is parsed into a license")
+{
+    auto key = moonbase::tests::generate_key();
+    auto claims = moonbase::tests::default_claims();
+    const auto token = moonbase::tests::make_token(key.key.get(), claims);
+
+    const auto result = make_validator(key.public_pem).validate_token(token);
+
+    CHECK(result.id == "license-123");
+    CHECK(result.activation_id == "activation-123");
+    CHECK_FALSE(result.trial);
+    CHECK(result.method == activation_method::online);
+    CHECK(result.licensed_product.id == "demo-app");
+    CHECK(result.licensed_product.name == "Demo Product");
+    REQUIRE(result.licensed_product.current_release_version.has_value());
+    CHECK(*result.licensed_product.current_release_version == "1.2.3");
+    REQUIRE(result.subscription_id.has_value());
+    CHECK(*result.subscription_id == "subscription-123");
+    CHECK(result.owned_sub_product_ids.size() == 2);
+    CHECK(result.issued_to.email == "jane@example.com");
+    CHECK(result.licensed_product.properties.at("tier") == "pro");
+    CHECK(result.issued_to.properties.at("company") == "Acme");
+    CHECK(result.properties.at("seats") == 3);
+    CHECK(result.token == token);
+}
+
+TEST_CASE("PKCS#1 RSA public keys are accepted")
+{
+    auto key = moonbase::tests::generate_key();
+    const auto token = moonbase::tests::make_token(
+        key.key.get(),
+        moonbase::tests::default_claims());
+
+    const auto result = make_validator(key.public_pkcs1_pem).validate_token(token);
+
+    CHECK(result.id == "license-123");
+}
+
+TEST_CASE("validated timestamp can fall back to legacy ver claim")
+{
+    auto key = moonbase::tests::generate_key();
+    auto claims = moonbase::tests::default_claims();
+    claims.erase("validated");
+    claims["ver"] = "2026-05-08T12:34:56.0000000Z";
+
+    const auto result = make_validator(key.public_pem).validate_token(
+        moonbase::tests::make_token(key.key.get(), claims));
+
+    CHECK(moonbase::detail::format_iso8601_utc(result.validated_at) == "2026-05-08T12:34:56Z");
+}
+
+TEST_CASE("trial tokens use trial properties")
+{
+    auto key = moonbase::tests::generate_key();
+    auto claims = moonbase::tests::default_claims();
+    claims["trial"] = "true";
+    claims.erase("l:properties");
+    claims["t:properties"] = {{"days", 14}};
+
+    const auto result = make_validator(key.public_pem).validate_token(
+        moonbase::tests::make_token(key.key.get(), claims));
+
+    CHECK(result.trial);
+    CHECK(result.properties.at("days") == 14);
+}
+
+TEST_CASE("invalid JWTs are rejected")
+{
+    auto key = moonbase::tests::generate_key();
+    auto other_key = moonbase::tests::generate_key();
+
+    SUBCASE("malformed token")
+    {
+        CHECK_THROWS_AS((void)make_validator(key.public_pem).validate_token("not-a-token"), license_invalid_error);
+    }
+
+    SUBCASE("unsupported algorithm")
+    {
+        const auto token = moonbase::tests::make_token(
+            key.key.get(),
+            moonbase::tests::default_claims(),
+            {{"alg", "HS256"}, {"typ", "JWT"}});
+        CHECK_THROWS_AS((void)make_validator(key.public_pem).validate_token(token), license_invalid_error);
+    }
+
+    SUBCASE("wrong signature")
+    {
+        const auto token = moonbase::tests::make_token(
+            other_key.key.get(),
+            moonbase::tests::default_claims());
+        CHECK_THROWS_AS((void)make_validator(key.public_pem).validate_token(token), license_invalid_error);
+    }
+
+    SUBCASE("wrong product audience")
+    {
+        auto claims = moonbase::tests::default_claims();
+        claims["aud"] = "other-product";
+        const auto token = moonbase::tests::make_token(key.key.get(), claims);
+        CHECK_THROWS_AS((void)make_validator(key.public_pem).validate_token(token), license_invalid_error);
+    }
+
+    SUBCASE("wrong issuer")
+    {
+        auto claims = moonbase::tests::default_claims();
+        claims["iss"] = "other-tenant";
+        const auto token = moonbase::tests::make_token(key.key.get(), claims);
+        CHECK_THROWS_AS((void)make_validator(key.public_pem).validate_token(token), license_invalid_error);
+    }
+
+    SUBCASE("wrong device")
+    {
+        auto claims = moonbase::tests::default_claims("other-device");
+        const auto token = moonbase::tests::make_token(key.key.get(), claims);
+        CHECK_THROWS_AS((void)make_validator(key.public_pem).validate_token(token), license_invalid_error);
+    }
+
+    SUBCASE("expired")
+    {
+        auto claims = moonbase::tests::default_claims();
+        claims["exp"] = moonbase::tests::now_seconds() - 10;
+        const auto token = moonbase::tests::make_token(key.key.get(), claims);
+        CHECK_THROWS_AS((void)make_validator(key.public_pem).validate_token(token), license_expired_error);
+    }
+
+    SUBCASE("missing required claim")
+    {
+        auto claims = moonbase::tests::default_claims();
+        claims.erase("l:id");
+        const auto token = moonbase::tests::make_token(key.key.get(), claims);
+        CHECK_THROWS_AS((void)make_validator(key.public_pem).validate_token(token), license_invalid_error);
+    }
+}

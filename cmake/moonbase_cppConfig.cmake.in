@@ -1,0 +1,12 @@
+@PACKAGE_INIT@
+
+include(CMakeFindDependencyMacro)
+find_dependency(CURL)
+find_dependency(OpenSSL)
+find_dependency(nlohmann_json)
+
+include("${CMAKE_CURRENT_LIST_DIR}/moonbase_cppTargets.cmake")
+
+if(TARGET moonbase::licensing AND TARGET nlohmann_json::nlohmann_json)
+    target_link_libraries(moonbase::licensing INTERFACE nlohmann_json::nlohmann_json)
+endif()
