@@ -73,6 +73,7 @@ if(MOONBASE_BUILD_TESTS)
             URL https://github.com/doctest/doctest/archive/refs/tags/v2.4.11.tar.gz
             DOWNLOAD_EXTRACT_TIMESTAMP TRUE)
         FetchContent_MakeAvailable(doctest)
+        list(APPEND CMAKE_MODULE_PATH "${doctest_SOURCE_DIR}/scripts/cmake")
     endif()
 
     add_executable(moonbase_tests
@@ -83,7 +84,8 @@ if(MOONBASE_BUILD_TESTS)
         tests/validator_tests.cpp
         tests/live_tests.cpp)
     target_link_libraries(moonbase_tests PRIVATE moonbase::licensing doctest::doctest)
-    add_test(NAME moonbase_tests COMMAND moonbase_tests)
+    include(doctest)
+    doctest_discover_tests(moonbase_tests)
 endif()
 
 install(TARGETS moonbase_licensing
