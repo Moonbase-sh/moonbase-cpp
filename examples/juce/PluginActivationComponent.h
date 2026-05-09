@@ -26,7 +26,7 @@ public:
         activateButton_.onClick = [this] { startActivation(); };
 
         addAndMakeVisible(deactivateButton_);
-        deactivateButton_.onClick = [this] { unlockStatus_.clearLicense(); refreshLabel(); };
+        deactivateButton_.onClick = [this] { startRevoke(); };
 
         // Async load: never blocks the message thread on libcurl. The label is
         // updated optimistically from the local-validation result, then again
@@ -117,6 +117,31 @@ ERUn++6CVMPvZo67jVbTY+GCXYfW4gGVZQIDAQAB
             stopTimer();
             refreshLabel();
         }
+    }
+
+    void startRevoke()
+    {
+        refreshLabel("Revoking activation...");
+        unlockStatus_.revokeActivationAsync([this](auto outcome)
+        {
+            using O = moonbase::juce_bridge::MoonbaseUnlockStatus::RevokeOutcome;
+            switch (outcome)
+            {
+                case O::NotRevokable:
+                    // Trial or offline-activated — server-side revoke isn't
+                    // applicable, so fall back to a local-only forget.
+                    unlockStatus_.clearLicense();
+                    refreshLabel();
+                    break;
+                case O::Unreachable:
+                    refreshLabel("Could not reach Moonbase to revoke. Try again when online.");
+                    break;
+                case O::Revoked:
+                case O::NoLicense:
+                    refreshLabel();
+                    break;
+            }
+        });
     }
 
     void refreshLabel(const juce::String& explicitMessage = {})

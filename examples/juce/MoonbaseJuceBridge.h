@@ -422,6 +422,194 @@ public:
             });
     }
 
+    enum class RevokeOutcome
+    {
+        Revoked,        // Server-side revoke succeeded (or token was already gone). Bridge is now locked.
+        NoLicense,      // No license is currently loaded — nothing to revoke. Bridge state unchanged.
+        NotRevokable,   // Token is offline-activated or a trial. Bridge state unchanged.
+                        // Caller can fall back to clearLicense() for a local-only forget.
+        Unreachable,    // Transport failure (network down, 5xx). Bridge state unchanged so the
+                        // caller can retry; no seat has been freed server-side.
+    };
+
+    // Server-side revoke of the currently loaded activation. On success, frees
+    // the seat on the Moonbase backend and clears the local store + bridge
+    // state. On NotRevokable / Unreachable the bridge state is left alone so
+    // the caller can decide between a local-only fallback (clearLicense()) or
+    // a retry.
+    //
+    // Synchronous: blocks the calling thread on libcurl. Prefer
+    // revokeActivationAsync() from UI threads.
+    RevokeOutcome revokeActivation()
+    {
+        std::string token;
+        std::string activationId;
+        {
+            const juce::ScopedLock lock(stateLock_);
+            if (!current_)
+                return RevokeOutcome::NoLicense;
+            token = current_->token;
+            activationId = current_->activation_id;
+        }
+
+        ++validationGeneration_;
+
+        auto clearMatchingLocal = [&] {
+            try
+            {
+                auto stored = licensing_->store().load_local_license();
+                if (stored && stored->activation_id == activationId)
+                    licensing_->store().delete_local_license();
+            }
+            catch (const moonbase::storage_error&) {}
+        };
+
+        try
+        {
+            licensing_->revoke_activation(token);
+        }
+        catch (const moonbase::operation_not_supported_error&)
+        {
+            return RevokeOutcome::NotRevokable;
+        }
+        catch (const moonbase::license_invalid_error&)
+        {
+            // Server says the token is unknown/invalid — treat as already gone.
+            // The SDK didn't reach its own store-cleanup, so do it here, gated
+            // on activation_id so we never wipe an unrelated cached license.
+            clearMatchingLocal();
+            setUnlocked(std::nullopt);
+            return RevokeOutcome::Revoked;
+        }
+        catch (const moonbase::license_expired_error&)
+        {
+            clearMatchingLocal();
+            setUnlocked(std::nullopt);
+            return RevokeOutcome::Revoked;
+        }
+        catch (const std::exception&)
+        {
+            return RevokeOutcome::Unreachable;
+        }
+
+        // SDK facade has already cleared the matching license from the store.
+        setUnlocked(std::nullopt);
+        return RevokeOutcome::Revoked;
+    }
+
+    // Non-blocking variant of revokeActivation.
+    //
+    // Threading: state mutation, store cleanup, and the callback all run on
+    // the JUCE message thread, regardless of which thread invokes this
+    // method. The network call runs on a juce::Thread.
+    //
+    // Staleness: same generation-gating as tryLoadStoredLicenseAsync — if the
+    // user calls clearLicense(), kicks off another async operation, or
+    // finishes a new activation while a revoke is in flight, the older
+    // continuation is dropped silently. Both state mutation AND the user
+    // callback are dropped, so a stale revoke can never overwrite the UI of
+    // a freshly activated license, and a destroyed bridge never receives
+    // its callback.
+    //
+    // Lifetime: licensing_ is a shared_ptr so the background thread keeps the
+    // SDK alive even if the bridge is destroyed mid-request. A
+    // juce::WeakReference protects the message-thread continuation from
+    // touching a destroyed bridge.
+    void revokeActivationAsync(std::function<void(RevokeOutcome)> onComplete = {})
+    {
+        std::string token;
+        std::string activationId;
+        {
+            const juce::ScopedLock lock(stateLock_);
+            if (current_)
+            {
+                token = current_->token;
+                activationId = current_->activation_id;
+            }
+        }
+
+        const auto generation = ++validationGeneration_;
+        juce::WeakReference<MoonbaseUnlockStatus> safeThis(this);
+        auto licensingHandle = licensing_;
+        auto cb = std::move(onComplete);
+
+        if (token.empty())
+        {
+            // Fast path: nothing loaded. Still go through the message-thread
+            // gate so a destroyed bridge or a superseding op silently drops
+            // the callback, matching the rest of the async surface.
+            juce::MessageManager::callAsync(
+                [safeThis, generation, cb = std::move(cb)]() mutable
+                {
+                    auto* self = safeThis.get();
+                    if (self == nullptr
+                        || generation != self->validationGeneration_.load())
+                        return;
+                    if (cb)
+                        cb(RevokeOutcome::NoLicense);
+                });
+            return;
+        }
+
+        juce::Thread::launch(
+            [licensingHandle, token, activationId, generation, safeThis,
+             cb = std::move(cb)]() mutable
+            {
+                RevokeOutcome outcome = RevokeOutcome::Revoked;
+                try
+                {
+                    licensingHandle->revoke_activation(token);
+                }
+                catch (const moonbase::operation_not_supported_error&)
+                {
+                    outcome = RevokeOutcome::NotRevokable;
+                }
+                catch (const moonbase::license_invalid_error&)
+                {
+                    outcome = RevokeOutcome::Revoked;
+                }
+                catch (const moonbase::license_expired_error&)
+                {
+                    outcome = RevokeOutcome::Revoked;
+                }
+                catch (const std::exception&)
+                {
+                    outcome = RevokeOutcome::Unreachable;
+                }
+
+                juce::MessageManager::callAsync(
+                    [safeThis, generation, outcome, activationId,
+                     licensingHandle, cb = std::move(cb)]() mutable
+                    {
+                        auto* self = safeThis.get();
+                        if (self == nullptr
+                            || generation != self->validationGeneration_.load())
+                            return;
+
+                        if (outcome == RevokeOutcome::Revoked)
+                        {
+                            // Cover the invalid/expired server-response path
+                            // where the SDK threw before its own store
+                            // cleanup. activation_id matching ensures a stale
+                            // revoke whose generation somehow still matches
+                            // can't wipe an unrelated cached license.
+                            try
+                            {
+                                auto stored = licensingHandle->store().load_local_license();
+                                if (stored && stored->activation_id == activationId)
+                                    licensingHandle->store().delete_local_license();
+                            }
+                            catch (const moonbase::storage_error&) {}
+
+                            self->setUnlocked(std::nullopt);
+                        }
+
+                        if (cb)
+                            cb(outcome);
+                    });
+            });
+    }
+
     // Begins a new browser activation. Returns the URL to hand to
     // juce::URL::launchInDefaultBrowser. Throws moonbase::api_error on
     // network/server failure.

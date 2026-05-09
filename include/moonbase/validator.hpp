@@ -317,6 +317,21 @@ public:
 
     [[nodiscard]] license validate_token(std::string_view token) const
     {
+        return validate_token_internal(token, false);
+    }
+
+    // Same as validate_token, but does not throw on a past `exp`. Intended for
+    // operations like revoke where the seat may still be allocated server-side
+    // even after the local token has aged out. All other checks (signature,
+    // audience, issuer, device match) still apply.
+    [[nodiscard]] license validate_token_allow_expired(std::string_view token) const
+    {
+        return validate_token_internal(token, true);
+    }
+
+private:
+    [[nodiscard]] license validate_token_internal(std::string_view token, bool allow_expired) const
+    {
         const auto token_string = detail::trim_ascii_whitespace(std::string(token));
         const auto parts = detail::split_jwt(token_string);
         const auto header = detail::decode_jwt_json(parts[0], "header");
@@ -372,7 +387,8 @@ public:
             ? detail::object_claim_or_empty(payload, "t:properties")
             : detail::object_claim_or_empty(payload, "l:properties");
 
-        if (result.expires_at && *result.expires_at < std::chrono::system_clock::now()) {
+        if (!allow_expired && result.expires_at
+            && *result.expires_at < std::chrono::system_clock::now()) {
             throw license_expired_error("License has expired");
         }
 
@@ -385,7 +401,6 @@ public:
         return result;
     }
 
-private:
     licensing_options options_;
     std::shared_ptr<fingerprint_provider> fingerprints_;
     detail::evp_pkey_ptr key_;

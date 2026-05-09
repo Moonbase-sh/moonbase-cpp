@@ -188,3 +188,43 @@ TEST_CASE("validate_token_online re-validates the refreshed JWT locally")
 
     CHECK_THROWS_AS((void)fixture.client.validate_token_online("token"), license_invalid_error);
 }
+
+TEST_CASE("revoke_activation posts the JWT to the revoke endpoint")
+{
+    client_fixture fixture({
+        http_response{200, {}, ""},
+    });
+
+    fixture.client.revoke_activation("original.jwt.token");
+
+    REQUIRE(fixture.transport->requests.size() == 1);
+    const auto& request = fixture.transport->requests.front();
+    CHECK(request.method == "POST");
+    CHECK(request.url.find("https://demo.moonbase.sh/api/client/licenses/demo-app/revoke?") == 0);
+    CHECK(request.url.find("format=JWT") != std::string::npos);
+    CHECK(request.url.find("platform=Mac") != std::string::npos);
+    CHECK(request.url.find("appVersion=1.2.3") != std::string::npos);
+    CHECK(request.url.find("meta%5Bchannel%5D=test") != std::string::npos);
+    CHECK(request.headers.at("Content-Type") == "text/plain");
+    CHECK(request.headers.at("x-mb-client") == "moonbase-cpp");
+    CHECK(request.body == "original.jwt.token");
+}
+
+TEST_CASE("revoke_activation maps API errors")
+{
+    SUBCASE("invalid")
+    {
+        client_fixture fixture({
+            http_response{400, {}, R"({"title":"Invalid","detail":"Token is not valid"})"},
+        });
+        CHECK_THROWS_AS(fixture.client.revoke_activation("token"), license_invalid_error);
+    }
+
+    SUBCASE("server error")
+    {
+        client_fixture fixture({
+            http_response{500, {}, R"({"title":"Failure","detail":"Backend failed"})"},
+        });
+        CHECK_THROWS_AS(fixture.client.revoke_activation("token"), api_error);
+    }
+}

@@ -90,6 +90,36 @@ public:
         }
     }
 
+    void revoke_activation(std::string_view token) const
+    {
+        // allow_expired: a long-running app may click "Deactivate" after the
+        // local token has aged out, but the server-side seat is still
+        // allocated until we POST to /revoke.
+        const auto local = validator_->validate_token_allow_expired(token);
+
+        if (local.method == activation_method::offline) {
+            throw operation_not_supported_error(
+                "Offline-activated licenses cannot be revoked");
+        }
+        if (local.trial) {
+            throw operation_not_supported_error(
+                "Trial licenses cannot be revoked");
+        }
+
+        client_->revoke_activation(token);
+
+        // Store cleanup is best-effort — the server-side seat is already
+        // freed, so a local IO failure must not surface as a revoke failure
+        // (callers would retry against a token the server no longer knows).
+        try {
+            if (auto stored = store_->load_local_license();
+                stored && stored->activation_id == local.activation_id) {
+                store_->delete_local_license();
+            }
+        } catch (const storage_error&) {
+        }
+    }
+
     [[nodiscard]] license_store& store() noexcept { return *store_; }
     [[nodiscard]] const license_store& store() const noexcept { return *store_; }
 
