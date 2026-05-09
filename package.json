@@ -3,6 +3,7 @@
   "version": "0.0.0-development",
   "private": true,
   "description": "Release tooling for the moonbase-cpp SDK. Not published to npm.",
+  "license": "MIT",
   "scripts": {
     "release": "semantic-release"
   },

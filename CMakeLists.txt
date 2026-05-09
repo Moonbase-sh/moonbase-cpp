@@ -102,6 +102,8 @@ endif()
 install(TARGETS moonbase_licensing
     EXPORT moonbase_cppTargets)
 install(DIRECTORY include/ DESTINATION ${CMAKE_INSTALL_INCLUDEDIR})
+install(FILES "${PROJECT_SOURCE_DIR}/LICENSE"
+    DESTINATION "${CMAKE_INSTALL_DOCDIR}")
 
 write_basic_package_version_file(
     "${PROJECT_BINARY_DIR}/moonbase_cppConfigVersion.cmake"
