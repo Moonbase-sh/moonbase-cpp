@@ -1,3 +1,10 @@
+## [1.0.1](https://github.com/Moonbase-sh/moonbase-cpp/compare/v1.0.0...v1.0.1) (2026-05-09)
+
+
+### Bug Fixes
+
+* register each doctest case with CTest individually ([#3](https://github.com/Moonbase-sh/moonbase-cpp/issues/3)) ([0fd4669](https://github.com/Moonbase-sh/moonbase-cpp/commit/0fd466912800c130f9cb4050ddd6768d0db1c4b9))
+
 # 1.0.0 (2026-05-09)
 
 
