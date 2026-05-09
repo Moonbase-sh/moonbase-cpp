@@ -62,8 +62,33 @@ unlockStatus.tryLoadStoredLicense();
 
 Call `tryLoadStoredLicense()` once from your `AudioProcessor` constructor or
 application startup. It validates the stored JWT against your configured
-public key and the current device fingerprint, and silently treats invalid or
-expired tokens as "not unlocked".
+public key and the current device fingerprint, and then re-validates against
+the Moonbase API subject to the cadence + grace period configured on
+`licensing_options`. Invalid, expired, or unreachable-past-grace tokens are
+silently treated as "not unlocked".
+
+The two `licensing_options` knobs that govern the API call:
+
+- `online_validation_min_interval` (default 5 minutes) — if the local token's
+  `validated_at` is newer than this, the API call is skipped entirely. Keeps
+  `tryLoadStoredLicense()` cheap to call on every plugin instantiation.
+- `online_validation_grace_period` (default 7 days) — maximum age the local
+  token may reach without a successful online check. Within grace, transient
+  transport failures fall back to the cached local result; beyond grace, they
+  cause `tryLoadStoredLicense()` to return `false`.
+
+Definitive server rejections (`license_invalid_error`, `license_expired_error`)
+always cause `tryLoadStoredLicense()` to return `false` regardless of grace.
+Offline-activated tokens (`activation_method::offline`) are validated locally
+even when calling `tryLoadStoredLicense()` — the bridge never contacts the API
+for them.
+
+The call is synchronous. Inside the throttle window it's a single timestamp
+comparison and returns immediately, but the first call past the window blocks
+on libcurl. If you can't tolerate that on the message thread, either run
+`tryLoadStoredLicense()` from a background thread on startup or pass
+`tryLoadStoredLicense(/*online=*/false)` to skip the network entirely (and
+schedule your own background re-validation later).
 
 ## Activation flow
 

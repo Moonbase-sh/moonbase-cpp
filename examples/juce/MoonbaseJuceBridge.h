@@ -194,7 +194,17 @@ public:
     // Loads any previously stored license and validates its JWT. Call this once
     // from your AudioProcessor constructor (or app startup). Safe to call again
     // after reconfiguring the license store.
-    bool tryLoadStoredLicense()
+    //
+    // With online=true (default) this calls licensing.validate_token_online,
+    // which adds an API round-trip subject to the cadence + grace period
+    // configured on licensing_options. The call is synchronous and blocks on
+    // the calling thread when it actually hits the network — within the
+    // throttle window (online_validation_min_interval, default 5 minutes) it's
+    // a single timestamp comparison and returns immediately. If you need to
+    // avoid any network I/O, pass online=false to use local-only validation.
+    //
+    // Offline-activated tokens are validated locally regardless of this flag.
+    bool tryLoadStoredLicense(bool online = true)
     {
         try
         {
@@ -205,7 +215,18 @@ public:
                 return false;
             }
 
-            auto validated = licensing_.validate_token_local(stored->token);
+            auto validated = online
+                ? licensing_.validate_token_online(stored->token)
+                : licensing_.validate_token_local(stored->token);
+
+            // Persist refreshed token so the cadence/grace clock advances
+            // across restarts. Storage failures are non-fatal here.
+            if (validated.token != stored->token)
+            {
+                try { licensing_.store().store_local_license(validated); }
+                catch (const moonbase::storage_error&) {}
+            }
+
             setUnlocked(std::move(validated));
             return true;
         }
@@ -216,6 +237,14 @@ public:
         }
         catch (const moonbase::license_expired_error&)
         {
+            setUnlocked(std::nullopt);
+            return false;
+        }
+        catch (const std::exception&)
+        {
+            // Transport failure past the grace period (or any other unexpected
+            // error). Treat as locked rather than letting it propagate into
+            // the host's plugin-load path.
             setUnlocked(std::nullopt);
             return false;
         }
