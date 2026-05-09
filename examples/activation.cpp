@@ -46,7 +46,7 @@ int main()
         moonbase::licensing licensing(options, store);
 
         if (auto existing = licensing.store().load_local_license()) {
-            const auto validated = licensing.validate_token(existing->token);
+            const auto validated = licensing.validate_token_local(existing->token);
             std::cout << "Existing license is valid for "
                       << validated.issued_to.email << '\n';
             return 0;

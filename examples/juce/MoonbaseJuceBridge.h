@@ -205,7 +205,7 @@ public:
                 return false;
             }
 
-            auto validated = licensing_.validate_token(stored->token);
+            auto validated = licensing_.validate_token_local(stored->token);
             setUnlocked(std::move(validated));
             return true;
         }

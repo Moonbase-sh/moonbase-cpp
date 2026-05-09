@@ -37,13 +37,35 @@ while (!license) {
 licensing.store().store_local_license(*license);
 ```
 
-On startup, validate the stored token locally:
+On startup, validate the stored token. `validate_token_online` runs the local
+checks (signature, device fingerprint, expiry) and then re-validates against the
+Moonbase API when needed:
 
 ```cpp
 if (auto local = licensing.store().load_local_license()) {
-    auto validated = licensing.validate_token(local->token);
+    auto validated = licensing.validate_token_online(local->token);
+    licensing.store().store_local_license(validated); // persist refreshed token
 }
 ```
+
+Two `licensing_options` knobs control how often the API is contacted and how
+much offline tolerance is allowed:
+
+- `online_validation_min_interval` (default 5 minutes) — if the local
+  `validated_at` is newer than this, the API call is skipped. Makes the method
+  cheap to call frequently (e.g. on every plugin instantiation).
+- `online_validation_grace_period` (default 7 days) — maximum age the local
+  token may reach without a successful online check. Within grace, transient
+  API failures (network down, 5xx, etc.) fall back to the local result. Beyond
+  grace, the failure is propagated.
+
+Definitive server rejections (`license_invalid_error`, `license_expired_error`)
+always propagate regardless of grace.
+
+Offline-activated tokens (`activation_method::offline`) are validated locally
+even when calling `validate_token_online` — the SDK never contacts the API for
+them. Use `validate_token_local` directly when you want the local-only check
+explicitly.
 
 ## Custom Fingerprinting and Storage
 
