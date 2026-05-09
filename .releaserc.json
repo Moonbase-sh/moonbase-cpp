@@ -12,8 +12,7 @@
     [
       "@semantic-release/exec",
       {
-        "prepareCmd": "scripts/bump-version.sh ${nextRelease.version}",
-        "publishCmd": "git archive --format=tar.gz --prefix=moonbase-cpp-${nextRelease.version}/ -o moonbase-cpp-${nextRelease.version}.tar.gz HEAD"
+        "prepareCmd": "scripts/bump-version.sh ${nextRelease.version}"
       }
     ],
     [
@@ -23,16 +22,6 @@
         "message": "chore(release): ${nextRelease.version} [skip ci]\n\n${nextRelease.notes}"
       }
     ],
-    [
-      "@semantic-release/github",
-      {
-        "assets": [
-          {
-            "path": "moonbase-cpp-*.tar.gz",
-            "label": "Source tarball (moonbase-cpp-${nextRelease.version}.tar.gz)"
-          }
-        ]
-      }
-    ]
+    "@semantic-release/github"
   ]
 }
