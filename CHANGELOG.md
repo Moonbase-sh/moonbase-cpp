@@ -1,3 +1,10 @@
+# [2.1.0](https://github.com/Moonbase-sh/moonbase-cpp/compare/v2.0.0...v2.1.0) (2026-05-09)
+
+
+### Features
+
+* add revoke_activation for online-activated licenses ([#8](https://github.com/Moonbase-sh/moonbase-cpp/issues/8)) ([35c27e6](https://github.com/Moonbase-sh/moonbase-cpp/commit/35c27e67f2b6f863e014fd11d7a35570471e7398))
+
 # [2.0.0](https://github.com/Moonbase-sh/moonbase-cpp/compare/v1.1.0...v2.0.0) (2026-05-09)
 
 
