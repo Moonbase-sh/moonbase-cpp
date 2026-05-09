@@ -17,7 +17,7 @@ class PluginActivationComponent : public juce::Component,
 {
 public:
     PluginActivationComponent()
-        : unlockStatus_(makeOptions())
+        : unlockStatus_(makeOptions(), makeStore())
     {
         addAndMakeVisible(statusLabel_);
         statusLabel_.setJustificationType(juce::Justification::centredLeft);
@@ -28,10 +28,13 @@ public:
         addAndMakeVisible(deactivateButton_);
         deactivateButton_.onClick = [this] { unlockStatus_.clearLicense(); refreshLabel(); };
 
-        unlockStatus_.tryLoadStoredLicense();
+        // Async load: never blocks the message thread on libcurl. The label is
+        // updated optimistically from the local-validation result, then again
+        // from the message-thread callback once the online check resolves.
+        unlockStatus_.tryLoadStoredLicenseAsync([this](auto) { refreshLabel(); });
         refreshLabel();
 
-        setSize(480, 160);
+        setSize(520, 184);
     }
 
     ~PluginActivationComponent() override
@@ -42,7 +45,7 @@ public:
     void resized() override
     {
         auto area = getLocalBounds().reduced(16);
-        statusLabel_.setBounds(area.removeFromTop(72));
+        statusLabel_.setBounds(area.removeFromTop(96));
         area.removeFromTop(8);
         auto buttons = area.removeFromTop(36);
         activateButton_.setBounds(buttons.removeFromLeft(200));
@@ -75,6 +78,21 @@ ERUn++6CVMPvZo67jVbTY+GCXYfW4gGVZQIDAQAB
 
         moonbase::juce_bridge::applyJuceMetadata(options);
         return options;
+    }
+
+    // Persists the validated license under the platform's per-user app data
+    // directory (~/Library/Application Support/MoonbaseJuceExample on macOS,
+    // %APPDATA%\MoonbaseJuceExample on Windows, ~/.config/MoonbaseJuceExample
+    // on Linux). Replace "MoonbaseJuceExample" with your own product name in
+    // a real integration.
+    static std::shared_ptr<moonbase::file_license_store> makeStore()
+    {
+        const auto path = juce::File::getSpecialLocation(juce::File::userApplicationDataDirectory)
+                              .getChildFile("MoonbaseJuceExample")
+                              .getChildFile("license.mb")
+                              .getFullPathName()
+                              .toStdString();
+        return std::make_shared<moonbase::file_license_store>(path);
     }
 
     void startActivation()
@@ -121,6 +139,13 @@ ERUn++6CVMPvZo67jVbTY+GCXYfW4gGVZQIDAQAB
             const auto expiry = unlockStatus_.getExpiryTime();
             if (expiry.toMilliseconds() > 0)
                 text << "\nExpires " << expiry.toString(true, true);
+
+            // Last successful validation — refreshed by validate_token_online
+            // (or the local-only fallback within grace) and persisted into the
+            // license's `validated_at` claim.
+            const auto validatedMs = std::chrono::duration_cast<std::chrono::milliseconds>(
+                license->validated_at.time_since_epoch()).count();
+            text << "\nLast validated " << juce::Time(validatedMs).toString(true, true);
 
             statusLabel_.setText(text, juce::dontSendNotification);
         }

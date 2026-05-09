@@ -4,6 +4,7 @@
 #include <memory>
 #include <optional>
 #include <string>
+#include <string_view>
 #include <utility>
 
 #include <nlohmann/json.hpp>
@@ -36,7 +37,15 @@ inline std::string request_path(const licensing_options& options)
         "/request";
 }
 
-inline std::map<std::string, std::string> activation_query(const licensing_options& options)
+inline std::string validate_path(const licensing_options& options)
+{
+    return trim_trailing_slashes(options.endpoint) +
+        "/api/client/licenses/" +
+        url_encode(options.product_id) +
+        "/validate";
+}
+
+inline std::map<std::string, std::string> client_query(const licensing_options& options)
 {
     std::map<std::string, std::string> query{{"format", "JWT"}};
     if (options.target_platform != platform::unknown) {
@@ -138,7 +147,7 @@ public:
     {
         const auto url = detail::append_query(
             detail::request_path(options_),
-            detail::activation_query(options_));
+            detail::client_query(options_));
 
         const auto payload = nlohmann::json{
             {"deviceName", fingerprints_->device_name()},
@@ -163,6 +172,25 @@ public:
                 static_cast<int>(response.status_code),
                 std::string("Could not parse activation response: ") + ex.what());
         }
+    }
+
+    [[nodiscard]] license validate_token_online(std::string_view token) const
+    {
+        const auto url = detail::append_query(
+            detail::validate_path(options_),
+            detail::client_query(options_));
+
+        http_request request;
+        request.method = "POST";
+        request.url = url;
+        request.headers = detail::default_headers("text/plain");
+        request.body = std::string(token);
+
+        const auto response = transport_->send(request);
+        if (response.status_code < 200 || response.status_code >= 300) {
+            detail::throw_for_problem(response.status_code, response.body);
+        }
+        return validator_->validate_token(response.body);
     }
 
     [[nodiscard]] std::optional<license> get_requested_activation(

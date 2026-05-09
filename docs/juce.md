@@ -62,8 +62,80 @@ unlockStatus.tryLoadStoredLicense();
 
 Call `tryLoadStoredLicense()` once from your `AudioProcessor` constructor or
 application startup. It validates the stored JWT against your configured
-public key and the current device fingerprint, and silently treats invalid or
-expired tokens as "not unlocked".
+public key and the current device fingerprint, and then re-validates against
+the Moonbase API subject to the cadence + grace period configured on
+`licensing_options`. Invalid, expired, or unreachable-past-grace tokens are
+silently treated as "not unlocked".
+
+The two `licensing_options` knobs that govern the API call:
+
+- `online_validation_min_interval` (default 5 minutes) — if the local token's
+  `validated_at` is newer than this, the API call is skipped entirely. Keeps
+  `tryLoadStoredLicense()` cheap to call on every plugin instantiation.
+- `online_validation_grace_period` (default 7 days) — maximum age the local
+  token may reach without a successful online check. Within grace, transient
+  transport failures fall back to the cached local result; beyond grace, they
+  cause `tryLoadStoredLicense()` to return `false`.
+
+Definitive server rejections (`license_invalid_error`, `license_expired_error`)
+always cause `tryLoadStoredLicense()` to return `false` regardless of grace.
+Offline-activated tokens (`activation_method::offline`) are validated locally
+even when calling `tryLoadStoredLicense()` — the bridge never contacts the API
+for them.
+
+The call is synchronous. Inside the throttle window it's a single timestamp
+comparison and returns immediately, but the first call past the window blocks
+on libcurl. **For real plugins, prefer the async variant below** — DAWs will
+flag the plugin as unresponsive if `AudioProcessor`'s constructor blocks on a
+network call.
+
+### Async (recommended for plugins)
+
+```cpp
+unlockStatus.tryLoadStoredLicenseAsync(
+    [this](auto result) {
+        // Runs on the JUCE message thread once the online check resolves.
+        // The bridge has already updated its unlock state — just refresh UI.
+        repaintActivationLabel();
+    });
+```
+
+Behaviour:
+
+1. Loads the stored license and runs **local validation synchronously** on
+   the calling thread. The plugin/app is "unlocked" immediately if the
+   cached token is locally valid — no message-thread blocking.
+2. For online-activated tokens, kicks off `validate_token_online` on a
+   background thread.
+3. The result is marshalled back to the message thread, applied to the
+   bridge's unlock state, and delivered to your callback.
+4. **Threading**: state mutation and the callback always run on the JUCE
+   message thread, regardless of which thread invoked
+   `tryLoadStoredLicenseAsync` — so it's safe to call from
+   `AudioProcessor`'s constructor even when the host runs that off the
+   message thread.
+5. **Staleness**: every call captures a generation number. If the user calls
+   `clearLicense()`, finishes a new activation via `pollPendingActivation()`,
+   or kicks off another `tryLoadStoredLicenseAsync` while a request is in
+   flight, the older continuation is dropped silently — both state mutation
+   and callback. This prevents a slow online check from resurrecting a
+   license the user just cleared, or clobbering a freshly activated one.
+6. If the bridge is destroyed while the check is in flight (e.g. the plugin
+   is closed mid-request), the callback is silently dropped — the bridge's
+   `juce::WeakReference` invalidates the message-thread continuation.
+
+The callback receives an `AsyncValidationResult` whose `outcome` member is one
+of: `NoStoredLicense`, `LocalInvalid`, `OfflineToken`, `Refreshed`,
+`LockedInvalid`, `LockedExpired`, `Unreachable`. The bridge has already
+updated its unlock state by the time the callback fires — checking
+`isMoonbaseUnlocked()` is usually all you need; the outcome is there if you
+want to show a more specific UI message ("server unreachable" vs. "license
+revoked").
+
+Within the grace period a transport failure is reported as `Refreshed` with
+the cached license — the call effectively succeeded, falling back to the
+locally trusted copy. Beyond grace, a transport failure becomes `Unreachable`
+and the bridge transitions to locked.
 
 ## Activation flow
 

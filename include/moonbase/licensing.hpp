@@ -1,5 +1,6 @@
 #pragma once
 
+#include <chrono>
 #include <memory>
 #include <optional>
 #include <string_view>
@@ -51,9 +52,42 @@ public:
         return client_->get_requested_activation(activation);
     }
 
-    [[nodiscard]] license validate_token(std::string_view token) const
+    [[nodiscard]] license validate_token_local(std::string_view token) const
     {
         return validator_->validate_token(token);
+    }
+
+    [[nodiscard]] license validate_token_online(std::string_view token) const
+    {
+        auto local = validator_->validate_token(token);
+
+        if (local.method == activation_method::offline) {
+            return local;
+        }
+
+        const auto age = std::chrono::system_clock::now() - local.validated_at;
+
+        // The throttle is only allowed to skip the API while we're also
+        // inside the grace period — otherwise a min_interval longer than the
+        // grace period would silently extend "max age without an online
+        // check" past its advertised limit.
+        if (age < options_.online_validation_min_interval
+            && age <= options_.online_validation_grace_period) {
+            return local;
+        }
+
+        try {
+            return client_->validate_token_online(token);
+        } catch (const license_invalid_error&) {
+            throw;
+        } catch (const license_expired_error&) {
+            throw;
+        } catch (const std::exception&) {
+            if (age <= options_.online_validation_grace_period) {
+                return local;
+            }
+            throw;
+        }
     }
 
     [[nodiscard]] license_store& store() noexcept { return *store_; }

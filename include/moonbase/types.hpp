@@ -129,6 +129,8 @@ struct licensing_options {
     platform target_platform = current_platform();
     std::optional<std::string> application_version;
     std::map<std::string, std::string> metadata;
+    std::chrono::seconds online_validation_grace_period{std::chrono::hours(24 * 7)};
+    std::chrono::seconds online_validation_min_interval{std::chrono::minutes(5)};
 };
 
 inline void to_json(nlohmann::json& json, const product& value)

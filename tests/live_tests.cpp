@@ -43,6 +43,8 @@ TEST_CASE("live API activation flow")
     options.target_platform = platform::unknown;
     options.application_version = "0.1.0-test";
     options.metadata = {{"suite", "moonbase-cpp"}};
+    // Force every validate_token_online call to hit the API instead of throttling.
+    options.online_validation_min_interval = std::chrono::seconds(0);
 
     const auto unique_id = "moonbase-cpp-test-" + std::to_string(moonbase::tests::now_seconds());
     auto fingerprints = std::make_shared<static_fingerprint_provider>("Moonbase C++ Test", unique_id);
@@ -82,4 +84,10 @@ TEST_CASE("live API activation flow")
     CHECK(fulfilled->trial);
     CHECK(fulfilled->licensed_product.id == options.product_id);
     CHECK_FALSE(fulfilled->token.empty());
+
+    const auto revalidated = sdk.validate_token_online(fulfilled->token);
+    CHECK(revalidated.id == fulfilled->id);
+    CHECK(revalidated.activation_id == fulfilled->activation_id);
+    CHECK_FALSE(revalidated.token.empty());
+    CHECK(revalidated.validated_at >= fulfilled->validated_at);
 }

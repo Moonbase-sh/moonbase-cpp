@@ -133,3 +133,58 @@ TEST_CASE("get_requested_activation maps license problem details")
     activation_request request{"request-123", "https://demo.moonbase.sh/api/client/activations/request-123?format=JWT", ""};
     CHECK_THROWS_AS((void)fixture.client.get_requested_activation(request), license_expired_error);
 }
+
+TEST_CASE("validate_token_online posts the JWT and parses the refreshed response")
+{
+    client_fixture fixture({});
+    const auto refreshed = moonbase::tests::make_token(
+        fixture.key.key.get(),
+        moonbase::tests::default_claims());
+    fixture.transport->responses.push_back(http_response{200, {}, refreshed});
+
+    const auto result = fixture.client.validate_token_online("original.jwt.token");
+
+    CHECK(result.id == "license-123");
+    CHECK(result.token == refreshed);
+
+    REQUIRE(fixture.transport->requests.size() == 1);
+    const auto& request = fixture.transport->requests.front();
+    CHECK(request.method == "POST");
+    CHECK(request.url.find("https://demo.moonbase.sh/api/client/licenses/demo-app/validate?") == 0);
+    CHECK(request.url.find("format=JWT") != std::string::npos);
+    CHECK(request.url.find("platform=Mac") != std::string::npos);
+    CHECK(request.url.find("appVersion=1.2.3") != std::string::npos);
+    CHECK(request.url.find("meta%5Bchannel%5D=test") != std::string::npos);
+    CHECK(request.headers.at("Content-Type") == "text/plain");
+    CHECK(request.headers.at("x-mb-client") == "moonbase-cpp");
+    CHECK(request.body == "original.jwt.token");
+}
+
+TEST_CASE("validate_token_online maps license problem details")
+{
+    SUBCASE("expired")
+    {
+        client_fixture fixture({
+            http_response{400, {}, R"({"errorType":"LicenseExpired","detail":"The license has expired"})"},
+        });
+        CHECK_THROWS_AS((void)fixture.client.validate_token_online("token"), license_expired_error);
+    }
+
+    SUBCASE("invalid")
+    {
+        client_fixture fixture({
+            http_response{400, {}, R"({"title":"Invalid","detail":"Token is not valid"})"},
+        });
+        CHECK_THROWS_AS((void)fixture.client.validate_token_online("token"), license_invalid_error);
+    }
+}
+
+TEST_CASE("validate_token_online re-validates the refreshed JWT locally")
+{
+    client_fixture fixture({});
+    auto claims = moonbase::tests::default_claims("other-device");
+    const auto refreshed = moonbase::tests::make_token(fixture.key.key.get(), claims);
+    fixture.transport->responses.push_back(http_response{200, {}, refreshed});
+
+    CHECK_THROWS_AS((void)fixture.client.validate_token_online("token"), license_invalid_error);
+}

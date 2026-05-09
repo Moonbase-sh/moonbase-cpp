@@ -90,6 +90,7 @@ if(MOONBASE_BUILD_TESTS)
         tests/main.cpp
         tests/client_tests.cpp
         tests/fingerprint_tests.cpp
+        tests/licensing_tests.cpp
         tests/store_tests.cpp
         tests/validator_tests.cpp
         tests/live_tests.cpp)
