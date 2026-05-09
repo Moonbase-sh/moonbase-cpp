@@ -2,6 +2,46 @@
 
 Header-only C++17 SDK for Moonbase license activation. It supports activation requests, polling for fulfilled activations, local RS256 JWT validation, overridable device fingerprinting, and overridable license storage.
 
+## Requirements
+
+- CMake 3.20 or newer
+- A C++17 compiler
+- Windows, macOS, or Linux (the default fingerprint provider has native implementations for each)
+- `CURL::libcurl` and OpenSSL (`OpenSSL::SSL`, `OpenSSL::Crypto`) — must be findable on the system (e.g. via your distro, Homebrew, or vcpkg)
+- `nlohmann_json` 3.11+ — used if `find_package(nlohmann_json)` succeeds; otherwise it is fetched automatically at build time from the upstream release tarball
+
+The installed package config calls `find_dependency()` for CURL, OpenSSL, and nlohmann_json, so a consuming project does not need to repeat those `find_package` calls itself — but the libraries must be available when `find_package(moonbase_cpp)` is invoked.
+
+## Installation
+
+### Install from source
+
+Clone the repository (or download a release tarball at `https://github.com/Moonbase-sh/moonbase-cpp/archive/refs/tags/v<version>.tar.gz`), then configure, build, and install:
+
+```bash
+cmake -B build -DMOONBASE_BUILD_TESTS=OFF -DMOONBASE_BUILD_EXAMPLES=OFF
+cmake --build build
+cmake --install build --prefix /your/prefix
+```
+
+### FetchContent
+
+To pull the SDK into your own CMake build without a separate install step:
+
+```cmake
+include(FetchContent)
+FetchContent_Declare(moonbase_cpp
+    GIT_REPOSITORY https://github.com/Moonbase-sh/moonbase-cpp.git
+    GIT_TAG v1.1.0)
+set(MOONBASE_BUILD_TESTS OFF)
+set(MOONBASE_BUILD_EXAMPLES OFF)
+FetchContent_MakeAvailable(moonbase_cpp)
+
+target_link_libraries(your_app PRIVATE moonbase::licensing)
+```
+
+`add_subdirectory()` works the same way if you vendor the source tree into your repo.
+
 ## CMake
 
 ```cmake
@@ -10,7 +50,17 @@ find_package(moonbase_cpp REQUIRED)
 target_link_libraries(your_app PRIVATE moonbase::licensing)
 ```
 
-The interface target depends on `CURL::libcurl`, `OpenSSL::SSL`, `OpenSSL::Crypto`, and `nlohmann_json::nlohmann_json`.
+The package exports the `moonbase::licensing` interface target, which propagates the include directory along with `CURL::libcurl`, `OpenSSL::SSL`, `OpenSSL::Crypto`, and `nlohmann_json::nlohmann_json` as transitive dependencies.
+
+The build provides three options, all useful when consuming the SDK as a subproject:
+
+| Option | Default | Purpose |
+| --- | --- | --- |
+| `MOONBASE_BUILD_TESTS` | `ON` | Build the doctest-based unit and live tests. |
+| `MOONBASE_BUILD_EXAMPLES` | `ON` | Build the standalone activation example under `examples/`. |
+| `MOONBASE_BUILD_JUCE_EXAMPLE` | `OFF` | Fetch JUCE and build the JUCE bridge example (see below). |
+
+Set `MOONBASE_BUILD_TESTS` and `MOONBASE_BUILD_EXAMPLES` to `OFF` when integrating via `add_subdirectory` or `FetchContent` to avoid building artifacts you don't need.
 
 ## Basic Usage
 
