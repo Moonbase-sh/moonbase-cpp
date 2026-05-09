@@ -172,6 +172,25 @@ TEST_CASE("validate_token_online runs local validation before any HTTP call")
     CHECK(fixture.transport->requests.empty());
 }
 
+TEST_CASE("validate_token_online refuses to let min_interval extend past grace_period")
+{
+    licensing_options options;
+    options.online_validation_grace_period = std::chrono::seconds(60);
+    options.online_validation_min_interval = std::chrono::hours(1); // longer than grace
+    facade_fixture fixture(options);
+
+    auto stale = moonbase::tests::default_claims();
+    stale["validated"] = moonbase::tests::now_seconds() - 120; // past grace, within throttle
+    const auto stale_token = fixture.make_token(stale);
+    // No queued response → recording_transport throws std::runtime_error.
+    // With the throttle bypassing grace, the call would silently return the
+    // stale local token. With the fix, it must attempt the API and propagate.
+    CHECK_THROWS_AS(
+        (void)fixture.instance.validate_token_online(stale_token),
+        std::exception);
+    CHECK(fixture.transport->requests.size() == 1);
+}
+
 TEST_CASE("validate_token_online honors a custom min interval")
 {
     licensing_options options;

@@ -66,7 +66,13 @@ public:
         }
 
         const auto age = std::chrono::system_clock::now() - local.validated_at;
-        if (age < options_.online_validation_min_interval) {
+
+        // The throttle is only allowed to skip the API while we're also
+        // inside the grace period — otherwise a min_interval longer than the
+        // grace period would silently extend "max age without an online
+        // check" past its advertised limit.
+        if (age < options_.online_validation_min_interval
+            && age <= options_.online_validation_grace_period) {
             return local;
         }
 

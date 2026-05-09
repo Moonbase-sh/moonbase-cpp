@@ -109,7 +109,18 @@ Behaviour:
    background thread.
 3. The result is marshalled back to the message thread, applied to the
    bridge's unlock state, and delivered to your callback.
-4. If the bridge is destroyed while the check is in flight (e.g. the plugin
+4. **Threading**: state mutation and the callback always run on the JUCE
+   message thread, regardless of which thread invoked
+   `tryLoadStoredLicenseAsync` — so it's safe to call from
+   `AudioProcessor`'s constructor even when the host runs that off the
+   message thread.
+5. **Staleness**: every call captures a generation number. If the user calls
+   `clearLicense()`, finishes a new activation via `pollPendingActivation()`,
+   or kicks off another `tryLoadStoredLicenseAsync` while a request is in
+   flight, the older continuation is dropped silently — both state mutation
+   and callback. This prevents a slow online check from resurrecting a
+   license the user just cleared, or clobbering a freshly activated one.
+6. If the bridge is destroyed while the check is in flight (e.g. the plugin
    is closed mid-request), the callback is silently dropped — the bridge's
    `juce::WeakReference` invalidates the message-thread continuation.
 

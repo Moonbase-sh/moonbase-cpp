@@ -18,7 +18,9 @@
 
 #pragma once
 
+#include <atomic>
 #include <chrono>
+#include <cstdint>
 #include <functional>
 #include <map>
 #include <memory>
@@ -208,6 +210,7 @@ public:
     // Offline-activated tokens are validated locally regardless of this flag.
     bool tryLoadStoredLicense(bool online = true)
     {
+        ++validationGeneration_;
         try
         {
             auto stored = licensing_->store().load_local_license();
@@ -270,69 +273,128 @@ public:
         std::optional<moonbase::license> license; // The unlocked license, or empty if locked.
     };
 
-    // Optimistic, non-blocking variant of tryLoadStoredLicense. Behaviour:
-    //   1. Loads the stored license and runs local validation synchronously on
-    //      the calling thread (typically the message thread). Plugin/app is
-    //      "unlocked" immediately if the cached token is locally valid.
-    //   2. If the token is online-activated, kicks off the online check on a
-    //      background thread. The result is marshalled back to the message
-    //      thread, applied to the bridge state, and delivered via onComplete.
-    //   3. If the bridge is destroyed while the background check is in flight,
-    //      the callback is silently dropped — the destructor invalidates the
-    //      weak reference the message-thread continuation captures.
+    // Optimistic, non-blocking variant of tryLoadStoredLicense.
     //
-    // Call from your AudioProcessor constructor to avoid blocking the host's
-    // plugin-load thread on libcurl. The grace period in licensing_options
-    // governs what happens when the API is unreachable: within grace, the
-    // optimistic local state is preserved (Tolerated); beyond grace, the
-    // bridge is locked (Unreachable).
+    // Threading: state mutation and the callback always run on the JUCE
+    // message thread, regardless of which thread invokes this method. The
+    // local load + validate is CPU-only (no JUCE state mutation) and runs on
+    // the calling thread synchronously; the resulting state is then applied
+    // via juce::MessageManager::callAsync. For online-activated tokens, the
+    // API round-trip runs on a juce::Thread and its result is also delivered
+    // through callAsync.
     //
-    // The callback runs on the JUCE message thread; it's safe to touch UI
-    // state inside it.
+    // Staleness: every call captures a generation number that is checked
+    // before any state mutation or callback fires. clearLicense() and a
+    // successful pollPendingActivation() bump the generation, as does each
+    // new tryLoadStoredLicenseAsync call. Continuations whose generation
+    // doesn't match the current one are dropped silently — both state and
+    // callback. This prevents a slow online check from resurrecting a license
+    // the user just cleared, or clobbering a freshly activated one.
+    //
+    // Lifetime: licensing_ is a shared_ptr so the background thread keeps the
+    // SDK alive even if the bridge is destroyed mid-request. A
+    // juce::WeakReference protects the message-thread continuation from
+    // touching a destroyed bridge.
+    //
+    // Within the grace period a transport failure is reported as Refreshed
+    // with the cached license (effectively "still valid"); beyond grace it
+    // becomes Unreachable and the bridge is locked.
     void tryLoadStoredLicenseAsync(std::function<void(AsyncValidationResult)> onComplete = {})
     {
+        const auto generation = ++validationGeneration_;
+        juce::WeakReference<MoonbaseUnlockStatus> safeThis(this);
+
+        // Marshals state mutation + callback to the message thread, gated on
+        // the captured generation matching the current one. Stale calls do
+        // nothing and silently drop the callback.
+        auto deliver =
+            [safeThis, generation](AsyncValidationResult result,
+                                   std::function<void(AsyncValidationResult)> cb,
+                                   bool persistRefreshed) mutable
+            {
+                juce::MessageManager::callAsync(
+                    [safeThis, generation, result = std::move(result),
+                     cb = std::move(cb), persistRefreshed]() mutable
+                    {
+                        auto* self = safeThis.get();
+                        if (self == nullptr
+                            || generation != self->validationGeneration_.load())
+                            return;
+
+                        switch (result.outcome)
+                        {
+                        case AsyncValidationOutcome::Refreshed:
+                            if (result.license)
+                            {
+                                if (persistRefreshed)
+                                {
+                                    try { self->licensing_->store().store_local_license(*result.license); }
+                                    catch (const moonbase::storage_error&) {}
+                                }
+                                self->setUnlocked(*result.license);
+                            }
+                            break;
+                        case AsyncValidationOutcome::OfflineToken:
+                            if (result.license)
+                                self->setUnlocked(*result.license);
+                            break;
+                        case AsyncValidationOutcome::NoStoredLicense:
+                        case AsyncValidationOutcome::LocalInvalid:
+                        case AsyncValidationOutcome::LockedInvalid:
+                        case AsyncValidationOutcome::LockedExpired:
+                        case AsyncValidationOutcome::Unreachable:
+                            self->setUnlocked(std::nullopt);
+                            break;
+                        }
+
+                        if (cb)
+                            cb(std::move(result));
+                    });
+            };
+
+        // Step 1: synchronous local load + validate (CPU only, no JUCE state).
         std::optional<moonbase::license> local;
         try
         {
             auto stored = licensing_->store().load_local_license();
             if (!stored)
             {
-                setUnlocked(std::nullopt);
-                if (onComplete)
-                    onComplete({AsyncValidationOutcome::NoStoredLicense, std::nullopt});
+                deliver({AsyncValidationOutcome::NoStoredLicense, std::nullopt},
+                        std::move(onComplete), false);
                 return;
             }
-
             local = licensing_->validate_token_local(stored->token);
-            setUnlocked(*local);
         }
         catch (const std::exception&)
         {
-            setUnlocked(std::nullopt);
-            if (onComplete)
-                onComplete({AsyncValidationOutcome::LocalInvalid, std::nullopt});
+            deliver({AsyncValidationOutcome::LocalInvalid, std::nullopt},
+                    std::move(onComplete), false);
             return;
         }
 
         if (local->method == moonbase::activation_method::offline)
         {
-            if (onComplete)
-                onComplete({AsyncValidationOutcome::OfflineToken, local});
+            deliver({AsyncValidationOutcome::OfflineToken, local},
+                    std::move(onComplete), false);
             return;
         }
 
-        // Capture by value: the licensing instance survives bridge destruction
-        // via shared_ptr, and the weak reference protects the message-thread
-        // continuation from touching a destroyed bridge.
+        // Optimistic unlock from the local check, marshalled to the message
+        // thread (no callback yet). The final state may override this once
+        // the online check resolves.
+        deliver({AsyncValidationOutcome::Refreshed, *local}, {}, false);
+
+        // Step 2: online check on a background thread.
         auto licensingHandle = licensing_;
         const auto token = local->token;
-        juce::WeakReference<MoonbaseUnlockStatus> safeThis(this);
         auto cb = std::move(onComplete);
 
         juce::Thread::launch(
-            [licensingHandle, token, safeThis, cb = std::move(cb)]() mutable
+            [licensingHandle, token, deliver = std::move(deliver),
+             cb = std::move(cb)]() mutable
             {
                 AsyncValidationResult result{AsyncValidationOutcome::Refreshed, std::nullopt};
+                bool persistRefreshed = true;
                 try
                 {
                     auto refreshed = licensingHandle->validate_token_online(token);
@@ -341,50 +403,22 @@ public:
                 catch (const moonbase::license_invalid_error&)
                 {
                     result = {AsyncValidationOutcome::LockedInvalid, std::nullopt};
+                    persistRefreshed = false;
                 }
                 catch (const moonbase::license_expired_error&)
                 {
                     result = {AsyncValidationOutcome::LockedExpired, std::nullopt};
+                    persistRefreshed = false;
                 }
                 catch (const std::exception&)
                 {
                     // validate_token_online only throws non-license exceptions
-                    // when grace has elapsed, so this is the past-grace case.
+                    // when grace has elapsed.
                     result = {AsyncValidationOutcome::Unreachable, std::nullopt};
+                    persistRefreshed = false;
                 }
 
-                juce::MessageManager::callAsync(
-                    [safeThis, result = std::move(result), cb = std::move(cb)]() mutable
-                    {
-                        auto* self = safeThis.get();
-                        if (self == nullptr)
-                            return;
-
-                        switch (result.outcome)
-                        {
-                        case AsyncValidationOutcome::Refreshed:
-                            if (result.license)
-                            {
-                                try { self->licensing_->store().store_local_license(*result.license); }
-                                catch (const moonbase::storage_error&) {}
-                                self->setUnlocked(*result.license);
-                            }
-                            break;
-                        case AsyncValidationOutcome::LockedInvalid:
-                        case AsyncValidationOutcome::LockedExpired:
-                        case AsyncValidationOutcome::Unreachable:
-                            self->setUnlocked(std::nullopt);
-                            break;
-                        case AsyncValidationOutcome::NoStoredLicense:
-                        case AsyncValidationOutcome::LocalInvalid:
-                        case AsyncValidationOutcome::OfflineToken:
-                            // Unreachable here; handled synchronously above.
-                            break;
-                        }
-
-                        if (cb)
-                            cb(std::move(result));
-                    });
+                deliver(std::move(result), std::move(cb), persistRefreshed);
             });
     }
 
@@ -415,6 +449,8 @@ public:
         if (!fulfilled)
             return false;
 
+        ++validationGeneration_; // invalidate any in-flight async revalidation
+
         try
         {
             licensing_->store().store_local_license(*fulfilled);
@@ -434,6 +470,8 @@ public:
     // Drops the local license and any pending activation request.
     void clearLicense()
     {
+        ++validationGeneration_; // invalidate any in-flight async revalidation
+
         try { licensing_->store().delete_local_license(); }
         catch (const moonbase::storage_error&) {}
 
@@ -601,6 +639,12 @@ private:
     std::optional<moonbase::activation_request> pendingRequest_;
 
     std::shared_ptr<moonbase::licensing> licensing_;
+
+    // Bumped by every state-mutating entry point (tryLoadStoredLicense*,
+    // pollPendingActivation on success, clearLicense). Async continuations
+    // capture the value at request time and skip both state mutation and
+    // callback if the value has changed by the time they run.
+    std::atomic<std::uint64_t> validationGeneration_{0};
 
     JUCE_DECLARE_WEAK_REFERENCEABLE(MoonbaseUnlockStatus)
 };
