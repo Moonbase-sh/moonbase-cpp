@@ -157,7 +157,41 @@ void timerCallback() override
 `pollPendingActivation()` is non-blocking. The poll cadence is up to you;
 once a second is plenty for a UI-driven flow.
 
-To revoke locally: `unlockStatus.clearLicense();`
+## Deactivating
+
+Two paths, depending on whether you want to free the seat server-side:
+
+- `revokeActivation()` / `revokeActivationAsync(callback)` — calls the
+  Moonbase backend to release this device's activation and then clears local
+  state. Use this for "Deactivate" / "Sign out" buttons in your UI so the
+  user can re-activate elsewhere without burning a seat.
+- `clearLicense()` — local-only forget. Use it for offline or trial licenses
+  (which can't be revoked), or when you just want this device to stop
+  recognising the license without telling the server.
+
+`revokeActivationAsync` is recommended for UI: the network call runs on a
+`juce::Thread` and the callback is delivered on the message thread, with the
+same generation-gating as `tryLoadStoredLicenseAsync` (a slow revoke can't
+clobber a freshly activated license).
+
+The callback receives a `RevokeOutcome`:
+
+| Outcome | Meaning |
+| --- | --- |
+| `Revoked` | Seat freed server-side (or token was already gone). Bridge is now locked. |
+| `NoLicense` | No license loaded — nothing to do. |
+| `NotRevokable` | Token is offline-activated or a trial. Bridge state unchanged. Call `clearLicense()` if you still want a local forget. |
+| `Unreachable` | Transport failure. Bridge state unchanged so the user can retry. |
+
+```cpp
+unlockStatus.revokeActivationAsync(
+    [this](auto outcome) {
+        using O = moonbase::juce_bridge::MoonbaseUnlockStatus::RevokeOutcome;
+        if (outcome == O::NotRevokable)
+            unlockStatus.clearLicense();    // trial / offline → local-only fallback
+        repaintActivationLabel();
+    });
+```
 
 ## Gating features
 

@@ -11,6 +11,7 @@ enum class error_type {
     license_expired,
     storage_error,
     configuration_error,
+    operation_not_supported,
 };
 
 class moonbase_error : public std::runtime_error {
@@ -74,6 +75,14 @@ class storage_error : public moonbase_error {
 public:
     explicit storage_error(const std::string& message)
         : moonbase_error(error_type::storage_error, message)
+    {
+    }
+};
+
+class operation_not_supported_error : public moonbase_error {
+public:
+    explicit operation_not_supported_error(const std::string& message)
+        : moonbase_error(error_type::operation_not_supported, message)
     {
     }
 };

@@ -117,6 +117,25 @@ even when calling `validate_token_online` — the SDK never contacts the API for
 them. Use `validate_token_local` directly when you want the local-only check
 explicitly.
 
+## Revoking an Activation
+
+To free up the activation seat for the current device — typically wired to a
+"Deactivate" or "Sign out" button — call `revoke_activation` with the JWT:
+
+```cpp
+if (auto local = licensing.store().load_local_license()) {
+    licensing.revoke_activation(local->token); // server-side revoke + clears local store
+}
+```
+
+On success the SDK both tells the server to release the seat and deletes the
+matching license from the local store. Revoke is only meaningful for
+online-activated paid licenses; calling it for offline or trial tokens raises
+`operation_not_supported_error` without contacting the API. Server rejections
+(`license_invalid_error`) and transport failures (`api_error`) propagate the
+same way they do for `validate_token_online`, but with no grace-period
+fallback — revoke is a one-shot operation.
+
 ## Custom Fingerprinting and Storage
 
 ```cpp

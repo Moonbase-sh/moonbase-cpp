@@ -210,3 +210,134 @@ TEST_CASE("validate_token_online honors a custom min interval")
 
     CHECK(fixture.transport->requests.size() == 1);
 }
+
+TEST_CASE("revoke_activation refuses offline tokens without contacting the API")
+{
+    facade_fixture fixture;
+    auto claims = moonbase::tests::default_claims();
+    claims["method"] = "Offline";
+    const auto token = fixture.make_token(claims);
+
+    CHECK_THROWS_AS(fixture.instance.revoke_activation(token),
+                    operation_not_supported_error);
+    CHECK(fixture.transport->requests.empty());
+}
+
+TEST_CASE("revoke_activation refuses trial tokens without contacting the API")
+{
+    facade_fixture fixture;
+    auto claims = moonbase::tests::default_claims();
+    claims["trial"] = true;
+    const auto token = fixture.make_token(claims);
+
+    CHECK_THROWS_AS(fixture.instance.revoke_activation(token),
+                    operation_not_supported_error);
+    CHECK(fixture.transport->requests.empty());
+}
+
+TEST_CASE("revoke_activation calls the API and clears the matching local license")
+{
+    facade_fixture fixture;
+    const auto token = fixture.make_token(moonbase::tests::default_claims());
+    const auto stored = fixture.instance.validator().validate_token(token);
+    fixture.instance.store().store_local_license(stored);
+
+    fixture.transport->responses.push_back(http_response{200, {}, ""});
+
+    fixture.instance.revoke_activation(token);
+
+    REQUIRE(fixture.transport->requests.size() == 1);
+    CHECK(fixture.transport->requests.front().url.find(
+              "/api/client/licenses/demo-app/revoke") != std::string::npos);
+    CHECK_FALSE(fixture.instance.store().load_local_license().has_value());
+}
+
+TEST_CASE("revoke_activation leaves an unrelated stored license alone")
+{
+    facade_fixture fixture;
+
+    auto stored_claims = moonbase::tests::default_claims();
+    stored_claims["id"] = "activation-A";
+    const auto stored_token = fixture.make_token(stored_claims);
+    const auto stored_license =
+        fixture.instance.validator().validate_token(stored_token);
+    fixture.instance.store().store_local_license(stored_license);
+
+    auto revoke_claims = moonbase::tests::default_claims();
+    revoke_claims["id"] = "activation-B";
+    const auto revoke_token = fixture.make_token(revoke_claims);
+
+    fixture.transport->responses.push_back(http_response{200, {}, ""});
+
+    fixture.instance.revoke_activation(revoke_token);
+
+    REQUIRE(fixture.transport->requests.size() == 1);
+    const auto remaining = fixture.instance.store().load_local_license();
+    REQUIRE(remaining.has_value());
+    CHECK(remaining->activation_id == "activation-A");
+}
+
+TEST_CASE("revoke_activation still POSTs when the local token has expired")
+{
+    facade_fixture fixture;
+    auto claims = moonbase::tests::default_claims();
+    claims["exp"] = moonbase::tests::now_seconds() - 60; // already past
+    const auto token = fixture.make_token(claims);
+
+    fixture.transport->responses.push_back(http_response{200, {}, ""});
+
+    // Must not throw license_expired_error; the seat is still allocated
+    // server-side and the request should reach the API.
+    fixture.instance.revoke_activation(token);
+
+    REQUIRE(fixture.transport->requests.size() == 1);
+    CHECK(fixture.transport->requests.front().url.find(
+              "/api/client/licenses/demo-app/revoke") != std::string::npos);
+}
+
+namespace {
+
+class throwing_license_store : public license_store {
+public:
+    std::optional<license> load_local_license() override
+    {
+        throw storage_error("load failed");
+    }
+
+    void store_local_license(const license&) override {}
+
+    void delete_local_license() override
+    {
+        throw storage_error("delete failed");
+    }
+};
+
+} // namespace
+
+TEST_CASE("revoke_activation succeeds even if local store cleanup fails")
+{
+    auto fingerprints =
+        std::make_shared<static_fingerprint_provider>("Test Device", "device-id");
+    auto transport = std::make_shared<moonbase::tests::recording_transport>();
+    auto store = std::make_shared<throwing_license_store>();
+
+    moonbase::tests::generated_key key = moonbase::tests::generate_key();
+    licensing_options options;
+    options.endpoint = "https://demo.moonbase.sh";
+    options.product_id = "demo-app";
+    options.public_key = key.public_pem;
+    options.account_id = "tenant-1";
+
+    licensing instance(std::move(options), store, fingerprints, transport);
+
+    const auto token = moonbase::tests::make_token(
+        key.key.get(), moonbase::tests::default_claims());
+    transport->responses.push_back(http_response{200, {}, ""});
+
+    // The server-side seat is freed the moment the API returns 200 — a local
+    // storage failure must not turn that into a thrown error that callers
+    // would interpret as "retry against a token the server no longer knows".
+    instance.revoke_activation(token);
+
+    REQUIRE(transport->requests.size() == 1);
+}
