@@ -7,5 +7,4 @@ CTestTestfile.cmake
 _deps/
 license.mb
 node_modules/
-moonbase-cpp-*.tar.gz
 CMakeLists.txt.bak

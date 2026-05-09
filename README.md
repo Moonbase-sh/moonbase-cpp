@@ -99,4 +99,4 @@ Each release:
 
 - Bumps `VERSION` in `CMakeLists.txt` (which flows into `MOONBASE_CPP_VERSION` and the `User-Agent: moonbase-cpp/<version>` header)
 - Updates `CHANGELOG.md`
-- Tags the commit and creates a GitHub Release with a `moonbase-cpp-<version>.tar.gz` source tarball attached
+- Tags the commit and creates a GitHub Release (with the auto-generated source archives at `https://github.com/<owner>/<repo>/archive/refs/tags/v<version>.tar.gz`)
