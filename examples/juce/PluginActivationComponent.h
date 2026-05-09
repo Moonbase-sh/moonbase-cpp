@@ -28,7 +28,10 @@ public:
         addAndMakeVisible(deactivateButton_);
         deactivateButton_.onClick = [this] { unlockStatus_.clearLicense(); refreshLabel(); };
 
-        unlockStatus_.tryLoadStoredLicense();
+        // Async load: never blocks the message thread on libcurl. The label is
+        // updated optimistically from the local-validation result, then again
+        // from the message-thread callback once the online check resolves.
+        unlockStatus_.tryLoadStoredLicenseAsync([this](auto) { refreshLabel(); });
         refreshLabel();
 
         setSize(480, 160);

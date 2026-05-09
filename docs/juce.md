@@ -85,10 +85,46 @@ for them.
 
 The call is synchronous. Inside the throttle window it's a single timestamp
 comparison and returns immediately, but the first call past the window blocks
-on libcurl. If you can't tolerate that on the message thread, either run
-`tryLoadStoredLicense()` from a background thread on startup or pass
-`tryLoadStoredLicense(/*online=*/false)` to skip the network entirely (and
-schedule your own background re-validation later).
+on libcurl. **For real plugins, prefer the async variant below** — DAWs will
+flag the plugin as unresponsive if `AudioProcessor`'s constructor blocks on a
+network call.
+
+### Async (recommended for plugins)
+
+```cpp
+unlockStatus.tryLoadStoredLicenseAsync(
+    [this](auto result) {
+        // Runs on the JUCE message thread once the online check resolves.
+        // The bridge has already updated its unlock state — just refresh UI.
+        repaintActivationLabel();
+    });
+```
+
+Behaviour:
+
+1. Loads the stored license and runs **local validation synchronously** on
+   the calling thread. The plugin/app is "unlocked" immediately if the
+   cached token is locally valid — no message-thread blocking.
+2. For online-activated tokens, kicks off `validate_token_online` on a
+   background thread.
+3. The result is marshalled back to the message thread, applied to the
+   bridge's unlock state, and delivered to your callback.
+4. If the bridge is destroyed while the check is in flight (e.g. the plugin
+   is closed mid-request), the callback is silently dropped — the bridge's
+   `juce::WeakReference` invalidates the message-thread continuation.
+
+The callback receives an `AsyncValidationResult` whose `outcome` member is one
+of: `NoStoredLicense`, `LocalInvalid`, `OfflineToken`, `Refreshed`,
+`LockedInvalid`, `LockedExpired`, `Unreachable`. The bridge has already
+updated its unlock state by the time the callback fires — checking
+`isMoonbaseUnlocked()` is usually all you need; the outcome is there if you
+want to show a more specific UI message ("server unreachable" vs. "license
+revoked").
+
+Within the grace period a transport failure is reported as `Refreshed` with
+the cached license — the call effectively succeeded, falling back to the
+locally trusted copy. Beyond grace, a transport failure becomes `Unreachable`
+and the bridge transitions to locked.
 
 ## Activation flow
 
