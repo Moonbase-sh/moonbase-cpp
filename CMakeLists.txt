@@ -13,6 +13,8 @@ include(CMakePackageConfigHelpers)
 
 option(MOONBASE_BUILD_TESTS "Build Moonbase C++ SDK tests" ON)
 option(MOONBASE_BUILD_EXAMPLES "Build Moonbase C++ SDK examples" ON)
+option(MOONBASE_BUILD_JUCE_EXAMPLE
+    "Build the JUCE bridge example (fetches JUCE; off by default)" OFF)
 
 find_package(CURL REQUIRED)
 find_package(OpenSSL REQUIRED)
@@ -59,6 +61,14 @@ target_compile_definitions(moonbase_licensing
 if(MOONBASE_BUILD_EXAMPLES)
     add_executable(moonbase_activation_example examples/activation.cpp)
     target_link_libraries(moonbase_activation_example PRIVATE moonbase::licensing)
+endif()
+
+if(MOONBASE_BUILD_JUCE_EXAMPLE)
+    enable_language(C)
+    if(APPLE)
+        enable_language(OBJC OBJCXX)
+    endif()
+    add_subdirectory(examples/juce)
 endif()
 
 if(MOONBASE_BUILD_TESTS)

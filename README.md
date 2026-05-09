@@ -67,6 +67,23 @@ from platform identity parameters such as SMBIOS fields on Windows,
 `fingerprint_provider` when you need an exact legacy fingerprint or any other
 application-specific device ID.
 
+## JUCE Plugins
+
+For JUCE-based plugins and applications, [`docs/juce.md`](docs/juce.md) walks
+through a drop-in bridge that wires Moonbase activation into
+`juce::OnlineUnlockStatus`, sources the device fingerprint from JUCE's
+`SystemStats` helpers, and populates activation metadata with host/system
+context (DAW, plugin format, OS, CPU, JUCE version). The reference code
+lives under [`examples/juce/`](examples/juce/) and ships with a runnable
+standalone app:
+
+```bash
+cmake -B build -DMOONBASE_BUILD_JUCE_EXAMPLE=ON
+cmake --build build --target MoonbaseJuceExample
+```
+
+The flag is opt-in — JUCE is fetched and compiled only when it's set.
+
 ## Live Tests
 
 Unit tests do not hit the network. Live API tests are opt-in:
