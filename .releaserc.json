@@ -1,0 +1,38 @@
+{
+  "branches": ["main"],
+  "plugins": [
+    "@semantic-release/commit-analyzer",
+    "@semantic-release/release-notes-generator",
+    [
+      "@semantic-release/changelog",
+      {
+        "changelogFile": "CHANGELOG.md"
+      }
+    ],
+    [
+      "@semantic-release/exec",
+      {
+        "prepareCmd": "scripts/bump-version.sh ${nextRelease.version}",
+        "publishCmd": "git archive --format=tar.gz --prefix=moonbase-cpp-${nextRelease.version}/ -o moonbase-cpp-${nextRelease.version}.tar.gz HEAD"
+      }
+    ],
+    [
+      "@semantic-release/git",
+      {
+        "assets": ["CHANGELOG.md", "CMakeLists.txt"],
+        "message": "chore(release): ${nextRelease.version} [skip ci]\n\n${nextRelease.notes}"
+      }
+    ],
+    [
+      "@semantic-release/github",
+      {
+        "assets": [
+          {
+            "path": "moonbase-cpp-*.tar.gz",
+            "label": "Source tarball (moonbase-cpp-${nextRelease.version}.tar.gz)"
+          }
+        ]
+      }
+    ]
+  ]
+}
