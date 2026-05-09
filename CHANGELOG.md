@@ -1,3 +1,10 @@
+# [1.1.0](https://github.com/Moonbase-sh/moonbase-cpp/compare/v1.0.1...v1.1.0) (2026-05-09)
+
+
+### Features
+
+* add JUCE integration bridge with runnable example ([#4](https://github.com/Moonbase-sh/moonbase-cpp/issues/4)) ([b62c506](https://github.com/Moonbase-sh/moonbase-cpp/commit/b62c506b1ae879251f8e7e99854e298e2422f3dd))
+
 ## [1.0.1](https://github.com/Moonbase-sh/moonbase-cpp/compare/v1.0.0...v1.0.1) (2026-05-09)
 
 
