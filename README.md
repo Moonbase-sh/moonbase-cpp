@@ -160,13 +160,40 @@ application-specific device ID.
 
 ## JUCE Plugins
 
-For JUCE-based plugins and applications, [`docs/juce.md`](docs/juce.md) walks
-through a drop-in bridge that wires Moonbase activation into
+For JUCE-based plugins and applications, the SDK ships a drop-in bridge
+([`docs/juce.md`](docs/juce.md)) that wires Moonbase activation into
 `juce::OnlineUnlockStatus`, sources the device fingerprint from JUCE's
 `SystemStats` helpers, and populates activation metadata with host/system
-context (DAW, plugin format, OS, CPU, JUCE version). The reference code
-lives under [`examples/juce/`](examples/juce/) and ships with a runnable
-standalone app:
+context (DAW, plugin format, OS, CPU, JUCE version). The bridge header lives
+at [`examples/juce/MoonbaseJuceBridge.h`](examples/juce/MoonbaseJuceBridge.h)
+and is copy-pasteable into any JUCE project.
+
+### Reference implementation: HALO
+
+[**HALO by Corino**](https://github.com/Moonbase-sh/corino-halo) is a JUCE 8
+standalone GUI application built specifically as a reference implementation
+of this SDK. It's a saturator-styled app that doesn't actually process
+audio — the entire point is the license-gate workflow around it:
+
+- Startup runs a synchronous local JWT check, then re-validates against the
+  Moonbase API on a background thread via `tryLoadStoredLicenseAsync`.
+- Browser activation handshake with 1-second `juce::Timer` polling.
+- "Sign out" menu item wired to `revokeActivationAsync` with a graceful
+  `NotRevokable` fallback to a local-only forget.
+- `file_license_store` persisted under the platform's per-user app data
+  directory.
+- GitHub Actions release pipeline that builds on macOS + Windows and
+  publishes binaries straight to a Moonbase tenant.
+
+HALO vendors the bridge header verbatim from this repo and consumes
+`moonbase::licensing` via `FetchContent` — see
+[`src/license/HaloLicenseBridge.cpp`](https://github.com/Moonbase-sh/corino-halo/blob/main/src/license/HaloLicenseBridge.cpp)
+and its [`CMakeLists.txt`](https://github.com/Moonbase-sh/corino-halo/blob/main/CMakeLists.txt)
+for the full wiring.
+
+### Building the in-repo example
+
+A smaller standalone example also ships in this repository:
 
 ```bash
 cmake -B build -DMOONBASE_BUILD_JUCE_EXAMPLE=ON
