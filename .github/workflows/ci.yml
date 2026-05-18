@@ -26,11 +26,11 @@ jobs:
         if: runner.os == 'Linux'
         run: |
           sudo apt-get update
-          sudo apt-get install -y libcurl4-openssl-dev libssl-dev
+          sudo apt-get install -y libcurl4-openssl-dev libssl-dev nlohmann-json3-dev
 
       - name: Install dependencies (macOS)
         if: runner.os == 'macOS'
-        run: brew install openssl@3
+        run: brew install openssl@3 nlohmann-json
 
       - name: Install OpenSSL (Windows)
         if: runner.os == 'Windows'
@@ -42,7 +42,7 @@ jobs:
         if: runner.os == 'Windows'
         shell: bash
         run: |
-          "$VCPKG_INSTALLATION_ROOT/vcpkg" install --triplet x64-windows curl
+          "$VCPKG_INSTALLATION_ROOT/vcpkg" install --triplet x64-windows curl nlohmann-json
 
       - name: Configure (Ubuntu)
         if: runner.os == 'Linux'
@@ -69,3 +69,32 @@ jobs:
 
       - name: Test
         run: ctest --test-dir build --output-on-failure -C Release
+
+      - name: Install package
+        run: cmake --install build --prefix "${{ github.workspace }}/install" --config Release
+
+      - name: Configure consumer smoke (Ubuntu)
+        if: runner.os == 'Linux'
+        run: |
+          cmake -S tests/consumer_smoke -B consumer-build \
+            -DCMAKE_PREFIX_PATH="${{ github.workspace }}/install"
+
+      - name: Configure consumer smoke (macOS)
+        if: runner.os == 'macOS'
+        run: |
+          cmake -S tests/consumer_smoke -B consumer-build \
+            -DCMAKE_PREFIX_PATH="${{ github.workspace }}/install" \
+            -DOPENSSL_ROOT_DIR="$(brew --prefix openssl@3)"
+
+      - name: Configure consumer smoke (Windows)
+        if: runner.os == 'Windows'
+        shell: bash
+        run: |
+          cmake -S tests/consumer_smoke -B consumer-build \
+            -DCMAKE_TOOLCHAIN_FILE="$VCPKG_INSTALLATION_ROOT/scripts/buildsystems/vcpkg.cmake" \
+            -DVCPKG_TARGET_TRIPLET=x64-windows \
+            -DCMAKE_PREFIX_PATH="${{ github.workspace }}/install" \
+            -DOPENSSL_ROOT_DIR="C:/Program Files/OpenSSL"
+
+      - name: Build consumer smoke
+        run: cmake --build consumer-build --config Release

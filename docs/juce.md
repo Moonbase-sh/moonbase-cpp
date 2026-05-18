@@ -307,8 +307,8 @@ through the existing `PropertiesFile` you used for the JUCE flow.
 
 ## CMake note
 
-The SDK's standard build (`MOONBASE_BUILD_EXAMPLES=ON`) does not pull in
-JUCE — only the small `examples/activation.cpp` is compiled. JUCE is only
+The SDK's top-level example build (`MOONBASE_BUILD_EXAMPLES=ON`) does not pull
+in JUCE — only the small `examples/activation.cpp` is compiled. JUCE is only
 fetched when you opt in with `-DMOONBASE_BUILD_JUCE_EXAMPLE=ON` (see
 above), or when you integrate `MoonbaseJuceBridge.h` into your own
 JUCE/Projucer/CMake project alongside `target_link_libraries(your_target

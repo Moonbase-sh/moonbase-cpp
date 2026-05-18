@@ -1,5 +1,6 @@
 #include <doctest/doctest.h>
 
+#include "moonbase/default_fingerprint.hpp"
 #include "moonbase/fingerprint.hpp"
 
 using namespace moonbase;

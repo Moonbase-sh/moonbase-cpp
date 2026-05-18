@@ -11,8 +11,14 @@ project(moonbase_cpp
 include(GNUInstallDirs)
 include(CMakePackageConfigHelpers)
 
-option(MOONBASE_BUILD_TESTS "Build Moonbase C++ SDK tests" ON)
-option(MOONBASE_BUILD_EXAMPLES "Build Moonbase C++ SDK examples" ON)
+if(CMAKE_SOURCE_DIR STREQUAL PROJECT_SOURCE_DIR)
+    set(MOONBASE_IS_TOP_LEVEL ON)
+else()
+    set(MOONBASE_IS_TOP_LEVEL OFF)
+endif()
+
+option(MOONBASE_BUILD_TESTS "Build Moonbase C++ SDK tests" ${MOONBASE_IS_TOP_LEVEL})
+option(MOONBASE_BUILD_EXAMPLES "Build Moonbase C++ SDK examples" ${MOONBASE_IS_TOP_LEVEL})
 option(MOONBASE_BUILD_JUCE_EXAMPLE
     "Build the JUCE bridge example (fetches JUCE; off by default)" OFF)
 
@@ -90,6 +96,7 @@ if(MOONBASE_BUILD_TESTS)
         tests/main.cpp
         tests/client_tests.cpp
         tests/fingerprint_tests.cpp
+        tests/header_smoke_tests.cpp
         tests/licensing_tests.cpp
         tests/store_tests.cpp
         tests/validator_tests.cpp

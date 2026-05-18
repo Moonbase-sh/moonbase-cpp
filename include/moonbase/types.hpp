@@ -3,23 +3,13 @@
 #include <chrono>
 #include <map>
 #include <optional>
-#include <stdexcept>
 #include <string>
 #include <vector>
 
 #include <nlohmann/json.hpp>
 
 #include "moonbase/detail/time.hpp"
-
-// GCC predefines `linux` and `unix` as `1` on the respective platforms, which
-// would mangle the `platform` enumerators below. Drop the legacy macros; modern
-// code should use `__linux__` / `__unix__` instead.
-#ifdef linux
-#undef linux
-#endif
-#ifdef unix
-#undef unix
-#endif
+#include "moonbase/errors.hpp"
 
 namespace moonbase {
 
@@ -31,7 +21,7 @@ enum class activation_method {
 enum class platform {
     unknown,
     windows,
-    linux,
+    linux_os,
     mac,
 };
 
@@ -54,7 +44,7 @@ inline activation_method activation_method_from_string(const std::string& value)
     if (value == "Offline" || value == "offline") {
         return activation_method::offline;
     }
-    throw std::runtime_error("Unknown activation method: " + value);
+    throw license_invalid_error("Unknown activation method: " + value);
 }
 
 inline std::string to_string(platform value)
@@ -62,7 +52,7 @@ inline std::string to_string(platform value)
     switch (value) {
         case platform::windows:
             return "Windows";
-        case platform::linux:
+        case platform::linux_os:
             return "Linux";
         case platform::mac:
             return "Mac";
@@ -79,7 +69,7 @@ inline platform current_platform()
 #elif defined(__APPLE__)
     return platform::mac;
 #elif defined(__linux__)
-    return platform::linux;
+    return platform::linux_os;
 #else
     return platform::unknown;
 #endif
@@ -129,6 +119,8 @@ struct licensing_options {
     platform target_platform = current_platform();
     std::optional<std::string> application_version;
     std::map<std::string, std::string> metadata;
+    std::chrono::milliseconds http_connect_timeout{std::chrono::seconds{10}};
+    std::chrono::milliseconds http_request_timeout{std::chrono::seconds{30}};
     std::chrono::seconds online_validation_grace_period{std::chrono::hours(24 * 7)};
     std::chrono::seconds online_validation_min_interval{std::chrono::minutes(5)};
 };

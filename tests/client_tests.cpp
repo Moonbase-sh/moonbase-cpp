@@ -1,5 +1,6 @@
 #include <doctest/doctest.h>
 
+#include <chrono>
 #include <deque>
 #include <memory>
 
@@ -41,6 +42,8 @@ struct client_fixture {
         options.target_platform = platform::mac;
         options.application_version = "1.2.3";
         options.metadata = {{"channel", "test"}};
+        options.http_connect_timeout = std::chrono::milliseconds{1234};
+        options.http_request_timeout = std::chrono::milliseconds{5678};
         return options;
     }
 
@@ -79,6 +82,8 @@ TEST_CASE("request_activation posts device information and parses response")
     CHECK(request.headers.at("Content-Type") == "application/json");
     CHECK(request.headers.at("x-mb-client") == "moonbase-cpp");
     CHECK(request.headers.at("User-Agent").find("moonbase-cpp/") == 0);
+    CHECK(request.connect_timeout == std::chrono::milliseconds{1234});
+    CHECK(request.request_timeout == std::chrono::milliseconds{5678});
 
     const auto body = nlohmann::json::parse(request.body);
     CHECK(body.at("deviceName") == "Test Device");
@@ -107,6 +112,8 @@ TEST_CASE("get_requested_activation returns nullopt while pending or missing")
     CHECK_FALSE(fixture.client.get_requested_activation(request).has_value());
     REQUIRE(fixture.transport->requests.size() == 2);
     CHECK(fixture.transport->requests[0].method == "GET");
+    CHECK(fixture.transport->requests[0].connect_timeout == std::chrono::milliseconds{1234});
+    CHECK(fixture.transport->requests[0].request_timeout == std::chrono::milliseconds{5678});
 }
 
 TEST_CASE("get_requested_activation validates fulfilled JWT response")
@@ -157,6 +164,8 @@ TEST_CASE("validate_token_online posts the JWT and parses the refreshed response
     CHECK(request.url.find("meta%5Bchannel%5D=test") != std::string::npos);
     CHECK(request.headers.at("Content-Type") == "text/plain");
     CHECK(request.headers.at("x-mb-client") == "moonbase-cpp");
+    CHECK(request.connect_timeout == std::chrono::milliseconds{1234});
+    CHECK(request.request_timeout == std::chrono::milliseconds{5678});
     CHECK(request.body == "original.jwt.token");
 }
 
@@ -207,6 +216,8 @@ TEST_CASE("revoke_activation posts the JWT to the revoke endpoint")
     CHECK(request.url.find("meta%5Bchannel%5D=test") != std::string::npos);
     CHECK(request.headers.at("Content-Type") == "text/plain");
     CHECK(request.headers.at("x-mb-client") == "moonbase-cpp");
+    CHECK(request.connect_timeout == std::chrono::milliseconds{1234});
+    CHECK(request.request_timeout == std::chrono::milliseconds{5678});
     CHECK(request.body == "original.jwt.token");
 }
 
