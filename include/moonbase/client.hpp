@@ -166,6 +166,8 @@ public:
         request.method = "POST";
         request.url = url;
         request.headers = detail::default_headers("application/json");
+        request.connect_timeout = options_.http_connect_timeout;
+        request.request_timeout = options_.http_request_timeout;
         request.body = payload.dump();
 
         const auto response = transport_->send(request);
@@ -192,6 +194,8 @@ public:
         request.method = "POST";
         request.url = url;
         request.headers = detail::default_headers("text/plain");
+        request.connect_timeout = options_.http_connect_timeout;
+        request.request_timeout = options_.http_request_timeout;
         request.body = std::string(token);
 
         const auto response = transport_->send(request);
@@ -211,6 +215,8 @@ public:
         request.method = "POST";
         request.url = url;
         request.headers = detail::default_headers("text/plain");
+        request.connect_timeout = options_.http_connect_timeout;
+        request.request_timeout = options_.http_request_timeout;
         request.body = std::string(token);
 
         const auto response = transport_->send(request);
@@ -226,6 +232,8 @@ public:
         request.method = "GET";
         request.url = activation.request_url;
         request.headers = detail::default_headers();
+        request.connect_timeout = options_.http_connect_timeout;
+        request.request_timeout = options_.http_request_timeout;
 
         const auto response = transport_->send(request);
         if (response.status_code == 204 || response.status_code == 404) {

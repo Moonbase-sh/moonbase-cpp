@@ -3,6 +3,7 @@
 #include <chrono>
 #include <memory>
 
+#include "moonbase/detail/time.hpp"
 #include "moonbase/fingerprint.hpp"
 #include "moonbase/validator.hpp"
 
@@ -83,6 +84,31 @@ TEST_CASE("validated timestamp can fall back to legacy ver claim")
     CHECK(moonbase::detail::format_iso8601_utc(result.validated_at) == "2026-05-08T12:34:56Z");
 }
 
+TEST_CASE("strict UTC timestamp parser accepts only explicit UTC timestamps")
+{
+    CHECK(
+        moonbase::detail::format_iso8601_utc(
+            moonbase::detail::parse_iso8601_utc("2026-05-08T12:34:56Z")) ==
+        "2026-05-08T12:34:56Z");
+    CHECK(
+        moonbase::detail::format_iso8601_utc(
+            moonbase::detail::parse_iso8601_utc("2026-05-08T12:34:56.1234567Z")) ==
+        "2026-05-08T12:34:56Z");
+
+    CHECK_THROWS_AS(
+        (void)moonbase::detail::parse_iso8601_utc("2026-05-08T12:34:56"),
+        std::runtime_error);
+    CHECK_THROWS_AS(
+        (void)moonbase::detail::parse_iso8601_utc("2026-05-08T12:34:56+01:00"),
+        std::runtime_error);
+    CHECK_THROWS_AS(
+        (void)moonbase::detail::parse_iso8601_utc("2026-05-08T12:34:56Z trailing"),
+        std::runtime_error);
+    CHECK_THROWS_AS(
+        (void)moonbase::detail::parse_iso8601_utc("2026-02-30T12:34:56Z"),
+        std::runtime_error);
+}
+
 TEST_CASE("trial tokens use trial properties")
 {
     auto key = moonbase::tests::generate_key();
@@ -154,6 +180,34 @@ TEST_CASE("invalid JWTs are rejected")
         claims["exp"] = moonbase::tests::now_seconds() - 10;
         const auto token = moonbase::tests::make_token(key.key.get(), claims);
         CHECK_THROWS_AS((void)make_validator(key.public_pem).validate_token(token), license_expired_error);
+    }
+
+    SUBCASE("unknown activation method")
+    {
+        auto claims = moonbase::tests::default_claims();
+        claims["method"] = "Sideways";
+        const auto token = moonbase::tests::make_token(key.key.get(), claims);
+        CHECK_THROWS_AS((void)make_validator(key.public_pem).validate_token(token), license_invalid_error);
+    }
+
+    SUBCASE("malformed legacy validation timestamp")
+    {
+        auto claims = moonbase::tests::default_claims();
+        claims.erase("validated");
+        claims["ver"] = "2026-02-30T12:34:56Z";
+        const auto token = moonbase::tests::make_token(key.key.get(), claims);
+        CHECK_THROWS_AS((void)make_validator(key.public_pem).validate_token(token), license_invalid_error);
+    }
+
+    SUBCASE("malformed signature encoding")
+    {
+        const auto token = moonbase::tests::make_token(
+            key.key.get(),
+            moonbase::tests::default_claims());
+        const auto signature = token.rfind('.');
+        REQUIRE(signature != std::string::npos);
+        const auto corrupted = token.substr(0, signature + 1) + "not@base64";
+        CHECK_THROWS_AS((void)make_validator(key.public_pem).validate_token(corrupted), license_invalid_error);
     }
 
     SUBCASE("missing required claim")

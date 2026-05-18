@@ -285,7 +285,12 @@ inline std::chrono::system_clock::time_point require_validation_time(const nlohm
         return from_epoch_seconds(*epoch);
     }
     if (auto iso = optional_string(payload, "ver")) {
-        return parse_iso8601_utc(*iso);
+        try {
+            return parse_iso8601_utc(*iso);
+        } catch (const std::exception& ex) {
+            throw license_invalid_error(
+                std::string("License token validation timestamp is malformed: ") + ex.what());
+        }
     }
     throw license_invalid_error("License token is missing validation timestamp");
 }
@@ -342,10 +347,17 @@ private:
         }
 
         const auto signing_input = parts[0] + "." + parts[1];
+        std::vector<unsigned char> signature;
+        try {
+            signature = detail::base64url_decode(parts[2]);
+        } catch (const std::exception& ex) {
+            throw license_invalid_error(
+                std::string("License token signature is malformed: ") + ex.what());
+        }
         detail::verify_rs256(
             key_.get(),
             signing_input,
-            detail::base64url_decode(parts[2]));
+            signature);
 
         if (!detail::has_audience(payload, options_.product_id)) {
             throw license_invalid_error("License token audience does not match the configured product");

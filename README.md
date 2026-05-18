@@ -56,11 +56,11 @@ The build provides three options, all useful when consuming the SDK as a subproj
 
 | Option | Default | Purpose |
 | --- | --- | --- |
-| `MOONBASE_BUILD_TESTS` | `ON` | Build the doctest-based unit and live tests. |
-| `MOONBASE_BUILD_EXAMPLES` | `ON` | Build the standalone activation example under `examples/`. |
+| `MOONBASE_BUILD_TESTS` | `ON` for the top-level project, `OFF` as a subproject | Build the doctest-based unit and live tests. |
+| `MOONBASE_BUILD_EXAMPLES` | `ON` for the top-level project, `OFF` as a subproject | Build the standalone activation example under `examples/`. |
 | `MOONBASE_BUILD_JUCE_EXAMPLE` | `OFF` | Fetch JUCE and build the JUCE bridge example (see below). |
 
-Set `MOONBASE_BUILD_TESTS` and `MOONBASE_BUILD_EXAMPLES` to `OFF` when integrating via `add_subdirectory` or `FetchContent` to avoid building artifacts you don't need.
+Override `MOONBASE_BUILD_TESTS` and `MOONBASE_BUILD_EXAMPLES` explicitly when you want a subproject integration to build SDK artifacts too.
 
 ## Basic Usage
 
@@ -72,6 +72,8 @@ options.endpoint = "https://demo.moonbase.sh";
 options.product_id = "demo-app";
 options.public_key = public_key_pem;
 options.account_id = "tenant-id"; // optional issuer check
+options.http_connect_timeout = std::chrono::seconds(10);
+options.http_request_timeout = std::chrono::seconds(30);
 
 moonbase::licensing licensing(options);
 
@@ -156,7 +158,9 @@ The default fingerprint provider builds a stable, native hardware fingerprint
 from platform identity parameters such as SMBIOS fields on Windows,
 `IOPlatformUUID` on macOS, and board/BIOS/CPU fields on Linux. Use a custom
 `fingerprint_provider` when you need an exact legacy fingerprint or any other
-application-specific device ID.
+application-specific device ID. If you include narrow SDK headers instead of
+`<moonbase/moonbase.hpp>`, include `<moonbase/default_fingerprint.hpp>` for the
+native provider and `<moonbase/http_curl.hpp>` for the default CURL transport.
 
 ## JUCE Plugins
 
