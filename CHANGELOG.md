@@ -1,3 +1,15 @@
+# [3.0.0](https://github.com/Moonbase-sh/moonbase-cpp/compare/v2.2.0...v3.0.0) (2026-05-18)
+
+
+* refactor!: improve C++ SDK header hygiene ([#10](https://github.com/Moonbase-sh/moonbase-cpp/issues/10)) ([29aeb56](https://github.com/Moonbase-sh/moonbase-cpp/commit/29aeb562e99735fe5518190f802b4f624a9d679b))
+
+
+### BREAKING CHANGES
+
+* moonbase::platform::linux was renamed to moonbase::platform::linux_os.
+
+* fix: keep file lock header free of Win32 macros
+
 # [2.2.0](https://github.com/Moonbase-sh/moonbase-cpp/compare/v2.1.0...v2.2.0) (2026-05-18)
 
 
