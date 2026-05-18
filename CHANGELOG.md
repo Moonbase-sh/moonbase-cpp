@@ -1,3 +1,10 @@
+# [2.2.0](https://github.com/Moonbase-sh/moonbase-cpp/compare/v2.1.0...v2.2.0) (2026-05-18)
+
+
+### Features
+
+* deduplicate online license re-validation across plugin instances ([#11](https://github.com/Moonbase-sh/moonbase-cpp/issues/11)) ([f095246](https://github.com/Moonbase-sh/moonbase-cpp/commit/f09524609ad6cec320f457e811099b61e1b746ac))
+
 # [2.1.0](https://github.com/Moonbase-sh/moonbase-cpp/compare/v2.0.0...v2.1.0) (2026-05-09)
 
 
