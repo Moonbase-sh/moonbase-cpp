@@ -37,8 +37,11 @@ namespace moonbase::detail {
 // observe each other.
 // Windows: CRT _locking(_LK_LOCK) on a single-byte range. The range is
 // required by the API but otherwise arbitrary; all callers using this class
-// lock the same range. This intentionally avoids <windows.h> in public SDK
-// headers because store.hpp includes this detail header.
+// lock the same range. _locking accepts ranges past EOF, so we deliberately
+// do not _chsize_s the file — SetEndOfFile on a sibling handle would race
+// against the byte lock held by an earlier acquirer and surface as EACCES.
+// This intentionally avoids <windows.h> in public SDK headers because
+// store.hpp includes this detail header.
 //
 // Throws moonbase::storage_error on unrecoverable open/lock failures.
 class file_lock {
@@ -68,24 +71,6 @@ public:
                 + std::string(std::strerror(open_error)));
         }
         fd_ = fd;
-
-        const auto size_error = ::_chsize_s(fd_, lock_range_size_);
-        if (size_error != 0) {
-            ::_close(fd_);
-            fd_ = -1;
-            throw storage_error(
-                "Could not prepare license lock file: "
-                + std::string(std::strerror(size_error)));
-        }
-
-        if (::_lseek(fd_, 0, SEEK_SET) < 0) {
-            const auto err = errno;
-            ::_close(fd_);
-            fd_ = -1;
-            throw storage_error(
-                "Could not seek license lock file: "
-                + std::string(std::strerror(err)));
-        }
 
         if (::_locking(fd_, _LK_LOCK, lock_range_size_) != 0) {
             const auto err = errno;

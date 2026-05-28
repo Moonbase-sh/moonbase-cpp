@@ -19,14 +19,18 @@ license sample_license()
     value.activation_id = "activation-123";
     value.trial = false;
     value.method = activation_method::online;
-    value.licensed_product = product{"demo-app", "Demo Product", "1.2.3", {{"tier", "pro"}}};
-    value.issued_to = user{"user-123", "Jane Developer", "jane@example.com", {{"company", "Acme"}}};
+    value.licensed_product = product{
+        "demo-app", "Demo Product", "1.2.3",
+        {{"tier", "pro"}, {"regions", {"us", "eu"}}}};
+    value.issued_to = user{
+        "user-123", "Jane Developer", "jane@example.com",
+        {{"company", "Acme"}, {"roles", {"admin", "ops"}}}};
     value.issued_at = detail::parse_iso8601_utc("2026-05-08T12:00:00Z");
     value.expires_at = detail::parse_iso8601_utc("2026-06-08T12:00:00Z");
     value.validated_at = detail::parse_iso8601_utc("2026-05-08T12:30:00Z");
     value.owned_sub_product_ids = {"demo-app-pro"};
     value.subscription_id = "subscription-123";
-    value.properties = {{"seats", 3}};
+    value.properties = {{"seats", 3}, {"features", {"export", "sso"}}};
     value.token = "jwt";
     return value;
 }
@@ -43,6 +47,11 @@ TEST_CASE("memory_license_store round-trips and deletes")
     REQUIRE(loaded.has_value());
     CHECK(loaded->id == "license-123");
     CHECK(loaded->licensed_product.properties.at("tier") == "pro");
+    REQUIRE(loaded->issued_to.properties.at("roles").is_array());
+    CHECK(loaded->issued_to.properties.at("roles").size() == 2);
+    CHECK(loaded->issued_to.properties.at("roles").at(0) == "admin");
+    REQUIRE(loaded->properties.at("features").is_array());
+    CHECK(loaded->properties.at("features").at(1) == "sso");
 
     store.delete_local_license();
     CHECK_FALSE(store.load_local_license().has_value());
@@ -62,6 +71,10 @@ TEST_CASE("file_license_store round-trips and deletes")
     CHECK(loaded->id == "license-123");
     REQUIRE(loaded->expires_at.has_value());
     CHECK(detail::format_iso8601_utc(*loaded->expires_at) == "2026-06-08T12:00:00Z");
+    REQUIRE(loaded->licensed_product.properties.at("regions").is_array());
+    CHECK(loaded->licensed_product.properties.at("regions").size() == 2);
+    REQUIRE(loaded->properties.at("features").is_array());
+    CHECK(loaded->properties.at("features").at(0) == "export");
 
     store.delete_local_license();
     CHECK_FALSE(std::filesystem::exists(path));
@@ -82,25 +95,31 @@ TEST_CASE("file_license_store::lock_for_update serializes concurrent acquirers")
     std::atomic<int> max_inside{0};
     std::atomic<int> ready{0};
     std::atomic<bool> go{false};
+    std::atomic<int> worker_exceptions{0};
 
     auto runner = [&] {
-        file_license_store store(path);
-        ready.fetch_add(1);
-        while (!go.load(std::memory_order_acquire)) {
-            std::this_thread::yield();
-        }
-        auto guard = store.lock_for_update();
-        REQUIRE(guard != nullptr);
+        try {
+            file_license_store store(path);
+            ready.fetch_add(1);
+            while (!go.load(std::memory_order_acquire)) {
+                std::this_thread::yield();
+            }
+            auto guard = store.lock_for_update();
+            REQUIRE(guard != nullptr);
 
-        const int now_inside = inside.fetch_add(1, std::memory_order_acq_rel) + 1;
-        int prev = max_inside.load(std::memory_order_relaxed);
-        while (now_inside > prev
-               && !max_inside.compare_exchange_weak(prev, now_inside,
-                                                    std::memory_order_acq_rel)) {
-        }
+            const int now_inside = inside.fetch_add(1, std::memory_order_acq_rel) + 1;
+            int prev = max_inside.load(std::memory_order_relaxed);
+            while (now_inside > prev
+                   && !max_inside.compare_exchange_weak(prev, now_inside,
+                                                        std::memory_order_acq_rel)) {
+            }
 
-        std::this_thread::sleep_for(std::chrono::milliseconds(40));
-        inside.fetch_sub(1, std::memory_order_acq_rel);
+            std::this_thread::sleep_for(std::chrono::milliseconds(40));
+            inside.fetch_sub(1, std::memory_order_acq_rel);
+        } catch (...) {
+            worker_exceptions.fetch_add(1, std::memory_order_acq_rel);
+            ready.fetch_add(1);
+        }
     };
 
     std::vector<std::thread> threads;
@@ -114,6 +133,7 @@ TEST_CASE("file_license_store::lock_for_update serializes concurrent acquirers")
     go.store(true, std::memory_order_release);
     for (auto& t : threads) t.join();
 
+    CHECK(worker_exceptions.load() == 0);
     CHECK(max_inside.load() == 1);
 
     std::error_code ec;
@@ -147,37 +167,43 @@ TEST_CASE("file_license_store::lock_for_update survives delete_local_license")
     std::atomic<int> max_inside{0};
     std::atomic<int> ready{0};
     std::atomic<bool> go{false};
+    std::atomic<int> worker_exceptions{0};
 
     auto runner = [&] {
-        file_license_store store(path);
-        ready.fetch_add(1);
-        while (!go.load(std::memory_order_acquire)) {
-            std::this_thread::yield();
-        }
-        auto guard = store.lock_for_update();
-        REQUIRE(guard != nullptr);
-
-        const int now_inside = inside.fetch_add(1, std::memory_order_acq_rel) + 1;
-        int prev = max_inside.load(std::memory_order_relaxed);
-        while (now_inside > prev
-               && !max_inside.compare_exchange_weak(prev, now_inside,
-                                                    std::memory_order_acq_rel)) {
-        }
-
-        // Mutate the license file while holding the lock — alternating
-        // delete and rewrite hammers exactly the scenario where the old
-        // (license-on-itself) lock would have failed.
         try {
-            store.delete_local_license();
-        } catch (const storage_error&) {
-        }
-        std::this_thread::sleep_for(std::chrono::milliseconds(20));
-        try {
-            store.store_local_license(sample_license());
-        } catch (const storage_error&) {
-        }
+            file_license_store store(path);
+            ready.fetch_add(1);
+            while (!go.load(std::memory_order_acquire)) {
+                std::this_thread::yield();
+            }
+            auto guard = store.lock_for_update();
+            REQUIRE(guard != nullptr);
 
-        inside.fetch_sub(1, std::memory_order_acq_rel);
+            const int now_inside = inside.fetch_add(1, std::memory_order_acq_rel) + 1;
+            int prev = max_inside.load(std::memory_order_relaxed);
+            while (now_inside > prev
+                   && !max_inside.compare_exchange_weak(prev, now_inside,
+                                                        std::memory_order_acq_rel)) {
+            }
+
+            // Mutate the license file while holding the lock — alternating
+            // delete and rewrite hammers exactly the scenario where the old
+            // (license-on-itself) lock would have failed.
+            try {
+                store.delete_local_license();
+            } catch (const storage_error&) {
+            }
+            std::this_thread::sleep_for(std::chrono::milliseconds(20));
+            try {
+                store.store_local_license(sample_license());
+            } catch (const storage_error&) {
+            }
+
+            inside.fetch_sub(1, std::memory_order_acq_rel);
+        } catch (...) {
+            worker_exceptions.fetch_add(1, std::memory_order_acq_rel);
+            ready.fetch_add(1);
+        }
     };
 
     std::vector<std::thread> threads;
@@ -191,6 +217,7 @@ TEST_CASE("file_license_store::lock_for_update survives delete_local_license")
     go.store(true, std::memory_order_release);
     for (auto& t : threads) t.join();
 
+    CHECK(worker_exceptions.load() == 0);
     CHECK(max_inside.load() == 1);
 
     std::error_code ec;
