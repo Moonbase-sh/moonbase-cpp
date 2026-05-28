@@ -124,6 +124,80 @@ TEST_CASE("trial tokens use trial properties")
     CHECK(result.properties.at("days") == 14);
 }
 
+TEST_CASE("custom properties carry array values")
+{
+    // The API surface now allows array-valued custom properties (see the
+    // `array` variant added to NestedPropertyValue in moonbase.js). Those
+    // arrive in the JWT as plain JSON arrays inside each properties claim.
+    // Lock in that arrays — including arrays of objects — round-trip through
+    // validate_token for product, user, license, and trial property bags.
+    auto key = moonbase::tests::generate_key();
+
+    SUBCASE("non-trial license carries arrays in p/u/l properties")
+    {
+        auto claims = moonbase::tests::default_claims();
+        claims["p:properties"] = {
+            {"tier", "pro"},
+            {"regions", {"us", "eu", "ap"}},
+        };
+        claims["u:properties"] = {
+            {"company", "Acme"},
+            {"roles", {"admin", "ops"}},
+        };
+        claims["l:properties"] = {
+            {"seats", 3},
+            {"features", {"export", "sso"}},
+            {"contacts", nlohmann::json::array({
+                {{"name", "Jane"}, {"email", "jane@example.com"}},
+                {{"name", "John"}, {"email", "john@example.com"}},
+            })},
+        };
+
+        const auto result = make_validator(key.public_pem).validate_token(
+            moonbase::tests::make_token(key.key.get(), claims));
+
+        const auto& regions = result.licensed_product.properties.at("regions");
+        REQUIRE(regions.is_array());
+        REQUIRE(regions.size() == 3);
+        CHECK(regions.at(0) == "us");
+        CHECK(regions.at(2) == "ap");
+
+        const auto& roles = result.issued_to.properties.at("roles");
+        REQUIRE(roles.is_array());
+        REQUIRE(roles.size() == 2);
+        CHECK(roles.at(0) == "admin");
+
+        const auto& features = result.properties.at("features");
+        REQUIRE(features.is_array());
+        CHECK(features.size() == 2);
+
+        const auto& contacts = result.properties.at("contacts");
+        REQUIRE(contacts.is_array());
+        REQUIRE(contacts.size() == 2);
+        CHECK(contacts.at(1).at("email") == "john@example.com");
+    }
+
+    SUBCASE("trial license carries arrays in t:properties")
+    {
+        auto claims = moonbase::tests::default_claims();
+        claims["trial"] = "true";
+        claims.erase("l:properties");
+        claims["t:properties"] = {
+            {"days", 14},
+            {"allowed_hosts", {"localhost", "demo.example.com"}},
+        };
+
+        const auto result = make_validator(key.public_pem).validate_token(
+            moonbase::tests::make_token(key.key.get(), claims));
+
+        CHECK(result.trial);
+        const auto& hosts = result.properties.at("allowed_hosts");
+        REQUIRE(hosts.is_array());
+        REQUIRE(hosts.size() == 2);
+        CHECK(hosts.at(1) == "demo.example.com");
+    }
+}
+
 TEST_CASE("invalid JWTs are rejected")
 {
     auto key = moonbase::tests::generate_key();
