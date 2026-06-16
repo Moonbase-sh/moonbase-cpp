@@ -193,6 +193,46 @@ unlockStatus.revokeActivationAsync(
     });
 ```
 
+## Offline activation
+
+For machines without internet access, the bridge wraps Moonbase's file-based
+flow. Emit a device token ("machine file"), have the user exchange it for a
+license token, then load the token back in:
+
+```cpp
+// Step 1: write the machine file for the user to upload.
+const auto deviceToken = unlockStatus.deviceTokenContents();
+file.replaceWithText(juce::String(deviceToken)); // e.g. "MyPlugin.dt"
+
+// Step 2: load the license token the user downloaded from the portal.
+using O = moonbase::juce_bridge::MoonbaseUnlockStatus::OfflineActivationOutcome;
+if (unlockStatus.activateOffline(downloadedFile.loadFileAsString()) == O::Activated)
+    repaintActivationLabel(); // unlockStatus.isMoonbaseUnlocked() is now true
+else
+    showError("That license token is not valid for this device.");
+```
+
+The user can exchange the device token for a license token through any of:
+
+- **Moonbase's hosted portal** — `https://<tenant>.moonbase.sh/activate`.
+- **The embedded storefront on your own site** — the
+  [`activate_product`](https://moonbase.sh/docs/storefronts/embedded/#call-methods)
+  intent (`Moonbase.activate_product()`) prompts for the `.dt` and returns the
+  license token file.
+- **Your own custom flow** — drive the exchange with the Moonbase
+  [APIs and SDKs](https://moonbase.sh/docs/licensing/offline-activations/).
+
+`activateOffline` validates the token **locally only** (signature, audience,
+device fingerprint, expiry, and that it was issued via offline activation),
+persists it to the store on success, and transitions the bridge to unlocked. It
+does no network I/O, so it's safe to call synchronously on the message thread.
+Offline-activated tokens are never re-validated online and can't be revoked —
+use `clearLicense()` for a local-only forget.
+
+[`PluginActivationComponent.h`](../examples/juce/PluginActivationComponent.h)
+wires both steps to **Save machine file…** / **Load license token…** buttons
+using `juce::FileChooser`.
+
 ## Gating features
 
 ```cpp

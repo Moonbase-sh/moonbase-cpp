@@ -163,6 +163,62 @@ TEST_CASE("validate_token_online never contacts the API for offline-activated to
     CHECK(fixture.transport->requests.empty());
 }
 
+TEST_CASE("generate_device_token emits a base64 JSON descriptor of the device and product")
+{
+    facade_fixture fixture;
+
+    const auto device_token = fixture.instance.generate_device_token();
+    const auto json = nlohmann::json::parse(
+        moonbase::detail::bytes_to_string(moonbase::detail::base64_decode(device_token)));
+
+    CHECK(json.at("id").get<std::string>() == "device-id");
+    CHECK(json.at("name").get<std::string>() == "Test Device");
+    CHECK(json.at("productId").get<std::string>() == "demo-app");
+    CHECK(json.at("format").get<std::string>() == "JWT");
+
+    // No network involved when emitting the machine file.
+    CHECK(fixture.transport->requests.empty());
+}
+
+TEST_CASE("read_offline_license accepts an offline token for this device")
+{
+    facade_fixture fixture;
+    auto claims = moonbase::tests::default_claims();
+    claims["method"] = "Offline";
+    const auto token = fixture.make_token(claims);
+
+    const auto result = fixture.instance.read_offline_license(token);
+
+    CHECK(result.method == activation_method::offline);
+    CHECK(result.issued_to.email == "jane@example.com");
+    CHECK(fixture.transport->requests.empty());
+}
+
+TEST_CASE("read_offline_license rejects an online token")
+{
+    facade_fixture fixture;
+    auto claims = moonbase::tests::default_claims();
+    claims["method"] = "Online";
+    const auto token = fixture.make_token(claims);
+
+    CHECK_THROWS_AS(
+        (void)fixture.instance.read_offline_license(token),
+        license_invalid_error);
+    CHECK(fixture.transport->requests.empty());
+}
+
+TEST_CASE("read_offline_license rejects a token issued for another device")
+{
+    facade_fixture fixture;
+    auto claims = moonbase::tests::default_claims("other-device");
+    claims["method"] = "Offline";
+    const auto token = fixture.make_token(claims);
+
+    CHECK_THROWS_AS(
+        (void)fixture.instance.read_offline_license(token),
+        license_invalid_error);
+}
+
 TEST_CASE("validate_token_online runs local validation before any HTTP call")
 {
     facade_fixture fixture;

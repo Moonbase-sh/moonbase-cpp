@@ -138,6 +138,54 @@ online-activated paid licenses; calling it for offline or trial tokens raises
 same way they do for `validate_token_online`, but with no grace-period
 fallback — revoke is a one-shot operation.
 
+## Offline Activation
+
+For machines without internet access, Moonbase supports a file-based flow: the
+app emits a **device token** ("machine file"), the user exchanges it for a
+license token on the Moonbase activation page, and the app reads that token back
+in. No network is involved on the device.
+
+1. Generate the device token and write it to a file (conventionally `.dt`):
+
+   ```cpp
+   const auto device_token = licensing.generate_device_token();
+   std::ofstream("device-token.dt") << device_token;
+   ```
+
+2. The user uploads `device-token.dt` and receives a license token file (the
+   raw JWT, conventionally `license.mb`) in return. They can do this through any
+   of:
+
+   - **Moonbase's hosted portal** — `https://<your-tenant>.moonbase.sh/activate`.
+   - **The embedded storefront on your own site** — trigger the
+     [`activate_product`](https://moonbase.sh/docs/storefronts/embedded/#call-methods)
+     intent (`Moonbase.activate_product()`), which prompts for the device token
+     and hands back the license token file. The `deviceTokenFileExtension`
+     (default `.dt`) and `licenseTokenFileName` (default `license-file.mb`)
+     config options control the file types involved.
+   - **Your own custom flow** — drive the exchange yourself with the Moonbase
+     [APIs and SDKs](https://moonbase.sh/docs/licensing/offline-activations/)
+     (the `/api/customer/inventory/activate` endpoint).
+
+3. Read the downloaded token back in, validate it locally, and persist it:
+
+   ```cpp
+   std::ifstream file("license.mb");
+   const std::string token((std::istreambuf_iterator<char>(file)),
+                           std::istreambuf_iterator<char>());
+
+   auto license = licensing.read_offline_license(token); // local validation only
+   licensing.store().store_local_license(license);
+   ```
+
+`read_offline_license` runs the same local checks as `validate_token_local`
+(signature, audience, issuer, device fingerprint, expiry) and additionally
+requires the token to have been issued via offline activation, throwing
+`license_invalid_error` otherwise. On startup, validate the stored token with
+`validate_token_local` — offline tokens are never re-validated against the API
+and [cannot be revoked](#revoking-an-activation); they stay valid until the
+machine's device fingerprint changes.
+
 ## Custom Fingerprinting and Storage
 
 ```cpp

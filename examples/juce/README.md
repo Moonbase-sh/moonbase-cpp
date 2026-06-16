@@ -5,6 +5,17 @@ against the public demo environment (`https://demo.moonbase.sh`, product
 `demo-app`). The same files double as drop-in reference code for your own
 plugin.
 
+The window has two rows of buttons:
+
+- **Activate… / Deactivate** — the online browser activation flow.
+- **Save machine file… / Load license token…** — the offline flow: save the
+  device token (`.dt`), exchange it for a license token, then load the token you
+  get back. The device token can be uploaded to Moonbase's hosted portal
+  (`https://<tenant>.moonbase.sh/activate`), to your own site via the embedded
+  storefront's [`activate_product`](https://moonbase.sh/docs/storefronts/embedded/#call-methods)
+  intent, or to a custom flow built on the Moonbase
+  [APIs and SDKs](https://moonbase.sh/docs/licensing/offline-activations/).
+
 ## Files
 
 - `MoonbaseJuceBridge.h` — the bridge: fingerprint provider, metadata helper,
