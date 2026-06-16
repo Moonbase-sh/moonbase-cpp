@@ -1,3 +1,10 @@
+# [3.1.0](https://github.com/Moonbase-sh/moonbase-cpp/compare/v3.0.0...v3.1.0) (2026-06-16)
+
+
+### Features
+
+* add offline activation flow ([#13](https://github.com/Moonbase-sh/moonbase-cpp/issues/13)) ([e680e74](https://github.com/Moonbase-sh/moonbase-cpp/commit/e680e748f3b0e7091fd76a7c6b59674b171c36c4))
+
 # [3.0.0](https://github.com/Moonbase-sh/moonbase-cpp/compare/v2.2.0...v3.0.0) (2026-05-18)
 
 
