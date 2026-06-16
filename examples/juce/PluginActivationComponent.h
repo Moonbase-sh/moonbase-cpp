@@ -10,6 +10,8 @@
 
 #include "MoonbaseJuceBridge.h"
 
+#include <memory>
+
 #include <juce_gui_basics/juce_gui_basics.h>
 
 class PluginActivationComponent : public juce::Component,
@@ -20,7 +22,7 @@ public:
         : unlockStatus_(makeOptions(), makeStore())
     {
         addAndMakeVisible(statusLabel_);
-        statusLabel_.setJustificationType(juce::Justification::centredLeft);
+        statusLabel_.setJustificationType(juce::Justification::topLeft);
 
         addAndMakeVisible(activateButton_);
         activateButton_.onClick = [this] { startActivation(); };
@@ -28,13 +30,21 @@ public:
         addAndMakeVisible(deactivateButton_);
         deactivateButton_.onClick = [this] { startRevoke(); };
 
+        // Offline activation: emit a machine file, then load the license token
+        // the user receives back from the Moonbase activation page.
+        addAndMakeVisible(saveMachineFileButton_);
+        saveMachineFileButton_.onClick = [this] { saveMachineFile(); };
+
+        addAndMakeVisible(loadLicenseButton_);
+        loadLicenseButton_.onClick = [this] { loadLicenseToken(); };
+
         // Async load: never blocks the message thread on libcurl. The label is
         // updated optimistically from the local-validation result, then again
         // from the message-thread callback once the online check resolves.
         unlockStatus_.tryLoadStoredLicenseAsync([this](auto) { refreshLabel(); });
         refreshLabel();
 
-        setSize(520, 184);
+        setSize(520, 320);
     }
 
     ~PluginActivationComponent() override
@@ -45,12 +55,19 @@ public:
     void resized() override
     {
         auto area = getLocalBounds().reduced(16);
-        statusLabel_.setBounds(area.removeFromTop(96));
+        statusLabel_.setBounds(area.removeFromTop(184));
         area.removeFromTop(8);
-        auto buttons = area.removeFromTop(36);
-        activateButton_.setBounds(buttons.removeFromLeft(200));
-        buttons.removeFromLeft(12);
-        deactivateButton_.setBounds(buttons.removeFromLeft(200));
+
+        auto onlineRow = area.removeFromTop(36);
+        activateButton_.setBounds(onlineRow.removeFromLeft(200));
+        onlineRow.removeFromLeft(12);
+        deactivateButton_.setBounds(onlineRow.removeFromLeft(200));
+
+        area.removeFromTop(12);
+        auto offlineRow = area.removeFromTop(36);
+        saveMachineFileButton_.setBounds(offlineRow.removeFromLeft(200));
+        offlineRow.removeFromLeft(12);
+        loadLicenseButton_.setBounds(offlineRow.removeFromLeft(200));
     }
 
     [[nodiscard]] bool isUnlocked() const noexcept
@@ -144,6 +161,62 @@ ERUn++6CVMPvZo67jVbTY+GCXYfW4gGVZQIDAQAB
         });
     }
 
+    // Offline activation, step 1: write the device token ("machine file") to
+    // disk. The user uploads it at https://<tenant>.moonbase.sh/activate.
+    void saveMachineFile()
+    {
+        const auto deviceToken = unlockStatus_.deviceTokenContents();
+
+        fileChooser_ = std::make_unique<juce::FileChooser>(
+            "Save machine file",
+            juce::File::getSpecialLocation(juce::File::userDesktopDirectory)
+                .getChildFile("MoonbaseJuceExample.dt"),
+            "*.dt");
+
+        const auto flags = juce::FileBrowserComponent::saveMode
+                         | juce::FileBrowserComponent::canSelectFiles
+                         | juce::FileBrowserComponent::warnAboutOverwriting;
+
+        fileChooser_->launchAsync(flags, [this, deviceToken](const juce::FileChooser& chooser)
+        {
+            const auto file = chooser.getResult();
+            if (file == juce::File{})
+                return; // user cancelled
+
+            if (file.replaceWithText(deviceToken))
+                refreshLabel("Machine file saved. Upload it at your Moonbase activation\n"
+                             "page, then load the license token you receive back.");
+            else
+                refreshLabel("Could not write the machine file.");
+        });
+    }
+
+    // Offline activation, step 2: load the offline license token the user
+    // downloaded from the portal. Validation is local-only — no network.
+    void loadLicenseToken()
+    {
+        fileChooser_ = std::make_unique<juce::FileChooser>(
+            "Load license token",
+            juce::File::getSpecialLocation(juce::File::userDesktopDirectory),
+            "*.mb;*.jwt;*.txt");
+
+        const auto flags = juce::FileBrowserComponent::openMode
+                         | juce::FileBrowserComponent::canSelectFiles;
+
+        fileChooser_->launchAsync(flags, [this](const juce::FileChooser& chooser)
+        {
+            const auto file = chooser.getResult();
+            if (file == juce::File{})
+                return; // user cancelled
+
+            using Outcome = moonbase::juce_bridge::MoonbaseUnlockStatus::OfflineActivationOutcome;
+            if (unlockStatus_.activateOffline(file.loadFileAsString()) == Outcome::Activated)
+                refreshLabel();
+            else
+                refreshLabel("That license token is not valid for this device.");
+        });
+    }
+
     void refreshLabel(const juce::String& explicitMessage = {})
     {
         if (explicitMessage.isNotEmpty())
@@ -155,22 +228,59 @@ ERUn++6CVMPvZo67jVbTY+GCXYfW4gGVZQIDAQAB
         if (auto license = unlockStatus_.moonbaseLicense())
         {
             juce::String text;
-            text << "Unlocked as " << juce::String(license->issued_to.email);
+
+            // Who the license is issued to (name + email when both are present).
+            text << "Unlocked as ";
+            if (! license->issued_to.name.empty())
+                text << juce::String(license->issued_to.name) << " <"
+                     << juce::String(license->issued_to.email) << ">";
+            else
+                text << juce::String(license->issued_to.email);
             if (license->trial)
                 text << "  (trial)";
+
+            // Activation method — "Online" or "Offline". Offline-activated
+            // licenses are validated locally only and can't be revoked.
+            text << "\nActivation: "
+                 << juce::String(moonbase::to_string(license->method));
+
+            // The licensed product (and its current release, when the token
+            // carries one).
+            text << "\nProduct: " << juce::String(license->licensed_product.name);
+            if (license->licensed_product.current_release_version)
+                text << " v"
+                     << juce::String(*license->licensed_product.current_release_version);
+
+            // Any sub-products / add-ons this license owns.
+            if (! license->owned_sub_product_ids.empty())
+            {
+                juce::StringArray addons;
+                for (const auto& id : license->owned_sub_product_ids)
+                    addons.add(juce::String(id));
+                text << "\nAdd-ons: " << addons.joinIntoString(", ");
+            }
+
+            // Subscription this license is tied to, if any.
+            if (license->subscription_id)
+                text << "\nSubscription: " << juce::String(*license->subscription_id);
 
             // getExpiryTime() comes from juce::OnlineUnlockStatus and is
             // populated from the Moonbase license's expires_at by the bridge.
             const auto expiry = unlockStatus_.getExpiryTime();
-            if (expiry.toMilliseconds() > 0)
-                text << "\nExpires " << expiry.toString(true, true);
+            text << "\nExpires: "
+                 << (expiry.toMilliseconds() > 0 ? expiry.toString(true, true)
+                                                 : juce::String("never"));
 
             // Last successful validation — refreshed by validate_token_online
             // (or the local-only fallback within grace) and persisted into the
-            // license's `validated_at` claim.
-            const auto validatedMs = std::chrono::duration_cast<std::chrono::milliseconds>(
-                license->validated_at.time_since_epoch()).count();
-            text << "\nLast validated " << juce::Time(validatedMs).toString(true, true);
+            // license's `validated_at` claim. Not meaningful for offline tokens,
+            // which are never re-validated online.
+            if (license->method != moonbase::activation_method::offline)
+            {
+                const auto validatedMs = std::chrono::duration_cast<std::chrono::milliseconds>(
+                    license->validated_at.time_since_epoch()).count();
+                text << "\nLast validated " << juce::Time(validatedMs).toString(true, true);
+            }
 
             statusLabel_.setText(text, juce::dontSendNotification);
         }
@@ -185,6 +295,10 @@ ERUn++6CVMPvZo67jVbTY+GCXYfW4gGVZQIDAQAB
     juce::Label statusLabel_;
     juce::TextButton activateButton_ { "Activate..." };
     juce::TextButton deactivateButton_ { "Deactivate" };
+    juce::TextButton saveMachineFileButton_ { "Save machine file..." };
+    juce::TextButton loadLicenseButton_ { "Load license token..." };
+
+    std::unique_ptr<juce::FileChooser> fileChooser_;
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(PluginActivationComponent)
 };

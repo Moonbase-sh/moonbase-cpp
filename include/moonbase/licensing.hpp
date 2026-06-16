@@ -10,6 +10,7 @@
 
 #include "moonbase/client.hpp"
 #include "moonbase/default_fingerprint.hpp"
+#include "moonbase/detail/base64.hpp"
 #include "moonbase/errors.hpp"
 #include "moonbase/fingerprint.hpp"
 #include "moonbase/http.hpp"
@@ -59,6 +60,42 @@ public:
     [[nodiscard]] license validate_token_local(std::string_view token) const
     {
         return validator_->validate_token(token);
+    }
+
+    // Emits the device token ("machine file") for the offline activation flow.
+    // The returned string is a base64-encoded JSON descriptor of this device +
+    // product; write it to a file (conventionally with a ".dt" extension) that
+    // the customer uploads at https://<tenant>.moonbase.sh/activate to obtain an
+    // offline-activated license token in return.
+    [[nodiscard]] std::string generate_device_token() const
+    {
+        const nlohmann::json payload{
+            {"id", fingerprints_->device_id()},
+            {"name", fingerprints_->device_name()},
+            {"productId", options_.product_id},
+            // The Moonbase API expects this to always be "JWT".
+            {"format", "JWT"},
+        };
+        const auto json = payload.dump();
+        return detail::base64_encode(
+            reinterpret_cast<const unsigned char*>(json.data()), json.size());
+    }
+
+    // Reads back the offline-activated license token the customer downloaded
+    // from the portal (the raw JWT contents of the license file). Validates it
+    // locally — signature, audience, issuer, device fingerprint, and expiry —
+    // and requires the token to have been issued via offline activation.
+    // Offline tokens are never re-validated against the API, so there is no
+    // online counterpart. Persist the result with
+    // store().store_local_license(...), mirroring the online flow.
+    [[nodiscard]] license read_offline_license(std::string_view token) const
+    {
+        auto local = validator_->validate_token(token);
+        if (local.method != activation_method::offline) {
+            throw license_invalid_error(
+                "License token is not an offline-activated license");
+        }
+        return local;
     }
 
     // should_persist (optional): evaluated inside the SDK's locks immediately

@@ -677,6 +677,62 @@ public:
         return true;
     }
 
+    // ---- Offline activation --------------------------------------------------
+
+    // Returns the device token ("machine file") contents for offline
+    // activation. Write this to a file (conventionally ".dt") and have the user
+    // upload it at https://<tenant>.moonbase.sh/activate to obtain an
+    // offline-activated license token in return.
+    [[nodiscard]] std::string deviceTokenContents() const
+    {
+        return licensing_->generate_device_token();
+    }
+
+    enum class OfflineActivationOutcome
+    {
+        Activated, // Token validated locally and persisted. Bridge is now unlocked.
+        Invalid,   // Token failed local validation, wasn't an offline token, or
+                   // wasn't issued for this device. Bridge state unchanged.
+    };
+
+    // Activates from an offline license token the user downloaded from the
+    // portal (the raw JWT contents of the license file). Validation is local
+    // only — no network — so this is safe to call synchronously on the message
+    // thread. On success the token is persisted and the bridge transitions to
+    // unlocked.
+    OfflineActivationOutcome activateOffline(const juce::String& tokenContents)
+    {
+        moonbase::license lic;
+        try
+        {
+            lic = licensing_->read_offline_license(tokenContents.trim().toStdString());
+        }
+        catch (const std::exception&)
+        {
+            return OfflineActivationOutcome::Invalid;
+        }
+
+        ++validationGeneration_; // invalidate any in-flight async revalidation
+
+        try
+        {
+            // Under the update lock so an in-flight validate_token_online for a
+            // prior token can't race-persist over the newly-activated license.
+            auto guard = licensing_->store().lock_for_update();
+            licensing_->store().store_local_license(lic);
+        }
+        catch (const moonbase::storage_error&)
+        {
+            // Activation succeeded but persistence failed; still mark unlocked
+            // for this session so the user isn't locked out by a bad disk.
+        }
+
+        const juce::ScopedLock lock(stateLock_);
+        pendingRequest_.reset();
+        setUnlockedLocked(std::move(lic));
+        return OfflineActivationOutcome::Activated;
+    }
+
     // Drops the local license and any pending activation request.
     void clearLicense()
     {
