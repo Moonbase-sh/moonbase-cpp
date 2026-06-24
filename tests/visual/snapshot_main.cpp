@@ -45,7 +45,6 @@ ERUn++6CVMPvZo67jVbTY+GCXYfW4gGVZQIDAQAB
     config.productName = "Solstice";
     config.manufacturerName = "Helio Audio";
     config.accent = juce::Colour(0xff186cdc);
-    config.enableTrial = false; // online activation only
     config.trialLengthDays = 14;
     config.trialFeatures = {
         { "Full DSP engine, unrestricted", true },

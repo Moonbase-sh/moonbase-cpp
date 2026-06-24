@@ -543,13 +543,6 @@ public:
         activate->onClick = [this] { controller.beginOnlineActivation(); };
         addAndMakeVisible(*activate);
 
-        if (cfg.enableTrial)
-        {
-            trial = std::make_unique<StyledButton>(l, StyledButton::Style::ghost, cfg.startTrialText());
-            trial->onClick = [this] { controller.beginOnlineActivation(); };
-            addAndMakeVisible(*trial);
-        }
-
         if (cfg.enableOffline)
         {
             offline = std::make_unique<LinkButton>(
@@ -599,19 +592,13 @@ public:
         r.removeFromTop(40 + 24 + 34 + 8 + 46 + 22);
         const int bw = juce::jmin(r.getWidth(), 360);
         activate->setBounds(r.removeFromTop(46).withWidth(bw));
-        r.removeFromTop(12);
-        if (trial)
-        {
-            trial->setBounds(r.removeFromTop(46).withWidth(bw));
-            r.removeFromTop(12);
-        }
-        r.removeFromTop(12);
+        r.removeFromTop(24);
         if (offline)
             offline->setBounds(r.removeFromTop(20).withWidth(juce::jmin(bw, 280)));
     }
 
 private:
-    std::unique_ptr<StyledButton> activate, trial;
+    std::unique_ptr<StyledButton> activate;
     std::unique_ptr<LinkButton> offline;
 };
 

@@ -690,9 +690,8 @@ ActivationController::Screen ActivationController::screenForCurrentLicense() con
 {
     if (! license_)
         return Screen::Welcome;
-    // A trial license always shows the trial view (days left / unlock). The
-    // config.enableTrial flag only governs the "Start trial" affordance on the
-    // Welcome screen, not how an already-active trial is presented.
+    // A backend-granted trial license shows the trial view (days left / unlock);
+    // a full license shows the details view.
     return license_->trial ? Screen::Trial : Screen::Details;
 }
 

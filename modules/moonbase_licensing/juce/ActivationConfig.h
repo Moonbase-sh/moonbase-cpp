@@ -34,7 +34,6 @@ struct ActivationStrings
     juce::String welcomeTitle;     // default: "Activate {productName}"
     juce::String welcomeBody;      // default: "Unlock the full plugin through your {manufacturerName} account."
     juce::String activateOnline;   // default: "Activate online"
-    juce::String startTrial;       // default: "Start {trialLengthDays}-day free trial"
     juce::String activateOffline;  // default: "No internet? Activate offline"
 };
 
@@ -80,11 +79,10 @@ struct ActivationConfig
     juce::URL activationUrl;
 
     bool showMoonbaseBadge = true;
-    bool enableTrial = true;       // show the "Start free trial" button on Welcome (an active trial license always shows the trial view regardless)
     bool enableOffline = true;     // show the offline activation flow
     bool reduceMotion = false;     // skip transition/spinner/pop animation (a11y + snapshot tests)
     bool overlayBackdrop = false;  // dim the host behind the panel (modal over a plugin) instead of a full opaque backdrop
-    int trialLengthDays = 14;      // for the trial progress display
+    int trialLengthDays = 14;      // trial length shown on the Trial / Expired screens (trials are granted by the backend, not started from the UI)
 
     // Product / manufacturer brand mark shown in the header lockup. When unset,
     // a generated sun mark in the accent colour is drawn. Provide a vector
@@ -160,21 +158,12 @@ struct ActivationConfig
     {
         if (strings.welcomeBody.isNotEmpty())
             return strings.welcomeBody;
-        const auto who = brandAccountName();
-        return enableTrial
-            ? "Unlock the full plugin through your " + who + " account, or take it for a spin with a free trial."
-            : "Unlock the full plugin through your " + who + " account.";
+        return "Unlock the full plugin through your " + brandAccountName() + " account.";
     }
     [[nodiscard]] juce::String activateOnlineText() const
     {
         return strings.activateOnline.isNotEmpty() ? strings.activateOnline
                                                    : juce::String("Activate online");
-    }
-    [[nodiscard]] juce::String startTrialText() const
-    {
-        return strings.startTrial.isNotEmpty()
-            ? strings.startTrial
-            : "Start " + juce::String(trialLengthDays) + "-day free trial";
     }
     [[nodiscard]] juce::String activateOfflineText() const
     {

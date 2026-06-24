@@ -84,7 +84,7 @@ ActivationDialog::show(config, [](bool wasActivated) { /* … */ });
 repaints happen on the message thread, gated by a generation counter so a slow request
 can never clobber a newer state. The screens:
 
-- **Welcome** — Activate online (browser flow), Start free trial, or Activate offline.
+- **Welcome** — Activate online (browser flow) or Activate offline.
 - **Activating** — opens the browser and polls `get_requested_activation()`; the
   device chip shows the local fingerprint + platform; Cancel aborts.
 - **Success** — animated confirmation with a mini license card.
@@ -115,8 +115,8 @@ gating.
 
 Everything in `ActivationConfig` after the connection fields is brand/UI: product +
 manufacturer name, `accent` colour, the Moonbase co-brand badge (`showMoonbaseBadge`), the
-`trialLengthDays` + `trialFeatures` list, `enableTrial` / `enableOffline`, and the
-manage / support URLs. For deeper re-skinning, mutate `ActivationLookAndFeel::palette`
+`trialLengthDays` + `trialFeatures` list (shown on the Trial / Expired screens),
+`enableOffline`, and the manage / support URLs. For deeper re-skinning, mutate `ActivationLookAndFeel::palette`
 (every colour is a token) or bundle real Inter / Space Mono typefaces and point the
 `heading` / `body` / `mono` font helpers at them.
 

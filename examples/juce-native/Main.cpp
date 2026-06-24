@@ -32,7 +32,6 @@ ERUn++6CVMPvZo67jVbTY+GCXYfW4gGVZQIDAQAB
     config.productName = "Solstice";
     config.manufacturerName = "Helio Audio";
     config.accent = juce::Colour(0xff186cdc);
-    config.enableTrial = false;     // online activation only
     config.overlayBackdrop = true;  // render as a modal over the plugin editor
     config.applicationVersion = JUCE_APPLICATION_VERSION_STRING;
 

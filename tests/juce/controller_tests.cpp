@@ -74,7 +74,6 @@ struct controller_fixture
         config.accountId = "tenant-1";
         config.productName = "Solstice";
         config.manufacturerName = "Helio Audio";
-        config.enableTrial = true; // offer the "Start trial" button on Welcome
     }
 
     ~controller_fixture()
@@ -239,20 +238,17 @@ TEST_CASE("refreshLicense that finds the trial expired shows Expired and locks")
     REQUIRE(controller.expiredTrial().has_value());
 }
 
-TEST_CASE("an active trial shows the trial view even when enableTrial is off")
+TEST_CASE("showDetails on a trial stays on the trial view, not Details")
 {
     controller_fixture fx;
-    fx.config.enableTrial = false; // no "Start trial" button, but a granted trial still shows
     auto claims = default_claims();
     claims["trial"] = true;
     fx.seedStored(fx.token(claims));
 
     ActivationController controller(fx.config, fx.makeLicensing());
     controller.start();
-    REQUIRE(pumpUntil([&] { return settled(controller); }));
-    CHECK(controller.screen() == Screen::Trial);
+    REQUIRE(pumpUntil([&] { return controller.screen() == Screen::Trial; }));
 
-    // And "view details" on a trial stays on the trial view, not Details.
     controller.showDetails();
     CHECK(controller.screen() == Screen::Trial);
 }
