@@ -35,6 +35,7 @@ public:
         Success,     // just activated
         Offline,     // offline request/response file flow
         Trial,       // a valid trial license is loaded
+        Expired,     // a trial license that has ended (plugin locked; see expiredTrial())
         Details,     // a valid full license is loaded
         Error        // an operation failed; statusMessage() has detail
     };
@@ -95,6 +96,9 @@ public:
     //== Accessors =============================================================
     [[nodiscard]] Screen screen() const noexcept { return screen_; }
     [[nodiscard]] const std::optional<moonbase::license>& license() const noexcept { return license_; }
+    // The ended trial backing the Expired screen. license() stays empty in this
+    // state (the plugin is locked); this is for display only.
+    [[nodiscard]] const std::optional<moonbase::license>& expiredTrial() const noexcept { return expiredTrial_; }
     [[nodiscard]] juce::String statusMessage() const { return statusMessage_; }
     [[nodiscard]] juce::String offlineError() const { return offlineError_; }
     [[nodiscard]] juce::String deviceLabel() const { return deviceLabel_; }
@@ -110,6 +114,7 @@ private:
 
     void setScreen(Screen newScreen, const juce::String& message = {});
     void applyLicense(std::optional<moonbase::license> value);
+    void showTrialExpired(moonbase::license expired); // locks + routes to the Expired screen
     [[nodiscard]] Screen screenForCurrentLicense() const; // Welcome / Trial / Details
     void onActivationFulfilled(moonbase::license value);
     void deleteStoredMatching(const juce::String& activationId);
@@ -125,6 +130,7 @@ private:
 
     Screen screen_ = Screen::Loading;
     std::optional<moonbase::license> license_;
+    std::optional<moonbase::license> expiredTrial_; // display-only backing for the Expired screen
     std::optional<moonbase::activation_request> pendingRequest_;
 
     juce::String statusMessage_;

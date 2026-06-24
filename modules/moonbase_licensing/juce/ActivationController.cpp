@@ -108,6 +108,7 @@ void ActivationController::start()
     juce::Thread::launch([safe, generation, licensing]() mutable
     {
         std::optional<moonbase::license> result;
+        std::optional<moonbase::license> expiredTrial;
         bool deleteExpiredOffline = false;
         juce::String diag;
         try
@@ -144,15 +145,27 @@ void ActivationController::start()
                 }
                 else if (peek)
                 {
-                    try
+                    const bool isExpiredTrial = peek->trial && peek->expires_at
+                        && *peek->expires_at < std::chrono::system_clock::now();
+                    if (isExpiredTrial)
                     {
-                        result = licensing->validate_token_online(stored->token);
+                        // Keep the ended trial for the "trial has ended" screen,
+                        // but it is not a valid license: the plugin stays locked.
+                        expiredTrial = std::move(peek);
+                        diag = "Stored trial license has expired.";
                     }
-                    catch (const std::exception& ex)
+                    else
                     {
-                        // Invalid / expired / unreachable-past-grace -> locked.
-                        diag = juce::String("Re-validating stored license failed: ") + ex.what();
-                        result = std::nullopt;
+                        try
+                        {
+                            result = licensing->validate_token_online(stored->token);
+                        }
+                        catch (const std::exception& ex)
+                        {
+                            // Invalid / expired / unreachable-past-grace -> locked.
+                            diag = juce::String("Re-validating stored license failed: ") + ex.what();
+                            result = std::nullopt;
+                        }
                     }
                 }
             }
@@ -163,7 +176,7 @@ void ActivationController::start()
             result = std::nullopt;
         }
 
-        juce::MessageManager::callAsync([safe, generation, result, deleteExpiredOffline, diag]() mutable
+        juce::MessageManager::callAsync([safe, generation, result, expiredTrial, deleteExpiredOffline, diag]() mutable
         {
             auto* self = safe.get();
             if (self == nullptr || generation != self->generation_.load())
@@ -172,7 +185,10 @@ void ActivationController::start()
                 self->emitDiagnostic(diag);
             if (deleteExpiredOffline)
                 self->deleteStoredLicense();
-            self->applyLicense(std::move(result));
+            if (expiredTrial)
+                self->showTrialExpired(std::move(*expiredTrial));
+            else
+                self->applyLicense(std::move(result));
         });
     });
 }
@@ -607,7 +623,18 @@ void ActivationController::setPreviewState(Screen screen, std::optional<moonbase
     stopTimer();
     pollInFlight_ = false;
     busy_ = busy;
-    license_ = std::move(license);
+    if (screen == Screen::Expired)
+    {
+        // The Expired screen is locked: keep the license out of license_ so
+        // gating stays off; the passed license backs the view's display.
+        expiredTrial_ = std::move(license);
+        license_.reset();
+    }
+    else
+    {
+        license_ = std::move(license);
+        expiredTrial_.reset();
+    }
     offlineError_ = previewError;
     screen_ = screen;
     statusMessage_.clear();
@@ -651,8 +678,19 @@ ActivationController::Screen ActivationController::screenForCurrentLicense() con
 void ActivationController::applyLicense(std::optional<moonbase::license> value)
 {
     license_ = std::move(value);
+    expiredTrial_.reset();
     statusMessage_.clear();
     setScreen(screenForCurrentLicense());
+}
+
+void ActivationController::showTrialExpired(moonbase::license expired)
+{
+    // The plugin must stay locked, so license_ stays empty; the ended trial is
+    // held separately for the Expired screen to show the product + end date.
+    expiredTrial_ = std::move(expired);
+    license_.reset();
+    statusMessage_.clear();
+    setScreen(Screen::Expired);
 }
 
 juce::String ActivationController::shortPlatformName()

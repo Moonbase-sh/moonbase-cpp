@@ -96,6 +96,15 @@ moonbase::license makeOfflineLicense()
     return lic;
 }
 
+moonbase::license makeExpiredTrial()
+{
+    auto lic = makeLicense(true);
+    lic.expires_at = std::chrono::system_clock::now() - std::chrono::hours(24 * 6); // ended 6 days ago
+    lic.seat_count.reset();
+    lic.seats_used.reset();
+    return lic;
+}
+
 int gSnapW = ActivationComponent::defaultWidth;
 int gSnapH = ActivationComponent::defaultHeight;
 
@@ -208,6 +217,9 @@ int main(int argc, char* argv[])
 
     writeSnapshot(outDir, "06-trial", [](ActivationController& c)
                   { c.setPreviewState(Screen::Trial, makeLicense(true)); });
+
+    writeSnapshot(outDir, "06b-trial-expired", [](ActivationController& c)
+                  { c.setPreviewState(Screen::Expired, makeExpiredTrial()); });
 
     writeSnapshot(outDir, "07-details", [](ActivationController& c)
                   { c.setPreviewState(Screen::Details, makeLicense(false)); });

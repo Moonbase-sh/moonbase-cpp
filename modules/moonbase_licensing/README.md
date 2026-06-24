@@ -12,7 +12,7 @@ Add the module, fill in three fields, show one component.
   you want that bridge instead, see [`examples/juce/`](../../examples/juce/).)
 - **Built-in UI.** A configurable, themeable `ActivationComponent` (and one-call
   `ActivationDialog`) covering every state — welcome, activating, success, offline,
-  trial, license details — with JUCE 8 animated transitions and drag-and-drop for
+  trial, trial expired, license details — with JUCE 8 animated transitions and drag-and-drop for
   offline license files. Designed to sit as a modal over your plugin and lock it
   until activated.
 - **Zero third-party dependencies.** HTTP over `juce::WebInputStream` (no CURL), JSON

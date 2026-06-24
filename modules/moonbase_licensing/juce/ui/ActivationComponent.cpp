@@ -55,14 +55,14 @@ void drawSunLogo(Graphics& g, Rectangle<float> area, Colour accent)
 // otherwise a generated sun mark. Returns the row height.
 int drawBrand(Graphics& g, const ActivationLookAndFeel& lnf, const juce::Drawable* customLogo,
               Rectangle<int> row, const juce::String& product, const juce::String& manufacturer,
-              float logoPx, float titlePx)
+              float logoPx, float titlePx, bool muted = false)
 {
     auto area = row;
     auto logoArea = area.removeFromLeft((int) logoPx).toFloat().withSizeKeepingCentre(logoPx, logoPx);
     if (customLogo != nullptr)
-        customLogo->drawWithin(g, logoArea, juce::RectanglePlacement::centred, 1.0f);
+        customLogo->drawWithin(g, logoArea, juce::RectanglePlacement::centred, muted ? 0.55f : 1.0f);
     else
-        drawSunLogo(g, logoArea, lnf.accent);
+        drawSunLogo(g, logoArea, muted ? lnf.palette.textSecondary : lnf.accent);
 
     area.removeFromLeft(13);
     g.setColour(lnf.palette.textPrimary);
@@ -1134,6 +1134,151 @@ private:
 };
 
 //==============================================================================
+// Trial expired (locked: the plugin stays bypassed until activated)
+class ExpiredView : public ScreenView
+{
+public:
+    ExpiredView(ActivationController& c, ActivationLookAndFeel& l) : ScreenView(c, l)
+    {
+        unlock = std::make_unique<StyledButton>(l, StyledButton::Style::accent, "Unlock full version",
+                                                icons::fromStroke(icons::lock, juce::Colours::white, 1.8f));
+        unlock->onClick = [this] { controller.beginOnlineActivation(); };
+        addAndMakeVisible(*unlock);
+
+        offline = std::make_unique<LinkButton>(l, "Activate offline instead", l.palette.textSecondary);
+        offline->onClick = [this] { controller.showOffline(); };
+        addChildComponent(*offline); // visibility set in refresh()
+
+        warnIcon = icons::fromStroke(icons::warning, l.palette.error, 1.8f);
+    }
+
+    void refresh() override
+    {
+        offline->setVisible(controller.config().enableOffline);
+        repaint();
+    }
+
+    void paint(Graphics& g) override
+    {
+        auto r = getLocalBounds();
+        const bool withOffline = controller.config().enableOffline;
+
+        // Reserve the bottom for the buttons so content never slides under them.
+        r.removeFromBottom(46); // unlock button
+        if (withOffline)
+            r.removeFromBottom(14 + 20); // gap + offline link
+
+        // Header: a muted brand lockup + a red "Trial expired" pill.
+        auto headerRow = r.removeFromTop(40);
+        auto pillSlot = headerRow.removeFromRight(150);
+        drawBrand(g, lnf, controller.config().logo.get(), headerRow,
+                  controller.config().resolvedProductName(), controller.config().resolvedManufacturerName(),
+                  34.0f, 15.0f, /*muted*/ true);
+        drawExpiredPill(g, pillSlot, headerRow.getCentreY());
+
+        r.removeFromTop(26);
+        g.setColour(lnf.palette.textPrimary);
+        g.setFont(lnf.heading(24.0f));
+        g.drawText("Your trial has ended", r.removeFromTop(30), Justification::topLeft);
+        r.removeFromTop(8);
+
+        g.setColour(lnf.palette.textSecondary);
+        g.setFont(lnf.body(14.0f));
+        {
+            auto subtitle = r.removeFromTop(40);
+            g.drawFittedText(bodyText(), subtitle.getX(), subtitle.getY(), subtitle.getWidth(),
+                             subtitle.getHeight(), Justification::topLeft, 2, 1.0f);
+        }
+
+        // Full, red progress bar (the trial bar at 100%).
+        r.removeFromTop(14);
+        auto bar = r.removeFromTop(6);
+        g.setColour(Colour(0x12ffffff));
+        g.fillRoundedRectangle(bar.toFloat(), 3.0f);
+        g.setGradientFill(juce::ColourGradient(Colour(0xffb9444c), (float) bar.getX(), 0.0f,
+                                               Colour(0xffdc5050), (float) bar.getRight(), 0.0f, false));
+        g.fillRoundedRectangle(bar.toFloat(), 3.0f);
+
+        // Red "audio is bypassed" callout.
+        r.removeFromTop(22);
+        auto callout = r.removeFromTop(juce::jmin(66, r.getHeight()));
+        g.setColour(Colour(0x12dc5050));
+        g.fillRoundedRectangle(callout.toFloat(), 10.0f);
+        g.setColour(Colour(0x38dc5050));
+        g.drawRoundedRectangle(callout.toFloat(), 10.0f, 1.0f);
+        auto inner = callout.reduced(15, 12);
+        auto iconArea = inner.removeFromLeft(18).withSizeKeepingCentre(18, 18).toFloat();
+        if (warnIcon != nullptr)
+            warnIcon->drawWithin(g, iconArea, juce::RectanglePlacement::centred, 1.0f);
+        inner.removeFromLeft(11);
+        g.setColour(lnf.palette.textBody);
+        g.setFont(lnf.body(13.0f));
+        g.drawFittedText("Audio processing is bypassed. Existing projects still load, but "
+                             + controller.config().resolvedProductName()
+                             + " won't affect your sound until you activate.",
+                         inner.getX(), inner.getY(), inner.getWidth(), inner.getHeight(),
+                         Justification::centredLeft, 3, 1.0f);
+    }
+
+    void resized() override
+    {
+        auto r = getLocalBounds();
+        if (controller.config().enableOffline)
+        {
+            offline->setBounds(r.removeFromBottom(20));
+            r.removeFromBottom(14);
+        }
+        unlock->setBounds(r.removeFromBottom(46));
+    }
+
+private:
+    juce::String bodyText() const
+    {
+        const int len = controller.config().trialLengthDays;
+        juce::String date;
+        if (auto& lic = controller.expiredTrial(); lic && lic->expires_at)
+        {
+            const auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+                                lic->expires_at->time_since_epoch()).count();
+            date = juce::Time((juce::int64) ms).toString(true, false);
+        }
+        juce::String s("Your ");
+        if (len > 0)
+            s << len << "-day ";
+        s << "trial of " << controller.config().resolvedProductName();
+        if (date.isNotEmpty())
+            s << " ended on " << date;
+        s << ". Unlock the full version to keep using the plugin.";
+        return s;
+    }
+
+    void drawExpiredPill(Graphics& g, Rectangle<int> slot, int centreY)
+    {
+        const juce::String label = juce::String("Trial expired").toUpperCase();
+        auto pf = lnf.heading(10.5f);
+        const float tw = juce::GlyphArrangement::getStringWidth(pf, label);
+        const float leftPad = 11.0f, dotD = 6.0f, gap = 7.0f, rightPad = 12.0f;
+        const float pw = leftPad + dotD + gap + tw + rightPad;
+        auto pb = Rectangle<float>(0, 0, pw, 22.0f).withCentre(
+            { (float) (slot.getRight() - headerRightInset) - pw * 0.5f, (float) centreY });
+        g.setColour(Colour(0x1edc5050));
+        g.fillRoundedRectangle(pb, 11.0f);
+        g.setColour(Colour(0x52dc5050));
+        g.drawRoundedRectangle(pb, 11.0f, 1.0f);
+        g.setColour(lnf.palette.error);
+        g.fillEllipse(pb.getX() + leftPad, pb.getCentreY() - dotD * 0.5f, dotD, dotD);
+        g.setFont(pf);
+        g.drawText(label,
+                   Rectangle<float>(pb.getX() + leftPad + dotD + gap, pb.getY(), tw + 2.0f, pb.getHeight()),
+                   Justification::centredLeft);
+    }
+
+    std::unique_ptr<StyledButton> unlock;
+    std::unique_ptr<LinkButton> offline;
+    std::unique_ptr<juce::Drawable> warnIcon;
+};
+
+//==============================================================================
 // License details
 class DetailsView : public ScreenView
 {
@@ -1389,6 +1534,7 @@ struct ActivationComponent::Impl : public juce::ChangeListener,
         success = std::make_unique<SuccessView>(controller, lnf);
         offline = std::make_unique<OfflineView>(controller, lnf);
         trial = std::make_unique<TrialView>(controller, lnf);
+        expired = std::make_unique<ExpiredView>(controller, lnf);
         details = std::make_unique<DetailsView>(controller, lnf);
 
         for (auto* v : views())
@@ -1423,7 +1569,7 @@ struct ActivationComponent::Impl : public juce::ChangeListener,
 
     std::vector<ScreenView*> views()
     {
-        return { welcome.get(), browser.get(), success.get(), offline.get(), trial.get(), details.get() };
+        return { welcome.get(), browser.get(), success.get(), offline.get(), trial.get(), expired.get(), details.get() };
     }
 
     ScreenView* viewFor(ActivationController::Screen s)
@@ -1436,6 +1582,7 @@ struct ActivationComponent::Impl : public juce::ChangeListener,
             case S::Success:     return success.get();
             case S::Offline:     return offline.get();
             case S::Trial:       return trial.get();
+            case S::Expired:     return expired.get();
             case S::Details:     return details.get();
             case S::Error:       return welcome.get();
             case S::Loading:     default: return nullptr;
@@ -1612,9 +1759,9 @@ struct ActivationComponent::Impl : public juce::ChangeListener,
         using S = ActivationController::Screen;
         switch (s)
         {
-            case S::Loading: case S::Welcome: case S::Error:       return 0;
-            case S::Offline: case S::BrowserWait:                  return 1;
-            case S::Trial:   case S::Success: case S::Details:     return 2;
+            case S::Loading: case S::Welcome: case S::Error:                   return 0;
+            case S::Offline: case S::BrowserWait:                              return 1;
+            case S::Trial:   case S::Success: case S::Details: case S::Expired: return 2;
         }
         return 0;
     }
@@ -1814,6 +1961,7 @@ struct ActivationComponent::Impl : public juce::ChangeListener,
     std::unique_ptr<SuccessView> success;
     std::unique_ptr<OfflineView> offline;
     std::unique_ptr<TrialView> trial;
+    std::unique_ptr<ExpiredView> expired;
     std::unique_ptr<DetailsView> details;
     ScreenView* active = nullptr;
     ScreenView* outgoing = nullptr;

@@ -171,6 +171,27 @@ TEST_CASE("start() with a valid trial license routes to Trial")
     CHECK(controller.license()->trial);
 }
 
+TEST_CASE("an expired trial shows the Expired screen and keeps the plugin locked")
+{
+    controller_fixture fx;
+    auto claims = default_claims();
+    claims["trial"] = true;
+    claims["exp"] = now_seconds() - 10; // trial ended
+    fx.seedStored(fx.token(claims));
+
+    ActivationController controller(fx.config, fx.makeLicensing());
+    controller.start();
+
+    REQUIRE(pumpUntil([&] { return settled(controller); }));
+    CHECK(controller.screen() == Screen::Expired);
+    // The plugin must stay locked: license() is empty so DSP gating bypasses...
+    CHECK_FALSE(controller.license().has_value());
+    // ...but the ended trial is available for the screen to display.
+    REQUIRE(controller.expiredTrial().has_value());
+    CHECK(controller.expiredTrial()->trial);
+    CHECK(fx.transport->requests.empty()); // an expired trial never hits the API
+}
+
 TEST_CASE("an active trial shows the trial view even when enableTrial is off")
 {
     controller_fixture fx;
