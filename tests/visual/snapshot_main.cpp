@@ -107,9 +107,11 @@ moonbase::license makeExpiredTrial()
 int gSnapW = ActivationComponent::defaultWidth;
 int gSnapH = ActivationComponent::defaultHeight;
 
-void writeSnapshot(const juce::File& outDir, const juce::String& name, std::function<void(ActivationController&)> setup)
+void writeSnapshot(const juce::File& outDir, const juce::String& name,
+                   std::function<void(ActivationController&)> setup,
+                   ActivationConfig config = demoConfig())
 {
-    ActivationComponent component(demoConfig());
+    ActivationComponent component(std::move(config));
     component.onClose = [] {}; // enable the close button for the snapshots
     component.setSize(gSnapW, gSnapH);
 
@@ -219,6 +221,24 @@ int main(int argc, char* argv[])
 
     writeSnapshot(outDir, "06b-trial-expired", [](ActivationController& c)
                   { c.setPreviewState(Screen::Expired, makeExpiredTrial()); });
+
+    {
+        // Many features -> the list overflows and the viewport scrolls.
+        auto cfg = demoConfig();
+        cfg.trialFeatures = {
+            { "Full DSP engine, unrestricted", true },
+            { "First 12 of 48 factory presets", true },
+            { "All 48 presets & expansion packs", false },
+            { "Use in commercial releases", false },
+            { "Priority email support", false },
+            { "Free major-version upgrades", false },
+            { "Multi-seat studio license", false },
+            { "Expansion pack: Laniakea", false },
+        };
+        writeSnapshot(outDir, "06c-trial-overflow",
+                      [](ActivationController& c) { c.setPreviewState(Screen::Trial, makeLicense(true)); },
+                      cfg);
+    }
 
     writeSnapshot(outDir, "07-details", [](ActivationController& c)
                   { c.setPreviewState(Screen::Details, makeLicense(false)); });

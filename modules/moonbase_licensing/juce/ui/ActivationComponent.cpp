@@ -1022,6 +1022,53 @@ private:
 
 //==============================================================================
 // Trial
+// Trial feature rows, evenly spaced. Sits inside a Viewport so it scrolls when
+// the list is longer than the available area; centres vertically when it fits.
+class TrialFeatureList : public juce::Component
+{
+public:
+    TrialFeatureList(ActivationController& c, ActivationLookAndFeel& l) : controller(c), lnf(l) {}
+
+    static constexpr int rowHeight = 28;
+
+    [[nodiscard]] int contentHeight() const
+    {
+        return (int) controller.config().trialFeatures.size() * rowHeight;
+    }
+
+    void paint(Graphics& g) override
+    {
+        const auto& feats = controller.config().trialFeatures;
+        if (feats.empty())
+            return;
+        // Centre the block when there is slack (it fits); top-align when it
+        // overflows (the viewport scrolls). Either way the rows are even.
+        const int block = (int) feats.size() * rowHeight;
+        int y = juce::jmax(0, (getHeight() - block) / 2);
+        for (const auto& f : feats)
+        {
+            drawFeature(g, { 0, y, getWidth(), rowHeight }, f);
+            y += rowHeight;
+        }
+    }
+
+private:
+    void drawFeature(Graphics& g, Rectangle<int> row, const TrialFeature& f)
+    {
+        auto iconArea = row.removeFromLeft(17).withSizeKeepingCentre(17, 17).toFloat();
+        const auto colour = f.included ? lnf.palette.success : lnf.palette.textMuted;
+        if (auto ic = icons::fromStroke(f.included ? icons::check : icons::cross, colour, 2.0f))
+            ic->drawWithin(g, iconArea, juce::RectanglePlacement::centred, 1.0f);
+        row.removeFromLeft(10);
+        g.setColour(f.included ? lnf.palette.textBody : lnf.palette.textMuted);
+        g.setFont(lnf.body(13.0f));
+        g.drawText(f.label, row, Justification::centredLeft);
+    }
+
+    ActivationController& controller;
+    ActivationLookAndFeel& lnf;
+};
+
 class TrialView : public ScreenView
 {
 public:
@@ -1035,6 +1082,12 @@ public:
         cont = std::make_unique<LinkButton>(l, "Continue trial", l.palette.textSecondary);
         cont->onClick = [this] { if (onCloseRequested) onCloseRequested(); };
         addAndMakeVisible(*cont);
+
+        featureList = std::make_unique<TrialFeatureList>(c, l);
+        featuresViewport.setViewedComponent(featureList.get(), false);
+        featuresViewport.setScrollBarsShown(true, false); // vertical only, when needed
+        featuresViewport.setScrollBarThickness(8);
+        addAndMakeVisible(featuresViewport);
     }
 
     void refresh() override { repaint(); }
@@ -1090,9 +1143,8 @@ public:
                                                Colour(0xfff5c542), fill.getRight(), 0, false));
         g.fillRoundedRectangle(fill, 3.0f);
 
-        r.removeFromTop(24);
-        for (auto& f : controller.config().trialFeatures)
-            drawFeature(g, r.removeFromTop(24), f);
+        // The feature list itself is drawn by the scrollable viewport (see
+        // resized() / featureArea()).
     }
 
     void resized() override
@@ -1101,21 +1153,31 @@ public:
         cont->setBounds(r.removeFromBottom(20));
         r.removeFromBottom(14);
         unlock->setBounds(r.removeFromBottom(46));
+
+        const auto area = featureArea();
+        featuresViewport.setBounds(area);
+        const int content = featureList->contentHeight();
+        const bool scrolls = content > area.getHeight();
+        // Fits -> size to the viewport so the rows centre; overflows -> size to
+        // the content (minus the scrollbar gutter) so the viewport scrolls.
+        featureList->setSize(scrolls ? juce::jmax(0, area.getWidth() - 10) : area.getWidth(),
+                             scrolls ? content : area.getHeight());
     }
 
 private:
-    void drawFeature(Graphics& g, Rectangle<int> row, const TrialFeature& f)
+    // The middle band between the top copy/progress bar and the bottom buttons.
+    // The top/bottom amounts mirror the fixed layout in paint() / resized().
+    [[nodiscard]] Rectangle<int> featureArea() const
     {
-        auto iconArea = row.removeFromLeft(17).withSizeKeepingCentre(17, 17).toFloat();
-        const auto colour = f.included ? lnf.palette.success : lnf.palette.textMuted;
-        if (auto ic = icons::fromStroke(f.included ? icons::check : icons::cross, colour, 2.0f))
-            ic->drawWithin(g, iconArea, juce::RectanglePlacement::centred, 1.0f);
-        row.removeFromLeft(10);
-        g.setColour(f.included ? lnf.palette.textBody : lnf.palette.textMuted);
-        g.setFont(lnf.body(13.0f));
-        g.drawText(f.label, row, Justification::centredLeft);
+        auto a = getLocalBounds();
+        a.removeFromTop(40 + 26 + 30 + 8 + 40 + 14 + 6); // brand .. progress bar
+        a.removeFromTop(20);                              // gap below the bar
+        a.removeFromBottom(46 + 14 + 20);                 // unlock + gap + continue
+        return a;
     }
 
+    juce::Viewport featuresViewport;
+    std::unique_ptr<TrialFeatureList> featureList;
     std::unique_ptr<StyledButton> unlock;
     std::unique_ptr<LinkButton> cont;
 };
