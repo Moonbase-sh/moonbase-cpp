@@ -190,6 +190,12 @@ inline void to_json(nlohmann::json& json, const license& value)
     if (value.subscription_id) {
         json["subscriptionId"] = *value.subscription_id;
     }
+    if (value.seat_count) {
+        json["seatCount"] = *value.seat_count;
+    }
+    if (value.seats_used) {
+        json["seatsUsed"] = *value.seats_used;
+    }
 }
 
 inline void from_json(const nlohmann::json& json, license& value)
@@ -212,6 +218,16 @@ inline void from_json(const nlohmann::json& json, license& value)
         value.subscription_id = json.at("subscriptionId").get<std::string>();
     } else {
         value.subscription_id.reset();
+    }
+    if (json.contains("seatCount") && !json.at("seatCount").is_null()) {
+        value.seat_count = json.at("seatCount").get<long long>();
+    } else {
+        value.seat_count.reset();
+    }
+    if (json.contains("seatsUsed") && !json.at("seatsUsed").is_null()) {
+        value.seats_used = json.at("seatsUsed").get<long long>();
+    } else {
+        value.seats_used.reset();
     }
     value.properties = json.value("properties", nlohmann::json::object());
     json.at("token").get_to(value.token);

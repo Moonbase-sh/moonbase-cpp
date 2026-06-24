@@ -444,6 +444,50 @@ TEST_CASE("refreshLicense picks up newly granted sub-products from the server")
     CHECK(fx.transport->requests.size() == 1); // forced -> exactly one API round-trip
 }
 
+TEST_CASE("a refresh that lands after the license is cleared does not resurrect it")
+{
+    controller_fixture fx;
+    fx.seedStored(fx.token(default_claims()));
+    ActivationController controller(fx.config, fx.makeLicensing());
+    controller.start();
+    REQUIRE(pumpUntil([&] { return controller.screen() == Screen::Details; }));
+    REQUIRE(fx.licenseFile.existsAsFile());
+
+    // A forced refresh is in flight (server will return a valid token)...
+    fx.transport->responses.push_back(moonbase::http_response{200, {}, fx.token(default_claims())});
+    bool done = false, ok = true;
+    controller.refreshLicense(true, [&](bool r) { done = true; ok = r; });
+
+    // ...but the user deactivates/clears before it lands.
+    controller.clearLicense();
+    REQUIRE_FALSE(fx.licenseFile.existsAsFile());
+
+    REQUIRE(pumpUntil([&] { return done; }));
+    CHECK_FALSE(ok);                               // superseded result dropped
+    CHECK_FALSE(controller.license().has_value()); // still cleared in memory
+    CHECK_FALSE(fx.licenseFile.existsAsFile());    // and NOT recreated on disk
+}
+
+TEST_CASE("a public key with an out-of-bounds DER length is rejected cleanly")
+{
+    // Outer SEQUENCE(len 5) wrapping an INTEGER whose short-form length (0x7F)
+    // claims 127 content bytes when only 3 remain. The parser must report a
+    // configuration error, not read past the decoded buffer.
+    const std::vector<unsigned char> der{0x30, 0x05, 0x02, 0x7F, 0x00, 0x00, 0x00};
+    ActivationConfig config;
+    config.endpoint = "https://demo.moonbase.sh";
+    config.productId = "demo-app";
+    config.publicKey = juce::String(moonbase::detail::base64_encode(der.data(), der.size()));
+    config.licenseFile = juce::File::getSpecialLocation(juce::File::tempDirectory)
+                             .getChildFile("moonbase-juce-tests")
+                             .getChildFile(juce::Uuid().toString() + ".mb");
+
+    ActivationController controller(config); // must not overrun / crash
+    controller.start();
+    CHECK(controller.screen() == Screen::Error);
+    config.licenseFile.deleteFile();
+}
+
 TEST_CASE("refreshLicense keeps the current license when the server is unreachable")
 {
     controller_fixture fx;

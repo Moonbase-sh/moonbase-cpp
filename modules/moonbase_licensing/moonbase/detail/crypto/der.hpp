@@ -56,9 +56,6 @@ inline std::size_t read_length(cursor& c)
     for (unsigned i = 0; i < count; ++i) {
         length = (length << 8U) | read_byte(c);
     }
-    if (static_cast<std::size_t>(c.end - c.p) < length) {
-        throw license_invalid_error("Public key is not a supported RSA public key");
-    }
     return length;
 }
 
@@ -66,6 +63,12 @@ inline tlv read_tlv(cursor& c)
 {
     const unsigned char tag = read_byte(c);
     const std::size_t length = read_length(c);
+    // Bounds-check before advancing: a short- or long-form length larger than
+    // the bytes that remain is a malformed key, not a licence to read past the
+    // decoded buffer.
+    if (static_cast<std::size_t>(c.end - c.p) < length) {
+        throw license_invalid_error("Public key is not a supported RSA public key");
+    }
     const unsigned char* content = c.p;
     c.p += length;
     return tlv{tag, content, length};

@@ -262,22 +262,16 @@ void ActivationController::refreshLicense(bool force, std::function<void(bool)> 
         {
             if (force)
             {
-                // Bypass the min-interval throttle by hitting the API directly,
-                // then persist so the new entitlements survive a restart.
+                // Bypass the min-interval throttle by hitting the API directly.
                 refreshed = licensing->client().validate_token_online(token);
-                try
-                {
-                    auto guard = licensing->store().lock_for_update();
-                    licensing->store().store_local_license(*refreshed);
-                }
-                catch (const moonbase::storage_error&)
-                {
-                }
             }
             else
             {
                 // Throttled + grace-period aware (skips the network if recent).
-                refreshed = licensing->validate_token_online(token);
+                // Suppress the SDK's own background-thread persist; we persist on
+                // the message thread below so a stale write can't resurrect a
+                // license the user cleared while this refresh was in flight.
+                refreshed = licensing->validate_token_online(token, [] { return false; });
             }
         }
         catch (const std::exception& ex)
@@ -285,17 +279,32 @@ void ActivationController::refreshLicense(bool force, std::function<void(bool)> 
             diag = ex.what();
         }
 
-        juce::MessageManager::callAsync([safe, generation, refreshed, diag, onComplete]() mutable
+        juce::MessageManager::callAsync([safe, generation, refreshed, licensing, diag, onComplete]() mutable
         {
             auto* self = safe.get();
             if (self == nullptr || generation != self->generation_.load())
             {
+                // Superseded (e.g. deactivate / clearLicense bumped the
+                // generation). Drop the result and, crucially, do not persist.
                 if (onComplete) onComplete(false);
                 return;
             }
 
             if (refreshed)
             {
+                // Persist here on the message thread: serialized against
+                // deactivate()/clearLicense() and gated by the generation check
+                // above, so a stale refresh cannot recreate a cleared license.
+                try
+                {
+                    auto guard = licensing->store().lock_for_update();
+                    licensing->store().store_local_license(*refreshed);
+                }
+                catch (const moonbase::storage_error& ex)
+                {
+                    self->emitDiagnostic(juce::String("Refreshed, but couldn't persist the license: ") + ex.what());
+                }
+
                 // Updates license_, re-routes the screen if needed, and notifies
                 // listeners (onActivationChanged) so the host can reload features.
                 self->applyLicense(std::move(refreshed));

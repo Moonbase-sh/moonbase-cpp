@@ -30,6 +30,8 @@ license sample_license()
     value.validated_at = detail::parse_iso8601_utc("2026-05-08T12:30:00Z");
     value.owned_sub_product_ids = {"demo-app-pro"};
     value.subscription_id = "subscription-123";
+    value.seat_count = 5;
+    value.seats_used = 2;
     value.properties = {{"seats", 3}, {"features", {"export", "sso"}}};
     value.token = "jwt";
     return value;
@@ -52,9 +54,27 @@ TEST_CASE("memory_license_store round-trips and deletes")
     CHECK(loaded->issued_to.properties.at("roles").at(0) == "admin");
     REQUIRE(loaded->properties.at("features").is_array());
     CHECK(loaded->properties.at("features").at(1) == "sso");
+    REQUIRE(loaded->seat_count.has_value());
+    CHECK(*loaded->seat_count == 5);
+    REQUIRE(loaded->seats_used.has_value());
+    CHECK(*loaded->seats_used == 2);
 
     store.delete_local_license();
     CHECK_FALSE(store.load_local_license().has_value());
+}
+
+TEST_CASE("a license without seat data round-trips to no seat data")
+{
+    memory_license_store store;
+    auto value = sample_license();
+    value.seat_count.reset();
+    value.seats_used.reset();
+    store.store_local_license(value);
+
+    auto loaded = store.load_local_license();
+    REQUIRE(loaded.has_value());
+    CHECK_FALSE(loaded->seat_count.has_value());
+    CHECK_FALSE(loaded->seats_used.has_value());
 }
 
 TEST_CASE("file_license_store round-trips and deletes")
@@ -75,6 +95,10 @@ TEST_CASE("file_license_store round-trips and deletes")
     CHECK(loaded->licensed_product.properties.at("regions").size() == 2);
     REQUIRE(loaded->properties.at("features").is_array());
     CHECK(loaded->properties.at("features").at(0) == "export");
+    REQUIRE(loaded->seat_count.has_value());
+    CHECK(*loaded->seat_count == 5);
+    REQUIRE(loaded->seats_used.has_value());
+    CHECK(*loaded->seats_used == 2);
 
     store.delete_local_license();
     CHECK_FALSE(std::filesystem::exists(path));
