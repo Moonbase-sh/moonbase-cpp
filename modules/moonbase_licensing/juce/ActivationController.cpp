@@ -596,7 +596,8 @@ void ActivationController::showOffline()
 
 void ActivationController::showDetails()
 {
-    setScreen(license_ ? Screen::Details : Screen::Welcome);
+    // For a trial license "details" is the trial view; keep them consistent.
+    setScreen(screenForCurrentLicense());
 }
 
 void ActivationController::setPreviewState(Screen screen, std::optional<moonbase::license> license,
@@ -637,17 +638,21 @@ void ActivationController::setScreen(Screen newScreen, const juce::String& messa
     sendChangeMessage();
 }
 
+ActivationController::Screen ActivationController::screenForCurrentLicense() const
+{
+    if (! license_)
+        return Screen::Welcome;
+    // A trial license always shows the trial view (days left / unlock). The
+    // config.enableTrial flag only governs the "Start trial" affordance on the
+    // Welcome screen, not how an already-active trial is presented.
+    return license_->trial ? Screen::Trial : Screen::Details;
+}
+
 void ActivationController::applyLicense(std::optional<moonbase::license> value)
 {
     license_ = std::move(value);
     statusMessage_.clear();
-
-    if (! license_)
-        setScreen(Screen::Welcome);
-    else if (license_->trial && config_.enableTrial)
-        setScreen(Screen::Trial);
-    else
-        setScreen(Screen::Details);
+    setScreen(screenForCurrentLicense());
 }
 
 juce::String ActivationController::shortPlatformName()

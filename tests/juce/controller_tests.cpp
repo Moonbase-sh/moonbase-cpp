@@ -74,7 +74,7 @@ struct controller_fixture
         config.accountId = "tenant-1";
         config.productName = "Solstice";
         config.manufacturerName = "Helio Audio";
-        config.enableTrial = true; // so a trial token routes to the Trial screen
+        config.enableTrial = true; // offer the "Start trial" button on Welcome
     }
 
     ~controller_fixture()
@@ -169,6 +169,24 @@ TEST_CASE("start() with a valid trial license routes to Trial")
     CHECK(controller.screen() == Screen::Trial);
     REQUIRE(controller.license().has_value());
     CHECK(controller.license()->trial);
+}
+
+TEST_CASE("an active trial shows the trial view even when enableTrial is off")
+{
+    controller_fixture fx;
+    fx.config.enableTrial = false; // no "Start trial" button, but a granted trial still shows
+    auto claims = default_claims();
+    claims["trial"] = true;
+    fx.seedStored(fx.token(claims));
+
+    ActivationController controller(fx.config, fx.makeLicensing());
+    controller.start();
+    REQUIRE(pumpUntil([&] { return settled(controller); }));
+    CHECK(controller.screen() == Screen::Trial);
+
+    // And "view details" on a trial stays on the trial view, not Details.
+    controller.showDetails();
+    CHECK(controller.screen() == Screen::Trial);
 }
 
 TEST_CASE("start() with a valid offline license routes to Details")

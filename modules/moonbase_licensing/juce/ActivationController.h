@@ -110,6 +110,7 @@ private:
 
     void setScreen(Screen newScreen, const juce::String& message = {});
     void applyLicense(std::optional<moonbase::license> value);
+    [[nodiscard]] Screen screenForCurrentLicense() const; // Welcome / Trial / Details
     void onActivationFulfilled(moonbase::license value);
     void deleteStoredMatching(const juce::String& activationId);
     void deleteStoredLicense(); // best-effort delete of the local license file

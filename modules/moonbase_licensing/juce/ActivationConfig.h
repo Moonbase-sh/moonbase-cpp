@@ -63,7 +63,7 @@ struct ActivationConfig
     juce::URL activationUrl;
 
     bool showMoonbaseBadge = true;
-    bool enableTrial = true;       // show "Start free trial" + the trial screen
+    bool enableTrial = true;       // show the "Start free trial" button on Welcome (an active trial license always shows the trial view regardless)
     bool enableOffline = true;     // show the offline activation flow
     bool reduceMotion = false;     // skip transition/spinner/pop animation (a11y + snapshot tests)
     bool overlayBackdrop = false;  // dim the host behind the panel (modal over a plugin) instead of a full opaque backdrop
