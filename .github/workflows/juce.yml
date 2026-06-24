@@ -1,0 +1,96 @@
+name: JUCE module
+
+# Builds the moonbase_licensing JUCE module and runs its behavioral test suite
+# (tests/juce) on every OS. This is the only CI that exercises the native-crypto
+# backends (Security.framework / CNG / libcrypto) and the ActivationController
+# state machine; the default ci.yml only covers the header-only SDK.
+#
+# The suite signs tokens with OpenSSL then verifies them with the platform's
+# native backend, i.e. a real cross-backend RS256 round-trip on each OS. The
+# module needs no curl, so the build turns it off (-DMOONBASE_USE_CURL=OFF).
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+concurrency:
+  group: juce-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  controller-tests:
+    name: ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-14, windows-latest]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install dependencies (Ubuntu)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libssl-dev \
+            libx11-dev libxext-dev libxinerama-dev libxrandr-dev libxcursor-dev \
+            libxcomposite-dev libxrender-dev libfreetype6-dev libfontconfig1-dev \
+            libasound2-dev libglu1-mesa-dev mesa-common-dev xvfb
+
+      - name: Install dependencies (macOS)
+        if: runner.os == 'macOS'
+        run: brew install openssl@3 nlohmann-json
+
+      - name: Install OpenSSL (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: choco install openssl --no-progress -y
+
+      - name: Configure (Ubuntu)
+        if: runner.os == 'Linux'
+        run: |
+          cmake -S . -B build \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DMOONBASE_USE_CURL=OFF \
+            -DMOONBASE_BUILD_JUCE_TESTS=ON
+
+      - name: Configure (macOS)
+        if: runner.os == 'macOS'
+        run: |
+          cmake -S . -B build \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DMOONBASE_USE_CURL=OFF \
+            -DMOONBASE_BUILD_JUCE_TESTS=ON \
+            -DOPENSSL_ROOT_DIR="$(brew --prefix openssl@3)"
+
+      - name: Configure (Windows)
+        if: runner.os == 'Windows'
+        shell: bash
+        run: |
+          cmake -S . -B build \
+            -DMOONBASE_USE_CURL=OFF \
+            -DMOONBASE_BUILD_JUCE_TESTS=ON \
+            -DOPENSSL_ROOT_DIR="C:/Program Files/OpenSSL"
+
+      # On Linux the doctest discovery step runs the binary at build time, and the
+      # suite initialises the JUCE GUI subsystem, so both the build and the run
+      # need a virtual display.
+      - name: Build (Ubuntu)
+        if: runner.os == 'Linux'
+        run: xvfb-run -a cmake --build build --target MoonbaseJuceTests -j
+
+      - name: Build
+        if: runner.os != 'Linux'
+        run: cmake --build build --target MoonbaseJuceTests --config Release -j
+
+      - name: Test (Ubuntu)
+        if: runner.os == 'Linux'
+        run: xvfb-run -a ctest --test-dir build -R "Juce\." --output-on-failure
+
+      - name: Test
+        if: runner.os != 'Linux'
+        run: ctest --test-dir build -R "Juce\." -C Release --output-on-failure

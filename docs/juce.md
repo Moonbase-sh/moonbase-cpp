@@ -1,5 +1,11 @@
 # JUCE Integration
 
+> **Looking for a drop-in module with a built-in UI?** See
+> [`docs/juce-module.md`](juce-module.md) for the `moonbase_licensing` JUCE module —
+> native API integration plus a polished, themeable activation UI, with zero
+> third-party dependencies. This page documents the older `juce::OnlineUnlockStatus`
+> **bridge** (reference code you copy in), which remains available and unchanged.
+
 A drop-in bridge for using the Moonbase C++ activation SDK from a JUCE-based
 plugin or application. The bridge lives under [`examples/juce/`](../examples/juce/)
 as reference code — copy the files into your project, since JUCE is not a

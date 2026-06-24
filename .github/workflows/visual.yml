@@ -1,0 +1,44 @@
+name: Visual tests
+
+# Renders the activation UI in every state with the offscreen snapshot harness
+# (tests/visual) and uploads the PNGs to Argos for visual diffing + baselines.
+#
+# Runs on macOS so the snapshots also exercise the Apple (Security.framework)
+# crypto backend. Set the ARGOS_TOKEN repository secret to enable the upload;
+# without it the job still builds, renders, and stores the PNGs as an artifact.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+concurrency:
+  group: visual-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  ui-snapshots:
+    runs-on: macos-14
+    env:
+      ARGOS_TOKEN: ${{ secrets.ARGOS_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # Argos uses git history to find the baseline build
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Build harness + render snapshots
+        run: ./scripts/visual-snapshots.sh
+
+      - name: Upload snapshots artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ui-snapshots
+          path: ui-snapshots/*.png
+
+      - name: Upload to Argos
+        if: ${{ env.ARGOS_TOKEN != '' }}
+        run: npx --yes @argos-ci/cli upload ui-snapshots

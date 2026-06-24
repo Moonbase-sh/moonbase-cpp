@@ -1,0 +1,53 @@
+name: Sanitizers
+
+# Runs the test suite under AddressSanitizer + UndefinedBehaviorSanitizer and
+# under ThreadSanitizer. The controller and the license store both spawn
+# threads, so the thread run guards against data races / use-after-free that
+# unit assertions can't see. Linux only: the sanitizer runtimes are reliable
+# there (the repo's macOS toolchain trips ASan's process-startup checks).
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+concurrency:
+  group: sanitizers-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  sdk:
+    name: SDK (${{ matrix.sanitizer }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        sanitizer: ["address,undefined", "thread"]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libcurl4-openssl-dev libssl-dev nlohmann-json3-dev
+
+      - name: Configure
+        run: |
+          cmake -S . -B build \
+            -DCMAKE_BUILD_TYPE=RelWithDebInfo \
+            -DMOONBASE_BUILD_TESTS=ON \
+            -DMOONBASE_BUILD_EXAMPLES=OFF \
+            -DMOONBASE_SANITIZER=${{ matrix.sanitizer }}
+
+      - name: Build
+        run: cmake --build build --target moonbase_tests -j
+
+      - name: Test
+        env:
+          # Surface the first finding with a full report and a non-zero exit.
+          ASAN_OPTIONS: halt_on_error=1:abort_on_error=1:detect_leaks=1
+          UBSAN_OPTIONS: halt_on_error=1:print_stacktrace=1
+          TSAN_OPTIONS: halt_on_error=1:second_deadlock_stack=1
+        run: ctest --test-dir build --output-on-failure

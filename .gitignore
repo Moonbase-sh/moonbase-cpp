@@ -9,3 +9,7 @@ _deps/
 license.mb
 node_modules/
 CMakeLists.txt.bak
+.DS_Store
+ui-snapshots/
+node_modules
+.argos
