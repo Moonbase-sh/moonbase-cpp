@@ -4,6 +4,7 @@
 // fields configure the Moonbase SDK; the branding fields drive the built-in UI
 // (the Solstice design's product name, accent, trial copy, co-brand badge).
 
+#include <chrono>
 #include <functional>
 #include <map>
 #include <memory>
@@ -45,6 +46,22 @@ struct ActivationConfig
     juce::String publicKey;      // RSA public key (PEM or base64 DER)
     juce::String accountId;      // optional issuer pin
     juce::String applicationVersion;
+
+    //== Validation / network tuning ==========================================
+    // How long a license stays valid offline since its last successful online
+    // validation before it is treated as stale (and the app locks). Default 7 days.
+    std::chrono::seconds onlineGracePeriod{std::chrono::hours(24 * 7)};
+
+    // Minimum time between online validation calls. Within this window a
+    // validation returns the cached license with no network round trip, so this
+    // is the effective "how often we re-check online" cadence. Default 5 minutes.
+    // (controller().refreshLicense(force=true) bypasses it.)
+    std::chrono::seconds onlineCheckInterval{std::chrono::minutes(5)};
+
+    // HTTP timeouts for activation / validation requests (they run on background
+    // threads, so these never block the UI). Defaults: 10s connect, 30s request.
+    std::chrono::milliseconds httpConnectTimeout{std::chrono::seconds(10)};
+    std::chrono::milliseconds httpRequestTimeout{std::chrono::seconds(30)};
 
     // Where the validated license is persisted. Defaults to a per-user app-data
     // file under "<manufacturer>/<product>/license.mb" when left empty
@@ -217,6 +234,11 @@ struct ActivationConfig
             options.account_id = accountId.toStdString();
         if (applicationVersion.isNotEmpty())
             options.application_version = applicationVersion.toStdString();
+
+        options.online_validation_grace_period = onlineGracePeriod;
+        options.online_validation_min_interval = onlineCheckInterval;
+        options.http_connect_timeout = httpConnectTimeout;
+        options.http_request_timeout = httpRequestTimeout;
 
         // Explicit metadata first (so it wins on key collisions), then the
         // opt-in JUCE analytics capture, then the caller's last-word hook.

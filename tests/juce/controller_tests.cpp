@@ -525,6 +525,31 @@ TEST_CASE("refreshLicense keeps the current license when the server is unreachab
 }
 
 //==============================================================================
+// Validation / network tuning
+//==============================================================================
+TEST_CASE("validation + timeout tuning flows into the SDK options")
+{
+    ActivationConfig config;
+    config.endpoint = "https://demo.moonbase.sh";
+    config.productId = "demo-app";
+
+    // Defaults match the SDK.
+    CHECK(config.toLicensingOptions().online_validation_min_interval == std::chrono::minutes(5));
+    CHECK(config.toLicensingOptions().online_validation_grace_period == std::chrono::hours(24 * 7));
+
+    config.onlineCheckInterval = std::chrono::hours(1);
+    config.onlineGracePeriod = std::chrono::hours(24 * 30);
+    config.httpConnectTimeout = std::chrono::seconds(3);
+    config.httpRequestTimeout = std::chrono::seconds(8);
+
+    const auto opts = config.toLicensingOptions();
+    CHECK(opts.online_validation_min_interval == std::chrono::hours(1));
+    CHECK(opts.online_validation_grace_period == std::chrono::hours(24 * 30));
+    CHECK(opts.http_connect_timeout == std::chrono::seconds(3));
+    CHECK(opts.http_request_timeout == std::chrono::seconds(8));
+}
+
+//==============================================================================
 // Telemetry / analytics metadata
 //==============================================================================
 TEST_CASE("analytics capture is off by default and easy to switch on")

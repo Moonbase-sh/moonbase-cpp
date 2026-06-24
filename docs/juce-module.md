@@ -208,6 +208,23 @@ pass `false` for a polite background re-check that respects it. A network failur
 non-fatal: the current license is kept and the reason goes to `onDiagnostic`. Offline
 licenses are a no-op (they are permanent and not server-tracked).
 
+### Cadence and timeouts
+
+How often the app re-checks online, how long it tolerates being offline, and the request
+timeouts are all configurable:
+
+```cpp
+config.onlineCheckInterval = std::chrono::hours (1);     // min spacing between online checks (default 5 min)
+config.onlineGracePeriod   = std::chrono::hours (24 * 30); // max time offline before locking (default 7 days)
+config.httpConnectTimeout  = std::chrono::seconds (5);
+config.httpRequestTimeout  = std::chrono::seconds (15);
+```
+
+The SDK never polls on a timer; it validates on launch (`start()`) and whenever you call
+`refreshLicense()`, throttled to no more than once per `onlineCheckInterval`. A license
+stays usable offline until `onlineGracePeriod` elapses since its last successful online
+validation.
+
 ## Telemetry / analytics
 
 Off by default. One flag attaches JUCE system + host metadata to every activation and
