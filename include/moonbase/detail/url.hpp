@@ -21,7 +21,8 @@ inline std::string url_encode(std::string_view value)
 {
     std::ostringstream out;
     out << std::uppercase << std::hex;
-    for (const unsigned char c : value) {
+    for (const char ch : value) {
+        const auto c = static_cast<unsigned char>(ch);
         if (std::isalnum(c) || c == '-' || c == '_' || c == '.' || c == '~') {
             out << static_cast<char>(c);
         } else {

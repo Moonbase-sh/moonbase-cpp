@@ -88,9 +88,9 @@ class StyledButton : public juce::Button,
 public:
     enum class Style { accent, ghost, danger };
 
-    StyledButton(ActivationLookAndFeel& l, Style s, const juce::String& text,
+    StyledButton(ActivationLookAndFeel& l, Style s, const juce::String& buttonText,
                  std::unique_ptr<juce::Drawable> ic = {})
-        : juce::Button(text), lnf(l), style(s), icon(std::move(ic))
+        : juce::Button(buttonText), lnf(l), style(s), icon(std::move(ic))
     {
     }
 
@@ -235,9 +235,9 @@ private:
 class LinkButton : public juce::Button
 {
 public:
-    LinkButton(ActivationLookAndFeel& l, const juce::String& text, Colour c,
+    LinkButton(ActivationLookAndFeel& l, const juce::String& buttonText, Colour c,
                std::unique_ptr<juce::Drawable> ic = {}, Justification just = Justification::centred)
-        : juce::Button(text), lnf(l), label(text), colour(c), icon(std::move(ic)), justification(just)
+        : juce::Button(buttonText), lnf(l), label(buttonText), colour(c), icon(std::move(ic)), justification(just)
     {
     }
 
