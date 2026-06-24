@@ -638,6 +638,55 @@ TEST_CASE("analytics capture is off by default and easy to switch on")
 }
 
 //==============================================================================
+// Teardown / lifetime
+//==============================================================================
+namespace {
+// A transport whose send() blocks until cancel() is called, to simulate a
+// request in flight when the controller is destroyed (plugin scan / rapid close).
+struct blocking_transport : moonbase::http_transport
+{
+    juce::WaitableEvent gate;
+    std::atomic<bool> entered{ false };
+
+    moonbase::http_response send(const moonbase::http_request&) override
+    {
+        entered = true;
+        gate.wait();
+        throw moonbase::api_error(0, "cancelled");
+    }
+
+    void cancel() { gate.signal(); }
+};
+} // namespace
+
+TEST_CASE("destroying the controller mid-request cancels and joins without hanging")
+{
+    controller_fixture fx;
+    auto claims = default_claims();
+    claims["validated"] = now_seconds() - 3600; // past the throttle -> start() hits the network
+    fx.seedStored(fx.token(claims));
+
+    auto blocking = std::make_shared<blocking_transport>();
+    auto licensing = std::make_shared<moonbase::licensing>(
+        fx.config.toLicensingOptions(), fx.store, fx.fingerprint, blocking);
+
+    {
+        ActivationController controller(fx.config, licensing, "dev",
+                                        [blocking] { blocking->cancel(); });
+        controller.start();
+        // Wait until the worker is actually blocked inside the transport, so the
+        // destructor below genuinely has an in-flight request to cancel.
+        REQUIRE(pumpUntil([&] { return blocking->entered.load(); }));
+        // Leaving this scope destroys the controller: it must cancel the request
+        // and drain the worker promptly. If cancellation were broken this would
+        // block on the 5s drain timeout (and then the pool teardown) instead.
+    }
+
+    // Reaching here means the destructor cancelled + drained promptly.
+    CHECK(blocking->entered.load());
+}
+
+//==============================================================================
 int main(int argc, char** argv)
 {
     juce::ScopedJuceInitialiser_GUI gui; // gives this thread a MessageManager

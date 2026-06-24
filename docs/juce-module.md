@@ -80,9 +80,13 @@ ActivationDialog::show(config, [](bool wasActivated) { /* … */ });
 ## The flow
 
 `ActivationComponent` owns an `ActivationController` — a headless state machine over
-`moonbase::licensing`. Network calls run on background threads; all state changes and
-repaints happen on the message thread, gated by a generation counter so a slow request
-can never clobber a newer state. The screens:
+`moonbase::licensing`. Network calls run on a controller-owned thread pool; all state
+changes and repaints happen on the message thread, gated by a generation counter so a
+slow request can never clobber a newer state. Destroying the controller cancels any
+in-flight request and joins its workers, so nothing keeps running after teardown — you
+can call `start()` straight from the editor constructor and destroy the editor at any
+time (plugin scanning, pluginval, rapid open/close) without deferring or guarding it.
+The screens:
 
 - **Welcome** — Activate online (browser flow) or Activate offline.
 - **Activating** — opens the browser and polls `get_requested_activation()`; the
@@ -92,9 +96,10 @@ can never clobber a newer state. The screens:
   then load the response file (`read_offline_license`, validated locally).
 - **Trial** — days-left badge, progress bar, included/excluded feature list, and an
   Unlock action that routes into online activation.
-- **License details** — issued-to / email / plan / activation / expiry, a Deactivate
-  action (server-side `revoke_activation`, with a local-forget fallback for offline or
-  trial licenses), and a Manage link.
+- **License details** — issued-to / email / plan / activation / expiry, a seat counter,
+  and a Deactivate action (server-side `revoke_activation`, with a local-forget fallback
+  for offline or trial licenses).
+- **Trial expired** — a locked "trial has ended" screen with Unlock / Activate offline.
 
 All transitions use JUCE 8's animation API (`juce::Animator` / `ValueAnimatorBuilder`
 / `Easings`, driven by a `VBlankAnimatorUpdater`): cross-fade + fade-up between

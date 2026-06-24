@@ -37,37 +37,76 @@ public:
                            : request.request_timeout;
         const int timeoutMs = timeout.count() > 0 ? static_cast<int>(timeout.count()) : 30000;
 
-        // ParameterHandling::inAddress is essential: the SDK bakes its query
-        // string (?format=JWT&platform=…) into the URL, which juce::URL parses
-        // into parameters. With inPostData (what `WebInputStream(url, true)`
-        // uses) JUCE would form-encode those params and prepend them to the POST
-        // body, corrupting the JSON/token payload and triggering server 400s.
-        // inAddress keeps them in the URL; the body stays exactly our payload.
-        juce::StringPairArray responseHeaders;
-        int statusCode = 0;
-        auto options = juce::URL::InputStreamOptions(juce::URL::ParameterHandling::inAddress)
-                           .withExtraHeaders(extraHeaders)
-                           .withConnectionTimeoutMs(timeoutMs)
-                           .withResponseHeaders(&responseHeaders)
-                           .withStatusCode(&statusCode);
+        // addParametersToRequestBody = false is the WebInputStream equivalent of
+        // ParameterHandling::inAddress: the SDK bakes its query string
+        // (?format=JWT&platform=…) into the URL and the POST body must stay
+        // exactly our payload. With `true` JUCE would form-encode those params
+        // into the body, corrupting the JSON/token and triggering server 400s.
+        //
+        // We construct the WebInputStream ourselves (rather than
+        // URL::createInputStream) so a torn-down controller can cancel() a
+        // blocking read instead of leaving a detached worker running module code
+        // after the plugin is destroyed/unloaded (scanning, pluginval).
+        auto stream = std::make_unique<juce::WebInputStream>(url, /*addParametersToRequestBody*/ false);
+        stream->withExtraHeaders(extraHeaders);
+        stream->withConnectionTimeout(timeoutMs);
 
-        auto stream = url.createInputStream(options);
-        if (stream == nullptr)
+        {
+            const juce::ScopedLock sl(streamLock);
+            if (cancelled)
+                throw moonbase::api_error(0, "HTTP request to " + request.url + " was cancelled");
+            active = stream.get();
+        }
+
+        const bool connected = stream->connect(nullptr);
+
+        juce::String body;
+        int statusCode = 0;
+        juce::StringPairArray responseHeaders;
+        if (connected)
+        {
+            body = stream->readEntireStreamAsString();
+            statusCode = stream->getStatusCode();
+            responseHeaders = stream->getResponseHeaders();
+        }
+
+        {
+            const juce::ScopedLock sl(streamLock);
+            active = nullptr;
+        }
+
+        if (! connected)
         {
             // Match curl_http_transport: a transport-level failure surfaces as
-            // api_error with status 0, which the SDK's grace-period logic
-            // treats as "unreachable".
+            // api_error with status 0, which the SDK's grace-period logic treats
+            // as "unreachable" (this also covers a cancelled connect()).
             throw moonbase::api_error(
                 0, "HTTP request to " + request.url + " failed (could not connect)");
         }
 
         moonbase::http_response response;
-        response.body = stream->readEntireStreamAsString().toStdString();
+        response.body = body.toStdString();
         response.status_code = static_cast<long>(statusCode);
         for (const auto& key : responseHeaders.getAllKeys())
             response.headers[key.toStdString()] = responseHeaders[key].toStdString();
         return response;
     }
+
+    // Interrupt any in-flight request and refuse further ones. Safe to call from
+    // another thread; the controller calls it on teardown so a blocking read
+    // cannot outlive the controller (or the plugin binary).
+    void cancel()
+    {
+        const juce::ScopedLock sl(streamLock);
+        cancelled = true;
+        if (active != nullptr)
+            active->cancel();
+    }
+
+private:
+    juce::CriticalSection streamLock;
+    juce::WebInputStream* active = nullptr; // valid only between connect() and the read completing
+    bool cancelled = false;
 };
 
 } // namespace moonbase::juce_integration

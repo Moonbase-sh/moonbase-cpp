@@ -36,7 +36,7 @@ ActivationController::ActivationController(ActivationConfig config)
     try
     {
         licensing_ = std::make_shared<moonbase::licensing>(
-            config_.toLicensingOptions(), std::move(store), fingerprint, std::move(transport));
+            config_.toLicensingOptions(), std::move(store), fingerprint, transport);
     }
     catch (const std::exception& ex)
     {
@@ -47,13 +47,16 @@ ActivationController::ActivationController(ActivationConfig config)
         return;
     }
 
+    cancelInFlight_ = [transport] { transport->cancel(); };
     setDeviceLabel(juce::String(fingerprint->device_name()));
 }
 
 ActivationController::ActivationController(ActivationConfig config,
                                           std::shared_ptr<moonbase::licensing> licensing,
-                                          juce::String deviceName)
-    : config_(std::move(config)), licensing_(std::move(licensing))
+                                          juce::String deviceName,
+                                          std::function<void()> cancelInFlight)
+    : config_(std::move(config)), licensing_(std::move(licensing)),
+      cancelInFlight_(std::move(cancelInFlight))
 {
     jassert(licensing_ != nullptr);
     setDeviceLabel(std::move(deviceName));
@@ -62,6 +65,12 @@ ActivationController::ActivationController(ActivationConfig config,
 ActivationController::~ActivationController()
 {
     stopTimer();
+    // Unblock any in-flight request, then wait for the workers to finish, so no
+    // detached thread keeps running module code after we (and possibly the
+    // plugin binary) are gone. cancelInFlight_ makes the drain near-instant.
+    if (cancelInFlight_)
+        cancelInFlight_();
+    threadPool_.removeAllJobs(true, 5000);
 }
 
 void ActivationController::setDeviceLabel(juce::String deviceName)
@@ -105,7 +114,7 @@ void ActivationController::start()
     juce::WeakReference<ActivationController> safe(this);
     auto licensing = licensing_;
 
-    juce::Thread::launch([safe, generation, licensing]() mutable
+    threadPool_.addJob([safe, generation, licensing]() mutable
     {
         std::optional<moonbase::license> result;
         std::optional<moonbase::license> expiredTrial;
@@ -207,7 +216,7 @@ void ActivationController::beginOnlineActivation()
     juce::WeakReference<ActivationController> safe(this);
     auto licensing = licensing_;
 
-    juce::Thread::launch([safe, generation, licensing]() mutable
+    threadPool_.addJob([safe, generation, licensing]() mutable
     {
         std::optional<moonbase::activation_request> request;
         juce::String error;
@@ -274,7 +283,7 @@ void ActivationController::refreshLicense(bool force, std::function<void(bool)> 
     juce::WeakReference<ActivationController> safe(this);
     auto licensing = licensing_;
 
-    juce::Thread::launch([safe, generation, token, currentLicense, wasTrial, licensing, force, onComplete]() mutable
+    threadPool_.addJob([safe, generation, token, currentLicense, wasTrial, licensing, force, onComplete]() mutable
     {
         std::optional<moonbase::license> refreshed;
         bool expired = false;
@@ -369,7 +378,7 @@ void ActivationController::timerCallback()
     juce::WeakReference<ActivationController> safe(this);
     auto licensing = licensing_;
 
-    juce::Thread::launch([safe, generation, request, licensing]() mutable
+    threadPool_.addJob([safe, generation, request, licensing]() mutable
     {
         std::optional<moonbase::license> fulfilled;
         bool fatal = false;
@@ -540,7 +549,7 @@ void ActivationController::deactivate()
     juce::WeakReference<ActivationController> safe(this);
     auto licensing = licensing_;
 
-    juce::Thread::launch([safe, generation, token, activationId, licensing]() mutable
+    threadPool_.addJob([safe, generation, token, activationId, licensing]() mutable
     {
         enum class Outcome { Revoked, NotRevokable, Unreachable };
         Outcome outcome = Outcome::Revoked;

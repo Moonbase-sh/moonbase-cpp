@@ -45,9 +45,13 @@ public:
     // Test seam: drive the state machine against an injected licensing built
     // with fake store / transport / fingerprint. The primary constructor builds
     // the real dependencies from the config; this one takes them ready-made.
+    // cancelInFlight (optional) is invoked on teardown to interrupt a blocking
+    // request so workers can't outlive the controller (the real path wires it to
+    // the HTTP transport's cancel()).
     ActivationController(ActivationConfig config,
                          std::shared_ptr<moonbase::licensing> licensing,
-                         juce::String deviceName = "Test Device");
+                         juce::String deviceName = "Test Device",
+                         std::function<void()> cancelInFlight = {});
 
     ~ActivationController() override;
 
@@ -127,6 +131,12 @@ private:
 
     ActivationConfig config_;
     std::shared_ptr<moonbase::licensing> licensing_;
+
+    // Network/file work runs here instead of detached threads, so the destructor
+    // can drain workers (after cancelInFlight_ unblocks any in-flight request);
+    // nothing outlives the controller.
+    std::function<void()> cancelInFlight_;
+    juce::ThreadPool threadPool_ { 2 };
 
     Screen screen_ = Screen::Loading;
     std::optional<moonbase::license> license_;
