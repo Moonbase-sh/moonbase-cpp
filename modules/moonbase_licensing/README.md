@@ -87,8 +87,8 @@ richer gating, and `onActivationChanged` fires whenever it changes.
 
 - **Branding** — everything in `ActivationConfig` after the connection fields is UI:
   names, accent colour, logo `Drawable`, overridable copy (`config.strings`), trial
-  length + feature list, the removable Moonbase badge, and the manage/support/activation
-  URLs. Re-skin deeper via `ActivationLookAndFeel::palette`.
+  length + feature list, the removable Moonbase badge, and the activation URL.
+  Re-skin deeper via `ActivationLookAndFeel::palette`.
 - **Refresh entitlements** — `controller().refreshLicense()` re-validates online so a
   freshly purchased sub-product/upgrade loads without a restart (async, silent, with an
   optional completion callback).

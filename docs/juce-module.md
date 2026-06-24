@@ -116,7 +116,7 @@ gating.
 Everything in `ActivationConfig` after the connection fields is brand/UI: product +
 manufacturer name, `accent` colour, the Moonbase co-brand badge (`showMoonbaseBadge`), the
 `trialLengthDays` + `trialFeatures` list (shown on the Trial / Expired screens),
-`enableOffline`, and the manage / support URLs. For deeper re-skinning, mutate `ActivationLookAndFeel::palette`
+`enableOffline`, and the `activationUrl`. For deeper re-skinning, mutate `ActivationLookAndFeel::palette`
 (every colour is a token) or bundle real Inter / Space Mono typefaces and point the
 `heading` / `body` / `mono` font helpers at them.
 

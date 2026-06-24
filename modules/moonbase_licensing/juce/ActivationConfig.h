@@ -71,8 +71,6 @@ struct ActivationConfig
     juce::String productName;       // defaults to JucePlugin_Name (see resolvedProductName())
     juce::String manufacturerName;  // defaults to JucePlugin_Manufacturer; shown under the product name
     juce::Colour accent = juce::Colour(0xff186cdc);        // Moonbase blue
-    juce::URL manageUrl  = juce::URL("https://moonbase.sh");
-    juce::URL supportUrl;
 
     // Where the customer exchanges their machine file for a license file during
     // offline activation. Defaults to "{endpoint}/activate" when left unset.
