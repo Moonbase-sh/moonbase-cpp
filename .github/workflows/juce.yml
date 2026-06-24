@@ -48,7 +48,8 @@ jobs:
       - name: Install OpenSSL via vcpkg (Windows)
         if: runner.os == 'Windows'
         shell: bash
-        run: "$VCPKG_INSTALLATION_ROOT/vcpkg" install --triplet x64-windows openssl
+        run: |
+          "$VCPKG_INSTALLATION_ROOT/vcpkg" install --triplet x64-windows openssl
 
       - name: Configure (Ubuntu)
         if: runner.os == 'Linux'
