@@ -145,27 +145,29 @@ void ActivationController::start()
                 }
                 else if (peek)
                 {
-                    const bool isExpiredTrial = peek->trial && peek->expires_at
-                        && *peek->expires_at < std::chrono::system_clock::now();
-                    if (isExpiredTrial)
+                    try
                     {
-                        // Keep the ended trial for the "trial has ended" screen,
-                        // but it is not a valid license: the plugin stays locked.
-                        expiredTrial = std::move(peek);
-                        diag = "Stored trial license has expired.";
+                        // Validates the local token first (throws immediately if
+                        // already expired, with no network call) and otherwise
+                        // re-checks against the server when past the throttle.
+                        result = licensing->validate_token_online(stored->token);
                     }
-                    else
+                    catch (const moonbase::license_expired_error& ex)
                     {
-                        try
-                        {
-                            result = licensing->validate_token_online(stored->token);
-                        }
-                        catch (const std::exception& ex)
-                        {
-                            // Invalid / expired / unreachable-past-grace -> locked.
-                            diag = juce::String("Re-validating stored license failed: ") + ex.what();
+                        // Expired either locally or per the server's response. A
+                        // trial routes to the Expired screen (using the token we
+                        // have for display); the plugin stays locked either way.
+                        diag = juce::String("Stored license has expired: ") + ex.what();
+                        if (peek->trial)
+                            expiredTrial = std::move(peek);
+                        else
                             result = std::nullopt;
-                        }
+                    }
+                    catch (const std::exception& ex)
+                    {
+                        // Invalid / unreachable-past-grace -> locked.
+                        diag = juce::String("Re-validating stored license failed: ") + ex.what();
+                        result = std::nullopt;
                     }
                 }
             }
@@ -267,12 +269,15 @@ void ActivationController::refreshLicense(bool force, std::function<void(bool)> 
 
     const auto generation = ++generation_;
     const auto token = license_->token;
+    const auto currentLicense = *license_; // for the expired-trial case (re-validation can't return it)
+    const bool wasTrial = license_->trial;
     juce::WeakReference<ActivationController> safe(this);
     auto licensing = licensing_;
 
-    juce::Thread::launch([safe, generation, token, licensing, force, onComplete]() mutable
+    juce::Thread::launch([safe, generation, token, currentLicense, wasTrial, licensing, force, onComplete]() mutable
     {
         std::optional<moonbase::license> refreshed;
+        bool expired = false;
         juce::String diag;
         try
         {
@@ -290,12 +295,20 @@ void ActivationController::refreshLicense(bool force, std::function<void(bool)> 
                 refreshed = licensing->validate_token_online(token, [] { return false; });
             }
         }
+        catch (const moonbase::license_expired_error& ex)
+        {
+            // Re-validation says it has ended (e.g. a trial that was still valid
+            // locally). Distinct from a network blip: this should lock.
+            expired = true;
+            diag = ex.what();
+        }
         catch (const std::exception& ex)
         {
             diag = ex.what();
         }
 
-        juce::MessageManager::callAsync([safe, generation, refreshed, licensing, diag, onComplete]() mutable
+        juce::MessageManager::callAsync([safe, generation, refreshed, expired, currentLicense, wasTrial,
+                                         licensing, diag, onComplete]() mutable
         {
             auto* self = safe.get();
             if (self == nullptr || generation != self->generation_.load())
@@ -326,10 +339,18 @@ void ActivationController::refreshLicense(bool force, std::function<void(bool)> 
                 self->applyLicense(std::move(refreshed));
                 if (onComplete) onComplete(true);
             }
+            else if (expired && wasTrial)
+            {
+                // The trial ended per the server: lock and show the Expired
+                // screen (using the trial we held, since the throw returns none).
+                self->emitDiagnostic("Trial ended on re-validation: " + diag);
+                self->showTrialExpired(currentLicense);
+                if (onComplete) onComplete(false);
+            }
             else
             {
-                // Keep the current license on failure (a network blip must not
-                // lock the user out); just report the underlying reason.
+                // Keep the current license on other failures (a network blip must
+                // not lock the user out); just report the underlying reason.
                 self->emitDiagnostic("Online re-validation failed: " + diag);
                 if (onComplete) onComplete(false);
             }

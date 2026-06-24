@@ -192,6 +192,53 @@ TEST_CASE("an expired trial shows the Expired screen and keeps the plugin locked
     CHECK(fx.transport->requests.empty()); // an expired trial never hits the API
 }
 
+TEST_CASE("a trial that is valid locally but re-validates as expired shows Expired")
+{
+    controller_fixture fx;
+    auto claims = default_claims();
+    claims["trial"] = true;
+    claims["validated"] = now_seconds() - 3600; // past the throttle -> start() re-checks online
+    fx.seedStored(fx.token(claims));             // exp is still in the future -> valid locally
+
+    // The server reports the trial has ended.
+    fx.transport->responses.push_back(
+        moonbase::http_response{400, {}, R"({"errorType":"LicenseExpired","detail":"trial ended"})"});
+
+    ActivationController controller(fx.config, fx.makeLicensing());
+    controller.start();
+
+    REQUIRE(pumpUntil([&] { return settled(controller); }));
+    CHECK(controller.screen() == Screen::Expired);
+    CHECK_FALSE(controller.license().has_value());
+    REQUIRE(controller.expiredTrial().has_value());
+    CHECK(fx.transport->requests.size() == 1); // it did re-check online
+}
+
+TEST_CASE("refreshLicense that finds the trial expired shows Expired and locks")
+{
+    controller_fixture fx;
+    auto claims = default_claims();
+    claims["trial"] = true;
+    fx.seedStored(fx.token(claims)); // valid trial, validated recently -> start() stays on Trial
+
+    ActivationController controller(fx.config, fx.makeLicensing());
+    controller.start();
+    REQUIRE(pumpUntil([&] { return controller.screen() == Screen::Trial; }));
+    REQUIRE(controller.license().has_value());
+
+    // A forced re-check; the server says the trial has ended.
+    fx.transport->responses.push_back(
+        moonbase::http_response{400, {}, R"({"errorType":"LicenseExpired","detail":"trial ended"})"});
+
+    bool done = false;
+    controller.refreshLicense(true, [&](bool) { done = true; });
+    REQUIRE(pumpUntil([&] { return done; }));
+
+    CHECK(controller.screen() == Screen::Expired);
+    CHECK_FALSE(controller.license().has_value());
+    REQUIRE(controller.expiredTrial().has_value());
+}
+
 TEST_CASE("an active trial shows the trial view even when enableTrial is off")
 {
     controller_fixture fx;
