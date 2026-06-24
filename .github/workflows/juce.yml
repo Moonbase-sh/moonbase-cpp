@@ -45,10 +45,10 @@ jobs:
         if: runner.os == 'macOS'
         run: brew install openssl@3 nlohmann-json
 
-      - name: Install OpenSSL (Windows)
+      - name: Install OpenSSL via vcpkg (Windows)
         if: runner.os == 'Windows'
-        shell: pwsh
-        run: choco install openssl --no-progress -y
+        shell: bash
+        run: "$VCPKG_INSTALLATION_ROOT/vcpkg" install --triplet x64-windows openssl
 
       - name: Configure (Ubuntu)
         if: runner.os == 'Linux'
@@ -74,7 +74,8 @@ jobs:
           cmake -S . -B build \
             -DMOONBASE_USE_CURL=OFF \
             -DMOONBASE_BUILD_JUCE_TESTS=ON \
-            -DOPENSSL_ROOT_DIR="C:/Program Files/OpenSSL"
+            -DCMAKE_TOOLCHAIN_FILE="$VCPKG_INSTALLATION_ROOT/scripts/buildsystems/vcpkg.cmake" \
+            -DVCPKG_TARGET_TRIPLET=x64-windows
 
       # On Linux the doctest discovery step runs the binary at build time, and the
       # suite initialises the JUCE GUI subsystem, so both the build and the run
