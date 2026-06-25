@@ -5,9 +5,12 @@
   "description": "Release tooling for the moonbase-cpp SDK. Not published to npm.",
   "license": "MIT",
   "scripts": {
-    "release": "semantic-release"
+    "release": "semantic-release",
+    "snapshots": "./scripts/visual-snapshots.sh",
+    "argos:upload": "argos upload ui-snapshots"
   },
   "devDependencies": {
+    "@argos-ci/cli": "^2.5.0",
     "@semantic-release/changelog": "^6.0.3",
     "@semantic-release/commit-analyzer": "^13.0.1",
     "@semantic-release/exec": "^7.1.0",

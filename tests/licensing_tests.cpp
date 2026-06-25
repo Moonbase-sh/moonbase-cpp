@@ -219,6 +219,27 @@ TEST_CASE("read_offline_license rejects a token issued for another device")
         license_invalid_error);
 }
 
+TEST_CASE("validate_token_local_allow_expired surfaces an expired offline license instead of throwing")
+{
+    facade_fixture fixture;
+    auto claims = moonbase::tests::default_claims();
+    claims["method"] = "Offline";
+    claims["exp"] = moonbase::tests::now_seconds() - 10; // already expired
+    const auto token = fixture.make_token(claims);
+
+    // The strict path rejects it (this is what locks the plugin on load)...
+    CHECK_THROWS_AS((void)fixture.instance.validate_token_local(token), license_expired_error);
+
+    // ...but the allow-expired peek still reports it, so a caller can tell an
+    // expired *offline* license (which can never be refreshed -> delete it)
+    // apart from a refreshable online token or an untrusted token.
+    const auto peek = fixture.instance.validate_token_local_allow_expired(token);
+    CHECK(peek.method == activation_method::offline);
+    REQUIRE(peek.expires_at.has_value());
+    CHECK(*peek.expires_at < std::chrono::system_clock::now());
+    CHECK(fixture.transport->requests.empty());
+}
+
 TEST_CASE("validate_token_online runs local validation before any HTTP call")
 {
     facade_fixture fixture;
