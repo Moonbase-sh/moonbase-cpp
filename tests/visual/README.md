@@ -21,13 +21,21 @@ PNG per state:
 
 | File | State |
 | --- | --- |
-| `01-welcome` | Not activated — online / trial / offline |
+| `01-welcome` | Not activated — online / offline |
+| `01b-welcome-error` | Activation request failed (error message) |
 | `02-activating` | Browser activation in progress (spinner + device chip) |
 | `03-success` | Just activated (license card) |
 | `04-offline-empty` | Offline flow, nothing chosen yet |
 | `05-offline-ready` | Offline flow with a response file selected |
+| `05b-offline-error` | Offline flow with an invalid response file (error) |
 | `06-trial` | Valid trial license (days-left, progress, features) |
-| `07-details` | Valid full license (details, deactivate, manage) |
+| `06b-trial-expired` | Trial that has ended (locked) |
+| `06c-trial-overflow` | Trial with a long feature list (scrollable field) |
+| `07-details` | Valid perpetual license (details, seats, deactivate) |
+| `07b-details-subscription` | Subscription license with an expiry date |
+| `07c-details-error` | Details with a deactivate failure (error) |
+| `08-details-offline` | Offline-activated (permanent) license |
+| `09-details-deactivating` | Deactivate in progress (inline spinner) |
 
 Add a state by adding a `writeSnapshot(...)` call.
 

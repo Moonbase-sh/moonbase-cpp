@@ -104,6 +104,15 @@ moonbase::license makeExpiredTrial()
     return lic;
 }
 
+// A full (non-trial) license that renews — i.e. a subscription with an expiry
+// date, so the details screen shows "Expires" with a real date rather than "Never".
+moonbase::license makeSubscriptionLicense()
+{
+    auto lic = makeLicense(false);
+    lic.expires_at = std::chrono::system_clock::now() + std::chrono::hours(24 * 27); // renews in ~27 days
+    return lic;
+}
+
 int gSnapW = ActivationComponent::defaultWidth;
 int gSnapH = ActivationComponent::defaultHeight;
 
@@ -200,6 +209,11 @@ int main(int argc, char* argv[])
     writeSnapshot(outDir, "01-welcome", [](ActivationController& c)
                   { c.setPreviewState(Screen::Welcome); });
 
+    writeSnapshot(outDir, "01b-welcome-error", [](ActivationController& c)
+                  { c.setPreviewState(Screen::Error, {},
+                                      "Couldn't reach Moonbase to start activation. "
+                                      "Check your connection and try again."); });
+
     writeSnapshot(outDir, "02-activating", [](ActivationController& c)
                   { c.setPreviewState(Screen::BrowserWait); });
 
@@ -214,6 +228,14 @@ int main(int argc, char* argv[])
                       c.setOfflineResponse(juce::File::getSpecialLocation(juce::File::tempDirectory)
                                                .getChildFile("Solstice-license.mb"));
                       c.setPreviewState(Screen::Offline);
+                  });
+
+    writeSnapshot(outDir, "05b-offline-error", [](ActivationController& c)
+                  {
+                      c.setOfflineResponse(juce::File::getSpecialLocation(juce::File::tempDirectory)
+                                               .getChildFile("Solstice-license.mb"));
+                      c.setPreviewState(Screen::Offline, {},
+                                        "That response file isn't valid for this device.");
                   });
 
     writeSnapshot(outDir, "06-trial", [](ActivationController& c)
@@ -242,6 +264,13 @@ int main(int argc, char* argv[])
 
     writeSnapshot(outDir, "07-details", [](ActivationController& c)
                   { c.setPreviewState(Screen::Details, makeLicense(false)); });
+
+    writeSnapshot(outDir, "07b-details-subscription", [](ActivationController& c)
+                  { c.setPreviewState(Screen::Details, makeSubscriptionLicense()); });
+
+    writeSnapshot(outDir, "07c-details-error", [](ActivationController& c)
+                  { c.setPreviewState(Screen::Details, makeLicense(false),
+                                      "Couldn't reach Moonbase to deactivate. Try again when online."); });
 
     writeSnapshot(outDir, "08-details-offline", [](ActivationController& c)
                   { c.setPreviewState(Screen::Details, makeOfflineLicense()); });

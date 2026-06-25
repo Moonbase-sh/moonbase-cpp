@@ -721,6 +721,22 @@ TEST_CASE("LicenseGate gates click-free: pass-through licensed, ramp to silence 
     CHECK(data.back() == doctest::Approx(0.0f));
 }
 
+TEST_CASE("setPreviewState routes the error to the field the screen renders")
+{
+    controller_fixture fx;
+    ActivationController controller(fx.config, fx.makeLicensing());
+
+    // Welcome/Error + Details read statusMessage().
+    controller.setPreviewState(Screen::Error, std::nullopt, "could not reach the server");
+    CHECK(controller.statusMessage() == "could not reach the server");
+    CHECK(controller.offlineError().isEmpty());
+
+    // The offline view reads offlineError().
+    controller.setPreviewState(Screen::Offline, std::nullopt, "that file isn't valid");
+    CHECK(controller.offlineError() == "that file isn't valid");
+    CHECK(controller.statusMessage().isEmpty());
+}
+
 //==============================================================================
 // Teardown / lifetime
 //==============================================================================

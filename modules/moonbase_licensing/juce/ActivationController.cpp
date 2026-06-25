@@ -665,9 +665,20 @@ void ActivationController::setPreviewState(Screen screen, std::optional<moonbase
         setLicense(std::move(license));
         expiredTrial_.reset();
     }
-    offlineError_ = previewError;
+    // Route the preview error to the field the target screen actually shows: the
+    // Offline view reads offlineError(); the others (Welcome/Error, Details) read
+    // statusMessage().
+    if (screen == Screen::Offline)
+    {
+        offlineError_ = previewError;
+        statusMessage_.clear();
+    }
+    else
+    {
+        statusMessage_ = previewError;
+        offlineError_.clear();
+    }
     screen_ = screen;
-    statusMessage_.clear();
     // Synchronous so a snapshot harness sees the new screen immediately without
     // pumping the message loop. Must be called on the message thread.
     sendSynchronousChangeMessage();
