@@ -658,6 +658,70 @@ TEST_CASE("analytics capture is off by default and easy to switch on")
 }
 
 //==============================================================================
+// Plugin integration helpers
+//==============================================================================
+TEST_CASE("licensedFlag mirrors the license state for the audio thread")
+{
+    controller_fixture fx;
+    fx.seedStored(fx.token(default_claims()));
+    ActivationController controller(fx.config, fx.makeLicensing());
+    CHECK_FALSE(controller.licensedFlag().load()); // not set until start() resolves
+
+    controller.start();
+    REQUIRE(pumpUntil([&] { return controller.screen() == Screen::Details; }));
+    CHECK(controller.licensedFlag().load());
+
+    fx.transport->responses.push_back(moonbase::http_response{200, {}, ""}); // revoke OK
+    controller.deactivate();
+    REQUIRE(pumpUntil([&] { return controller.screen() == Screen::Welcome; }));
+    CHECK_FALSE(controller.licensedFlag().load());
+}
+
+TEST_CASE("ActivationComponent can share an externally-owned controller")
+{
+    controller_fixture fx;
+    fx.seedStored(fx.token(default_claims()));
+    ActivationController shared(fx.config, fx.makeLicensing());
+    shared.start();
+    REQUIRE(pumpUntil([&] { return shared.screen() == Screen::Details; }));
+
+    ActivationComponent component(shared);
+    // One controller, shared - no second instance, no hand-rolled re-sync.
+    CHECK(&component.controller() == &shared);
+    CHECK(component.controller().screen() == Screen::Details);
+    CHECK(component.controller().licensedFlag().load());
+}
+
+TEST_CASE("LicenseGate gates click-free: pass-through licensed, ramp to silence unlicensed")
+{
+    LicenseGate gate;
+    gate.prepare(48000.0, 5.0); // ~240-sample fade
+    gate.reset(true);           // start open
+
+    std::vector<float> data(256, 1.0f);
+    float* chans[1] = { data.data() };
+
+    // Licensed: untouched.
+    gate.process(chans, 1, 256, true);
+    CHECK(data.front() == doctest::Approx(1.0f));
+    CHECK(data.back() == doctest::Approx(1.0f));
+
+    // Unlicensed: ramps down (not an instant cut) and reaches silence by block end.
+    for (auto& s : data) s = 1.0f;
+    gate.process(chans, 1, 256, false);
+    CHECK(data.front() < 1.0f);
+    CHECK(data.front() > 0.0f);
+    CHECK(data.back() < data.front());
+    CHECK(gate.currentGain() == doctest::Approx(0.0f));
+
+    // Fully closed: buffer cleared.
+    for (auto& s : data) s = 1.0f;
+    gate.process(chans, 1, 256, false);
+    CHECK(data.front() == doctest::Approx(0.0f));
+    CHECK(data.back() == doctest::Approx(0.0f));
+}
+
+//==============================================================================
 // Teardown / lifetime
 //==============================================================================
 namespace {

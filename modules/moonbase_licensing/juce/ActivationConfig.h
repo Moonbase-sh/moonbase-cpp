@@ -227,6 +227,10 @@ struct ActivationConfig
             options.account_id = accountId.toStdString();
         if (applicationVersion.isNotEmpty())
             options.application_version = applicationVersion.toStdString();
+       #if defined (JucePlugin_VersionString)
+        else
+            options.application_version = JucePlugin_VersionString; // a plugin has no JUCEApplication to read it from
+       #endif
 
         // Identify this client as the JUCE module (appended to the base client's
         // User-Agent), with the JUCE version + OS for support/analytics.

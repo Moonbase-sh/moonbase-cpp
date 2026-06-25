@@ -441,7 +441,7 @@ void ActivationController::onActivationFulfilled(moonbase::license value)
         emitDiagnostic(juce::String("Activated, but couldn't persist the license: ") + ex.what());
     }
 
-    license_ = std::move(value);
+    setLicense(std::move(value));
     setScreen(Screen::Success);
 }
 
@@ -508,7 +508,7 @@ void ActivationController::activateOffline()
             emitDiagnostic(juce::String("Activated offline, but couldn't persist the license: ") + ex.what());
         }
 
-        license_ = std::move(licenseValue);
+        setLicense(std::move(licenseValue));
         offlineError_.clear();
         setScreen(Screen::Success);
     }
@@ -658,11 +658,11 @@ void ActivationController::setPreviewState(Screen screen, std::optional<moonbase
         // The Expired screen is locked: keep the license out of license_ so
         // gating stays off; the passed license backs the view's display.
         expiredTrial_ = std::move(license);
-        license_.reset();
+        setLicense(std::nullopt);
     }
     else
     {
-        license_ = std::move(license);
+        setLicense(std::move(license));
         expiredTrial_.reset();
     }
     offlineError_ = previewError;
@@ -695,6 +695,13 @@ void ActivationController::setScreen(Screen newScreen, const juce::String& messa
     sendChangeMessage();
 }
 
+void ActivationController::setLicense(std::optional<moonbase::license> value)
+{
+    license_ = std::move(value);
+    // Publish for the audio thread (this always runs on the message thread).
+    licensed_.store(license_.has_value(), std::memory_order_release);
+}
+
 ActivationController::Screen ActivationController::screenForCurrentLicense() const
 {
     if (! license_)
@@ -706,7 +713,7 @@ ActivationController::Screen ActivationController::screenForCurrentLicense() con
 
 void ActivationController::applyLicense(std::optional<moonbase::license> value)
 {
-    license_ = std::move(value);
+    setLicense(std::move(value));
     expiredTrial_.reset();
     statusMessage_.clear();
     setScreen(screenForCurrentLicense());
@@ -717,7 +724,7 @@ void ActivationController::showTrialExpired(moonbase::license expired)
     // The plugin must stay locked, so license_ stays empty; the ended trial is
     // held separately for the Expired screen to show the product + end date.
     expiredTrial_ = std::move(expired);
-    license_.reset();
+    setLicense(std::nullopt);
     statusMessage_.clear();
     setScreen(Screen::Expired);
 }

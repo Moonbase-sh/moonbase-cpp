@@ -1587,8 +1587,27 @@ private:
 struct ActivationComponent::Impl : public juce::ChangeListener,
                                    private juce::Timer
 {
+    // Owns a controller built from the config.
     Impl(ActivationComponent& o, ActivationConfig cfg)
-        : owner(o), lnf(cfg.accent), controller(std::move(cfg))
+        : owner(o),
+          ownedController(std::make_unique<ActivationController>(std::move(cfg))),
+          controller(*ownedController),
+          lnf(controller.config().accent)
+    {
+        init(/*ownsController=*/true);
+    }
+
+    // Shares an externally-owned controller (e.g. one living in the processor).
+    Impl(ActivationComponent& o, ActivationController& existing)
+        : owner(o),
+          ownedController(nullptr),
+          controller(existing),
+          lnf(controller.config().accent)
+    {
+        init(/*ownsController=*/false);
+    }
+
+    void init(bool ownsController)
     {
         // The views live in a clipping host so directional slides are masked to
         // the content area instead of bleeding over the panel chrome.
@@ -1622,7 +1641,11 @@ struct ActivationComponent::Impl : public juce::ChangeListener,
         // freshly-shown plugin/app window. update() uses the hi-res clock.
         startTimerHz(60);
         controller.addChangeListener(this);
-        controller.start();
+
+        if (ownsController)
+            controller.start();              // load any stored license + route
+        else
+            changeListenerCallback(nullptr); // shared + already started: sync to its current state
     }
 
     ~Impl() override
@@ -2017,8 +2040,9 @@ struct ActivationComponent::Impl : public juce::ChangeListener,
     }
 
     ActivationComponent& owner;
+    std::unique_ptr<ActivationController> ownedController; // null when sharing an external controller
+    ActivationController& controller;
     ActivationLookAndFeel lnf;
-    ActivationController controller;
 
     juce::Component screenHost;
 
@@ -2054,6 +2078,12 @@ struct ActivationComponent::Impl : public juce::ChangeListener,
 //==============================================================================
 ActivationComponent::ActivationComponent(ActivationConfig config)
     : impl(std::make_unique<Impl>(*this, std::move(config)))
+{
+    setSize(defaultWidth, defaultHeight);
+}
+
+ActivationComponent::ActivationComponent(ActivationController& sharedController)
+    : impl(std::make_unique<Impl>(*this, sharedController))
 {
     setSize(defaultWidth, defaultHeight);
 }

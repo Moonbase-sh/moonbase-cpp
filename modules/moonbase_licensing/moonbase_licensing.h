@@ -69,6 +69,7 @@
 #include "juce/juce_http_transport.h"
 #include "juce/juce_fingerprint_provider.h"
 #include "juce/JuceMetadata.h"
+#include "juce/LicenseGate.h"
 #include "juce/ActivationConfig.h"
 #include "juce/ActivationController.h"
 #include "juce/ui/ActivationLookAndFeel.h"

@@ -107,14 +107,45 @@ screens, the activating spinner, the success pop, and the breathing top-edge glo
 
 ## Gating
 
+For correctness in a plugin, give the **processor** the controller (so license state
+survives the editor's lifetime) and have the **editor** share it — one license, no
+hand-rolled re-sync:
+
 ```cpp
-if (! activation->controller().license().has_value())
-    buffer.clear();   // not activated
+// In your AudioProcessor:
+ActivationController activation { makeConfig() };   // persistent
+// activation.start();  // load any stored license
+
+// In createEditor(): share the processor's controller with the UI.
+auto* editor = new ActivationComponent (processor.activation);   // non-owning overload
+```
+
+Gate the audio thread off the lock-free flag — no `ChangeListener` needed:
+
+```cpp
+void processBlock (juce::AudioBuffer<float>& buffer, ...) override
+{
+    if (! activation.licensedFlag().load())
+        buffer.clear();
+}
+```
+
+Or use `LicenseGate` for a click-free fade on activate/deactivate (you still own the
+gating; the module never silences audio itself):
+
+```cpp
+LicenseGate gate;                                  // a member of your processor
+void prepareToPlay (double sr, int) override { gate.prepare (sr); gate.reset (activation.licensedFlag().load()); }
+void processBlock (juce::AudioBuffer<float>& b, ...) override
+{
+    gate.process (b.getArrayOfWritePointers(), b.getNumChannels(), b.getNumSamples(),
+                  activation.licensedFlag().load());
+}
 ```
 
 `controller().license()` is the full `moonbase::license` — `trial`, `expires_at`,
 `issued_to.email`, `owned_sub_product_ids`, custom `properties`, etc. — for richer
-gating.
+gating decisions (read it on the message thread).
 
 ## Branding / theming
 
@@ -254,5 +285,6 @@ config.onCollectMetadata = [] (std::map<std::string, std::string>& m) {
 ```
 
 The collected map flows into `moonbase::licensing_options::metadata` and is sent with the
-SDK's requests. `includeAppVersion` also fills `application_version` from the running app
-when you haven't set it explicitly.
+SDK's requests. When you don't set `config.applicationVersion`, it auto-fills from
+`JucePlugin_VersionString` in a plugin build (or the running app's version otherwise), so
+telemetry reports a version without extra wiring.

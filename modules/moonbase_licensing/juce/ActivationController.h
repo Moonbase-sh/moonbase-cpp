@@ -100,6 +100,10 @@ public:
     //== Accessors =============================================================
     [[nodiscard]] Screen screen() const noexcept { return screen_; }
     [[nodiscard]] const std::optional<moonbase::license>& license() const noexcept { return license_; }
+    // Audio-thread-safe "is there a valid license" flag, updated on the message
+    // thread whenever the license changes. Read it from processBlock for gating
+    // without a ChangeListener: `if (! controller.licensedFlag().load()) ...`.
+    [[nodiscard]] const std::atomic<bool>& licensedFlag() const noexcept { return licensed_; }
     // The ended trial backing the Expired screen. license() stays empty in this
     // state (the plugin is locked); this is for display only.
     [[nodiscard]] const std::optional<moonbase::license>& expiredTrial() const noexcept { return expiredTrial_; }
@@ -117,6 +121,7 @@ private:
     void timerCallback() override;
 
     void setScreen(Screen newScreen, const juce::String& message = {});
+    void setLicense(std::optional<moonbase::license> value); // updates license_ + licensedFlag()
     void applyLicense(std::optional<moonbase::license> value);
     void showTrialExpired(moonbase::license expired); // locks + routes to the Expired screen
     [[nodiscard]] Screen screenForCurrentLicense() const; // Welcome / Trial / Details
@@ -140,6 +145,7 @@ private:
 
     Screen screen_ = Screen::Loading;
     std::optional<moonbase::license> license_;
+    std::atomic<bool> licensed_{false}; // mirror of license_.has_value() for the audio thread
     std::optional<moonbase::license> expiredTrial_; // display-only backing for the Expired screen
     std::optional<moonbase::activation_request> pendingRequest_;
 

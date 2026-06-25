@@ -19,7 +19,16 @@ namespace moonbase::juce_integration {
 class ActivationComponent : public juce::Component
 {
 public:
+    // Builds and owns its own ActivationController from the config.
     explicit ActivationComponent(ActivationConfig config);
+
+    // Shares a controller owned elsewhere (e.g. one living in your AudioProcessor
+    // so audio-thread gating survives the editor's lifetime) — both processor and
+    // editor then see one license, with no hand-rolled re-sync. The controller
+    // must outlive this component, and the owner is responsible for calling
+    // controller.start(); the component reflects its current state.
+    explicit ActivationComponent(ActivationController& sharedController);
+
     ~ActivationComponent() override;
 
     // Called when the user dismisses the flow from a "done" state — the
