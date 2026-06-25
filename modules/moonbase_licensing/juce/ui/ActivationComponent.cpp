@@ -1087,10 +1087,10 @@ public:
         featuresViewport.setViewedComponent(featureList.get(), false);
         featuresViewport.setScrollBarsShown(true, false); // vertical only, when needed
         featuresViewport.setScrollBarThickness(11);
-        // Keep the scroll affordance clearly visible (not autohidden / faint) so
-        // an overflowing list obviously reads as a scrollable field.
+        // High-contrast thumb so the scrollbar reads clearly when it appears. It
+        // only shows when the list overflows (default autohide keeps it out of the
+        // way for a list that fits, which renders as a plain checklist).
         auto& scrollbar = featuresViewport.getVerticalScrollBar();
-        scrollbar.setAutoHide(false);
         scrollbar.setColour(juce::ScrollBar::thumbColourId, Colour(0x80ffffff));
         scrollbar.setColour(juce::ScrollBar::trackColourId, Colour(0x1affffff));
         addAndMakeVisible(featuresViewport);
@@ -1100,12 +1100,9 @@ public:
 
     void paint(Graphics& g) override
     {
-        auto r = getLocalBounds();
-        // Reserve the bottom for the buttons so the feature list never slides
-        // under them on a short window.
-        r.removeFromBottom(46 + 14 + 20 + 14); // unlock + gap + continue + gap
+        const auto layout = computeLayout();
 
-        auto headerRow = r.removeFromTop(40);
+        auto headerRow = layout.header;
         auto pill = headerRow.removeFromRight(150);
         drawBrand(g, lnf, controller.config().logo.get(), headerRow, controller.config().resolvedProductName(),
                   controller.config().resolvedManufacturerName(), 34.0f, 15.0f);
@@ -1115,36 +1112,28 @@ public:
         auto pf = lnf.heading(10.5f);
         const float pw = juce::GlyphArrangement::getStringWidth(pf, pillText) + 22.0f;
         auto pb = Rectangle<float>(0, 0, pw, 22).withCentre(
-            { (float) (pill.getRight() - headerRightInset) - pw * 0.5f, (float) headerRow.getCentreY() });
+            { (float) (pill.getRight() - headerRightInset) - pw * 0.5f, (float) layout.header.getCentreY() });
         g.setColour(lnf.palette.trial);
         g.fillRoundedRectangle(pb, 11.0f);
         g.setColour(Colour(0xff131519));
         g.setFont(pf);
         g.drawText(pillText.toUpperCase(), pb, Justification::centred);
 
-        r.removeFromTop(26);
         g.setColour(lnf.palette.textPrimary);
         g.setFont(lnf.heading(24.0f));
-        g.drawText("You're on a free trial", r.removeFromTop(30), Justification::topLeft);
-        r.removeFromTop(8);
+        g.drawText("You're on a free trial", layout.heading, Justification::topLeft);
+
         g.setColour(lnf.palette.textSecondary);
         g.setFont(lnf.body(14.0f));
-        const int total = controller.config().trialLengthDays;
-        {
-            auto subtitle = r.removeFromTop(40);
-            g.drawFittedText(juce::String(days) + " of " + juce::String(total)
-                                 + " days remaining. Unlock the full version any time to keep everything.",
-                             subtitle.getX(), subtitle.getY(), subtitle.getWidth(), subtitle.getHeight(),
-                             Justification::topLeft, 2, 1.0f);
-        }
+        g.drawFittedText(subtitleText(), layout.subtitle.getX(), layout.subtitle.getY(),
+                         layout.subtitle.getWidth(), layout.subtitle.getHeight(), Justification::topLeft, 4, 1.0f);
 
-        // progress bar
-        r.removeFromTop(14);
-        auto bar = r.removeFromTop(6);
+        const auto bar = layout.bar;
         g.setColour(Colour(0x12ffffff));
         g.fillRoundedRectangle(bar.toFloat(), 3.0f);
+        const int total = controller.config().trialLengthDays;
         const float frac = total > 0 ? juce::jlimit(0.0f, 1.0f, (float) days / (float) total) : 0.0f;
-        auto fill = bar.toFloat().withWidth(bar.getWidth() * frac);
+        auto fill = bar.toFloat().withWidth((float) bar.getWidth() * frac);
         g.setGradientFill(juce::ColourGradient(lnf.palette.trial, fill.getX(), 0,
                                                Colour(0xfff5c542), fill.getRight(), 0, false));
         g.fillRoundedRectangle(fill, 3.0f);
@@ -1153,7 +1142,7 @@ public:
         // field so the scroll affordance is unmistakable (resized() insets the
         // viewport + scrollbar inside this frame). When it fits, the rows render
         // as a plain centred checklist (per the design).
-        const auto fa = featureArea();
+        const auto fa = layout.features;
         if (featureList != nullptr && featureList->contentHeight() > fa.getHeight())
         {
             g.setColour(Colour(0x06ffffff));
@@ -1170,7 +1159,7 @@ public:
         r.removeFromBottom(14);
         unlock->setBounds(r.removeFromBottom(46));
 
-        const auto area = featureArea();
+        const auto area = computeLayout().features;
         const int content = featureList->contentHeight();
         const bool scrolls = content > area.getHeight();
         // Overflow -> inset the viewport inside the framed field (padding + a
@@ -1182,15 +1171,43 @@ public:
     }
 
 private:
-    // The middle band between the top copy/progress bar and the bottom buttons.
-    // The top/bottom amounts mirror the fixed layout in paint() / resized().
-    [[nodiscard]] Rectangle<int> featureArea() const
+    struct Layout { Rectangle<int> header, heading, subtitle, bar, features; };
+
+    [[nodiscard]] juce::String subtitleText() const
     {
-        auto a = getLocalBounds();
-        a.removeFromTop(40 + 26 + 30 + 8 + 40 + 14 + 6); // brand .. progress bar
-        a.removeFromTop(20);                              // gap below the bar
-        a.removeFromBottom(46 + 14 + 20 + 18);            // unlock + gap + continue + breathing room
-        return a;
+        return juce::String(controller.trialDaysRemaining()) + " of "
+             + juce::String(controller.config().trialLengthDays)
+             + " days remaining. Unlock the full version any time to keep everything.";
+    }
+
+    // Measure the subtitle's wrapped height so the bar can sit right under it
+    // instead of floating below a fixed block, freeing space for the features.
+    [[nodiscard]] int subtitleHeight(int width) const
+    {
+        juce::AttributedString as(subtitleText());
+        as.setFont(lnf.body(14.0f));
+        juce::TextLayout text;
+        text.createLayout(as, (float) juce::jmax(1, width));
+        return juce::jlimit(20, 46, (int) std::ceil(text.getHeight()) + 2);
+    }
+
+    // One source of truth for the vertical layout (used by paint() + resized()).
+    [[nodiscard]] Layout computeLayout() const
+    {
+        auto r = getLocalBounds();
+        r.removeFromBottom(46 + 14 + 20 + 18); // unlock + gap + continue + breathing room
+
+        Layout l;
+        l.header = r.removeFromTop(40);
+        r.removeFromTop(22);                              // gap below the header
+        l.heading = r.removeFromTop(30);
+        r.removeFromTop(6);                               // gap below the heading
+        l.subtitle = r.removeFromTop(subtitleHeight(r.getWidth()));
+        r.removeFromTop(8);                               // tight gap above the bar
+        l.bar = r.removeFromTop(6);
+        r.removeFromTop(16);                             // gap below the bar
+        l.features = r;
+        return l;
     }
 
     juce::Viewport featuresViewport;
