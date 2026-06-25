@@ -1086,7 +1086,13 @@ public:
         featureList = std::make_unique<TrialFeatureList>(c, l);
         featuresViewport.setViewedComponent(featureList.get(), false);
         featuresViewport.setScrollBarsShown(true, false); // vertical only, when needed
-        featuresViewport.setScrollBarThickness(8);
+        featuresViewport.setScrollBarThickness(11);
+        // Keep the scroll affordance clearly visible (not autohidden / faint) so
+        // an overflowing list obviously reads as a scrollable field.
+        auto& scrollbar = featuresViewport.getVerticalScrollBar();
+        scrollbar.setAutoHide(false);
+        scrollbar.setColour(juce::ScrollBar::thumbColourId, Colour(0x80ffffff));
+        scrollbar.setColour(juce::ScrollBar::trackColourId, Colour(0x1affffff));
         addAndMakeVisible(featuresViewport);
     }
 
@@ -1143,8 +1149,18 @@ public:
                                                Colour(0xfff5c542), fill.getRight(), 0, false));
         g.fillRoundedRectangle(fill, 3.0f);
 
-        // The feature list itself is drawn by the scrollable viewport (see
-        // resized() / featureArea()).
+        // When the list is longer than the band, frame it as a bounded, scrollable
+        // field so the scroll affordance is unmistakable (resized() insets the
+        // viewport + scrollbar inside this frame). When it fits, the rows render
+        // as a plain centred checklist (per the design).
+        const auto fa = featureArea();
+        if (featureList != nullptr && featureList->contentHeight() > fa.getHeight())
+        {
+            g.setColour(Colour(0x06ffffff));
+            g.fillRoundedRectangle(fa.toFloat(), 10.0f);
+            g.setColour(lnf.palette.panelBorder);
+            g.drawRoundedRectangle(fa.toFloat().reduced(0.5f), 10.0f, 1.0f);
+        }
     }
 
     void resized() override
@@ -1155,13 +1171,14 @@ public:
         unlock->setBounds(r.removeFromBottom(46));
 
         const auto area = featureArea();
-        featuresViewport.setBounds(area);
         const int content = featureList->contentHeight();
         const bool scrolls = content > area.getHeight();
-        // Fits -> size to the viewport so the rows centre; overflows -> size to
-        // the content (minus the scrollbar gutter) so the viewport scrolls.
-        featureList->setSize(scrolls ? juce::jmax(0, area.getWidth() - 10) : area.getWidth(),
-                             scrolls ? content : area.getHeight());
+        // Overflow -> inset the viewport inside the framed field (padding + a
+        // gutter for the scrollbar); fits -> fill the band so the rows centre.
+        const auto viewportArea = scrolls ? area.reduced(12, 10) : area;
+        featuresViewport.setBounds(viewportArea);
+        featureList->setSize(scrolls ? juce::jmax(0, viewportArea.getWidth() - 13) : viewportArea.getWidth(),
+                             scrolls ? content : viewportArea.getHeight());
     }
 
 private:
@@ -1172,7 +1189,7 @@ private:
         auto a = getLocalBounds();
         a.removeFromTop(40 + 26 + 30 + 8 + 40 + 14 + 6); // brand .. progress bar
         a.removeFromTop(20);                              // gap below the bar
-        a.removeFromBottom(46 + 14 + 20);                 // unlock + gap + continue
+        a.removeFromBottom(46 + 14 + 20 + 18);            // unlock + gap + continue + breathing room
         return a;
     }
 
