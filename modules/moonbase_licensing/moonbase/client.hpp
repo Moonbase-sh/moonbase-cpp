@@ -70,11 +70,16 @@ inline std::map<std::string, std::string> client_query(const licensing_options& 
     return query;
 }
 
-inline std::map<std::string, std::string> default_headers(const std::string& content_type = {})
+inline std::map<std::string, std::string> default_headers(const licensing_options& options,
+                                                          const std::string& content_type = {})
 {
+    std::string user_agent = "moonbase-cpp/" + version_string();
+    if (options.client_info && !options.client_info->empty()) {
+        user_agent += " " + *options.client_info;
+    }
     std::map<std::string, std::string> headers{
         {"Accept", "application/json, application/jwt, text/plain"},
-        {"User-Agent", "moonbase-cpp/" + version_string()},
+        {"User-Agent", user_agent},
         {"x-mb-client", "moonbase-cpp"},
     };
     if (!content_type.empty()) {
@@ -165,7 +170,7 @@ public:
         http_request request;
         request.method = "POST";
         request.url = url;
-        request.headers = detail::default_headers("application/json");
+        request.headers = detail::default_headers(options_, "application/json");
         request.connect_timeout = options_.http_connect_timeout;
         request.request_timeout = options_.http_request_timeout;
         request.body = payload.dump();
@@ -193,7 +198,7 @@ public:
         http_request request;
         request.method = "POST";
         request.url = url;
-        request.headers = detail::default_headers("text/plain");
+        request.headers = detail::default_headers(options_, "text/plain");
         request.connect_timeout = options_.http_connect_timeout;
         request.request_timeout = options_.http_request_timeout;
         request.body = std::string(token);
@@ -214,7 +219,7 @@ public:
         http_request request;
         request.method = "POST";
         request.url = url;
-        request.headers = detail::default_headers("text/plain");
+        request.headers = detail::default_headers(options_, "text/plain");
         request.connect_timeout = options_.http_connect_timeout;
         request.request_timeout = options_.http_request_timeout;
         request.body = std::string(token);
@@ -231,7 +236,7 @@ public:
         http_request request;
         request.method = "GET";
         request.url = activation.request_url;
-        request.headers = detail::default_headers();
+        request.headers = detail::default_headers(options_);
         request.connect_timeout = options_.http_connect_timeout;
         request.request_timeout = options_.http_request_timeout;
 

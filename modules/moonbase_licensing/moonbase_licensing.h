@@ -42,6 +42,16 @@
  #define MOONBASE_DISABLE_CURL_TRANSPORT 1   // use the JUCE WebInputStream transport instead
 #endif
 
+// Module version (keep in sync with the `version:` field above). Also used as
+// the SDK version when it isn't otherwise defined for this build, so the base
+// client's User-Agent reports a real version instead of 0.0.0.
+#ifndef MOONBASE_LICENSING_VERSION
+ #define MOONBASE_LICENSING_VERSION "3.1.0"
+#endif
+#ifndef MOONBASE_CPP_VERSION
+ #define MOONBASE_CPP_VERSION MOONBASE_LICENSING_VERSION
+#endif
+
 //==============================================================================
 #include <juce_core/juce_core.h>
 #include <juce_events/juce_events.h>

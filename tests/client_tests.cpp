@@ -41,6 +41,7 @@ struct client_fixture {
         options.account_id = "tenant-1";
         options.target_platform = platform::mac;
         options.application_version = "1.2.3";
+        options.client_info = "moonbase-juce/9.9 (JUCE v8; TestOS)";
         options.metadata = {{"channel", "test"}};
         options.http_connect_timeout = std::chrono::milliseconds{1234};
         options.http_request_timeout = std::chrono::milliseconds{5678};
@@ -81,7 +82,8 @@ TEST_CASE("request_activation posts device information and parses response")
     CHECK(request.url.find("meta%5Bchannel%5D=test") != std::string::npos);
     CHECK(request.headers.at("Content-Type") == "application/json");
     CHECK(request.headers.at("x-mb-client") == "moonbase-cpp");
-    CHECK(request.headers.at("User-Agent").find("moonbase-cpp/") == 0);
+    CHECK(request.headers.at("User-Agent").find("moonbase-cpp/") == 0); // base prefix preserved
+    CHECK(request.headers.at("User-Agent").find("moonbase-juce/9.9 (JUCE v8; TestOS)") != std::string::npos);
     CHECK(request.connect_timeout == std::chrono::milliseconds{1234});
     CHECK(request.request_timeout == std::chrono::milliseconds{5678});
 

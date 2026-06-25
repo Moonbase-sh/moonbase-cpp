@@ -524,6 +524,13 @@ TEST_CASE("refreshLicense picks up newly granted sub-products from the server")
     REQUIRE(controller.license().has_value());
     CHECK(controller.license()->owned_sub_product_ids.size() == 3); // entitlement refreshed
     CHECK(fx.transport->requests.size() == 1); // forced -> exactly one API round-trip
+
+    // The request's User-Agent reports a real SDK version (not the unset 0.0.0
+    // default) and identifies the JUCE module.
+    const auto ua = fx.transport->requests.front().headers.at("User-Agent");
+    CHECK(ua.find("moonbase-cpp/") == 0);
+    CHECK(ua.find("moonbase-cpp/0.0.0") == std::string::npos);
+    CHECK(ua.find("moonbase-juce/") != std::string::npos);
 }
 
 TEST_CASE("a refresh that lands after the license is cleared does not resurrect it")
@@ -616,6 +623,19 @@ TEST_CASE("validation + timeout tuning flows into the SDK options")
 //==============================================================================
 // Telemetry / analytics metadata
 //==============================================================================
+TEST_CASE("the JUCE module identifies itself via client_info (User-Agent)")
+{
+    ActivationConfig config;
+    config.endpoint = "https://demo.moonbase.sh";
+    config.productId = "demo-app";
+
+    const auto opts = config.toLicensingOptions();
+    REQUIRE(opts.client_info.has_value());
+    CHECK(opts.client_info->find("moonbase-juce/") != std::string::npos);
+    CHECK(opts.client_info->find("JUCE") != std::string::npos); // JUCE version
+    CHECK_FALSE(opts.client_info->empty());
+}
+
 TEST_CASE("analytics capture is off by default and easy to switch on")
 {
     ActivationConfig config;

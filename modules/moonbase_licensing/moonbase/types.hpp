@@ -120,6 +120,10 @@ struct licensing_options {
     std::optional<std::string> account_id;
     platform target_platform = current_platform();
     std::optional<std::string> application_version;
+    // Identifies a higher-level integration built on top of the SDK (e.g. the
+    // JUCE module). Appended to the User-Agent after "moonbase-cpp/<version>" so
+    // the server can tell which client made the request.
+    std::optional<std::string> client_info;
     std::map<std::string, std::string> metadata;
     std::chrono::milliseconds http_connect_timeout{std::chrono::seconds{10}};
     std::chrono::milliseconds http_request_timeout{std::chrono::seconds{30}};

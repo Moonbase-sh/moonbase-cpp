@@ -18,6 +18,12 @@
 
 #include "JuceMetadata.h"
 
+// Normally defined by the module umbrella header; fall back so this header is
+// self-contained if included on its own.
+#ifndef MOONBASE_LICENSING_VERSION
+ #define MOONBASE_LICENSING_VERSION "0.0.0"
+#endif
+
 namespace moonbase::juce_integration {
 
 struct TrialFeature
@@ -221,6 +227,14 @@ struct ActivationConfig
             options.account_id = accountId.toStdString();
         if (applicationVersion.isNotEmpty())
             options.application_version = applicationVersion.toStdString();
+
+        // Identify this client as the JUCE module (appended to the base client's
+        // User-Agent), with the JUCE version + OS for support/analytics.
+        juce::String clientInfo;
+        clientInfo << "moonbase-juce/" << MOONBASE_LICENSING_VERSION
+                   << " (" << juce::SystemStats::getJUCEVersion()
+                   << "; " << juce::SystemStats::getOperatingSystemName() << ")";
+        options.client_info = clientInfo.toStdString();
 
         options.online_validation_grace_period = onlineGracePeriod;
         options.online_validation_min_interval = onlineCheckInterval;
