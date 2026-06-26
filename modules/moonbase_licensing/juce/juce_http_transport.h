@@ -80,8 +80,19 @@ public:
             // Match curl_http_transport: a transport-level failure surfaces as
             // api_error with status 0, which the SDK's grace-period logic treats
             // as "unreachable" (this also covers a cancelled connect()).
-            throw moonbase::api_error(
-                0, "HTTP request to " + request.url + " failed (could not connect)");
+            //
+            // The friendly message stays user-safe; the macOS sandbox hint goes in
+            // the detail field so it reaches developers (via onDiagnostic) without
+            // surfacing in the plugin UI. A status-0 connect failure inside a
+            // sandboxed Apple build is most often the missing network entitlement.
+            juce::String message = "Couldn't connect to " + request.url
+                                 + " (check the internet connection or firewall)";
+            juce::String detail;
+           #if JUCE_MAC || JUCE_IOS
+            detail = "If this build runs sandboxed (AUv3 / Mac App Store), enable the "
+                     "com.apple.security.network.client entitlement.";
+           #endif
+            throw moonbase::api_error(0, message.toStdString(), {}, detail.toStdString());
         }
 
         moonbase::http_response response;

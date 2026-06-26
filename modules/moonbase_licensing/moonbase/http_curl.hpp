@@ -27,7 +27,7 @@ public:
     {
         std::unique_ptr<CURL, decltype(&curl_easy_cleanup)> curl(curl_easy_init(), curl_easy_cleanup);
         if (!curl) {
-            throw api_error(0, "Could not initialize curl");
+            throw api_error(0, "HTTP request to " + request.url + " failed: could not initialize curl");
         }
 
         http_response response;
@@ -64,7 +64,7 @@ public:
 
         const auto result = curl_easy_perform(curl.get());
         if (result != CURLE_OK) {
-            throw api_error(0, curl_easy_strerror(result));
+            throw api_error(0, "HTTP request to " + request.url + " failed: " + curl_easy_strerror(result));
         }
         curl_easy_getinfo(curl.get(), CURLINFO_RESPONSE_CODE, &response.status_code);
         return response;

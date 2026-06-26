@@ -497,6 +497,42 @@ TEST_CASE("diagnostics carry the underlying detail behind a friendly error")
     responseFile.deleteFile();
 }
 
+namespace {
+// Models a connect failure that carries developer guidance in the api_error
+// detail field - exactly what juce_http_transport sets for the macOS sandbox
+// network entitlement. Lets us assert the hint is routed to diagnostics only.
+struct hinted_failure_transport : moonbase::http_transport
+{
+    moonbase::http_response send(const moonbase::http_request&) override
+    {
+        throw moonbase::api_error(
+            0, "Couldn't connect to https://demo.moonbase.sh", {},
+            "enable the com.apple.security.network.client entitlement");
+    }
+};
+} // namespace
+
+TEST_CASE("a transport failure routes the entitlement hint to diagnostics, not the user screen")
+{
+    controller_fixture fx;
+    juce::StringArray diags;
+    fx.config.onDiagnostic = [&](const juce::String& m) { diags.add(m); };
+
+    auto licensing = std::make_shared<moonbase::licensing>(
+        fx.config.toLicensingOptions(), fx.store, fx.fingerprint,
+        std::make_shared<hinted_failure_transport>());
+
+    ActivationController controller(fx.config, licensing);
+    controller.beginOnlineActivation();
+
+    REQUIRE(pumpUntil([&] { return controller.screen() == Screen::Error; }));
+    // The user sees a friendly, fixed prompt - never the entitlement detail.
+    CHECK(controller.statusMessage().containsIgnoreCase("Couldn't reach Moonbase"));
+    CHECK_FALSE(controller.statusMessage().containsIgnoreCase("entitlement"));
+    // The developer sink gets the full reason, including the detail hint.
+    CHECK(diags.joinIntoString(" ").containsIgnoreCase("entitlement"));
+}
+
 //==============================================================================
 // Online re-validation (refresh entitlements after a purchase)
 //==============================================================================

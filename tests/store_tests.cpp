@@ -3,8 +3,15 @@
 #include <atomic>
 #include <chrono>
 #include <filesystem>
+#include <fstream>
+#include <string>
 #include <thread>
 #include <vector>
+
+#ifndef _WIN32
+ #include <sys/stat.h>
+ #include <unistd.h>
+#endif
 
 #include "moonbase/store.hpp"
 
@@ -35,6 +42,11 @@ license sample_license()
     value.properties = {{"seats", 3}, {"features", {"export", "sso"}}};
     value.token = "jwt";
     return value;
+}
+
+std::string unique_suffix()
+{
+    return std::to_string(std::chrono::system_clock::now().time_since_epoch().count());
 }
 
 } // namespace
@@ -102,6 +114,33 @@ TEST_CASE("file_license_store round-trips and deletes")
 
     store.delete_local_license();
     CHECK_FALSE(std::filesystem::exists(path));
+}
+
+TEST_CASE("file_license_store removes an unparseable license file and reports none")
+{
+    const auto path = std::filesystem::temp_directory_path() /
+        ("moonbase-cpp-corrupt-" + unique_suffix() + ".json");
+    {
+        std::ofstream file(path);
+        file << "this is not valid json {{{";
+    }
+    REQUIRE(std::filesystem::exists(path));
+
+    file_license_store store(path);
+    // A corrupt file reads as "no stored license" instead of throwing on every
+    // load...
+    CHECK_FALSE(store.load_local_license().has_value());
+    // ...and is deleted so a fresh activation can be written on top.
+    CHECK_FALSE(std::filesystem::exists(path));
+
+    // A new license then round-trips cleanly over the cleared slot.
+    store.store_local_license(sample_license());
+    auto loaded = store.load_local_license();
+    REQUIRE(loaded.has_value());
+    CHECK(loaded->id == "license-123");
+
+    std::error_code ec;
+    std::filesystem::remove(path, ec);
 }
 
 TEST_CASE("file_license_store::lock_for_update serializes concurrent acquirers")
@@ -314,3 +353,98 @@ TEST_CASE("memory_license_store guard allows re-entrant load/store on the holdin
     store.delete_local_license();
     CHECK_FALSE(store.load_local_license().has_value());
 }
+
+TEST_CASE("file_license_store wraps a blocked directory creation in storage_error with the path")
+{
+    // Regression: create_directories used to run without an error_code, so a
+    // failure escaped as a raw std::filesystem::filesystem_error that consumers
+    // catching storage_error would miss. Place a regular file where store needs
+    // a directory so the parent can never be created.
+    const auto blocker = std::filesystem::temp_directory_path() /
+        ("moonbase-cpp-parent-is-file-" + unique_suffix());
+    {
+        std::ofstream file(blocker);
+        file << "not a directory";
+    }
+    REQUIRE(std::filesystem::is_regular_file(blocker));
+
+    // The license path is nested under the regular file, so create_directories
+    // of its parent (<blocker>/nested) must fail.
+    const auto path = blocker / "nested" / "license.mb";
+    file_license_store store(path);
+
+    bool threw_storage_error = false;
+    std::string message;
+    try {
+        store.store_local_license(sample_license());
+    } catch (const storage_error& ex) {
+        threw_storage_error = true;
+        message = ex.what();
+    }
+    CHECK(threw_storage_error);
+    CHECK(message.find(blocker.string()) != std::string::npos);
+
+    std::error_code ec;
+    std::filesystem::remove(blocker, ec);
+}
+
+#ifndef _WIN32
+TEST_CASE("file_license_store reports a storage_error with the path when the license file is unreadable")
+{
+    // Permission bits don't constrain root, so the chmod below wouldn't deny us.
+    if (::geteuid() == 0)
+        return;
+
+    const auto path = std::filesystem::temp_directory_path() /
+        ("moonbase-cpp-unreadable-" + unique_suffix() + ".json");
+    {
+        file_license_store seed(path);
+        seed.store_local_license(sample_license());
+    }
+    REQUIRE(::chmod(path.c_str(), 0) == 0); // strip all permissions
+
+    file_license_store store(path);
+    bool threw = false;
+    std::string message;
+    try {
+        (void) store.load_local_license();
+    } catch (const storage_error& ex) {
+        threw = true;
+        message = ex.what();
+    }
+    CHECK(threw);
+    CHECK(message.find(path.string()) != std::string::npos);
+
+    ::chmod(path.c_str(), 0600); // restore so cleanup can remove it
+    std::error_code ec;
+    std::filesystem::remove(path, ec);
+}
+
+TEST_CASE("file_license_store reports a storage_error with the path when the directory is read-only")
+{
+    if (::geteuid() == 0)
+        return;
+
+    const auto dir = std::filesystem::temp_directory_path() /
+        ("moonbase-cpp-ro-dir-" + unique_suffix());
+    std::filesystem::create_directories(dir);
+    REQUIRE(::chmod(dir.c_str(), 0500) == 0); // r-x: cannot create files within
+
+    const auto path = dir / "license.mb";
+    file_license_store store(path);
+    bool threw = false;
+    std::string message;
+    try {
+        store.store_local_license(sample_license());
+    } catch (const storage_error& ex) {
+        threw = true;
+        message = ex.what();
+    }
+    CHECK(threw);
+    CHECK(message.find(path.string()) != std::string::npos);
+
+    ::chmod(dir.c_str(), 0700); // restore so cleanup can recurse
+    std::error_code ec;
+    std::filesystem::remove_all(dir, ec);
+}
+#endif // _WIN32
