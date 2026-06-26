@@ -1,3 +1,16 @@
+# [3.2.0](https://github.com/Moonbase-sh/moonbase-cpp/compare/v3.1.0...v3.2.0) (2026-06-26)
+
+
+### Bug Fixes
+
+* sync package-lock.json so the release workflow's npm ci succeeds ([#17](https://github.com/Moonbase-sh/moonbase-cpp/issues/17)) ([8f606b3](https://github.com/Moonbase-sh/moonbase-cpp/commit/8f606b3bdf84c72c80aecd439d457e00e61b20f6)), closes [#14](https://github.com/Moonbase-sh/moonbase-cpp/issues/14)
+
+
+### Features
+
+* actionable HTTP and license-file permission errors ([#16](https://github.com/Moonbase-sh/moonbase-cpp/issues/16)) ([91523c2](https://github.com/Moonbase-sh/moonbase-cpp/commit/91523c2c1554cede957289b665bfd29667007817))
+* moonbase_licensing JUCE 8 module with native activation UI ([#14](https://github.com/Moonbase-sh/moonbase-cpp/issues/14)) ([2c434a6](https://github.com/Moonbase-sh/moonbase-cpp/commit/2c434a6662e2878904f3bbff311155a2b4a03d14)), closes [hi#contrast](https://github.com/hi/issues/contrast)
+
 # [3.1.0](https://github.com/Moonbase-sh/moonbase-cpp/compare/v3.0.0...v3.1.0) (2026-06-16)
 
 
