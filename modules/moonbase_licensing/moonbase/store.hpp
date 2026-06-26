@@ -1,11 +1,13 @@
 #pragma once
 
+#include <cerrno>
 #include <filesystem>
 #include <fstream>
 #include <memory>
 #include <mutex>
 #include <optional>
 #include <string>
+#include <system_error>
 
 #include <nlohmann/json.hpp>
 
@@ -105,17 +107,27 @@ public:
             return std::nullopt;
         }
 
+        errno = 0;
         std::ifstream file(path_);
         if (!file) {
-            throw storage_error("Could not open local license file for reading");
+            const int err = errno;
+            throw storage_error("Could not open local license file for reading: " + path_.string()
+                                + errno_suffix(err));
         }
 
         try {
             nlohmann::json json;
             file >> json;
             return json.get<license>();
-        } catch (const std::exception& ex) {
-            throw storage_error(std::string("Could not parse local license file: ") + ex.what());
+        } catch (const std::exception&) {
+            // A corrupt / unparseable license file is useless and would otherwise
+            // throw on every load, blocking re-activation. Remove it (best-effort,
+            // after closing the handle so Windows can unlink it) and report no
+            // stored license, so a fresh activation can be written in its place.
+            file.close();
+            std::error_code ec;
+            std::filesystem::remove(path_, ec);
+            return std::nullopt;
         }
     }
 
@@ -123,14 +135,26 @@ public:
     {
         const auto parent = path_.parent_path();
         if (!parent.empty()) {
-            std::filesystem::create_directories(parent);
+            std::error_code ec;
+            std::filesystem::create_directories(parent, ec);
+            if (ec) {
+                throw storage_error("Could not create license directory " + parent.string()
+                                    + ": " + ec.message());
+            }
         }
 
+        errno = 0;
         std::ofstream file(path_, std::ios::trunc);
         if (!file) {
-            throw storage_error("Could not open local license file for writing");
+            const int err = errno;
+            throw storage_error("Could not open local license file for writing: " + path_.string()
+                                + errno_suffix(err));
         }
         file << nlohmann::json(value).dump(2);
+        file.flush();
+        if (!file) {
+            throw storage_error("Could not write local license file: " + path_.string());
+        }
     }
 
     void delete_local_license() override
@@ -138,7 +162,8 @@ public:
         std::error_code error;
         std::filesystem::remove(path_, error);
         if (error) {
-            throw storage_error("Could not delete local license file: " + error.message());
+            throw storage_error("Could not delete local license file " + path_.string() + ": "
+                                + error.message());
         }
     }
 
@@ -157,6 +182,17 @@ public:
     }
 
 private:
+    // Best-effort OS reason for a failed std::fstream open. Stream failures don't
+    // portably set errno, so callers reset errno to 0 first and we only append a
+    // reason when something was actually recorded.
+    static std::string errno_suffix(int err)
+    {
+        if (err == 0) {
+            return {};
+        }
+        return " (" + std::generic_category().message(err) + ")";
+    }
+
     class file_store_lock : public store_lock_guard {
     public:
         explicit file_store_lock(const std::filesystem::path& path) : lock_(path) {}

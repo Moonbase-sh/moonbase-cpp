@@ -9,6 +9,19 @@ namespace moonbase::juce_integration {
 
 namespace {
 constexpr int kPollIntervalMs = 1500;
+
+// Diagnostic-only error text. For transport failures (moonbase::api_error) the
+// SDK stashes actionable guidance (e.g. the macOS network entitlement hint) in
+// the detail field; append it so it reaches onDiagnostic without ever appearing
+// in the friendly, user-facing screen text.
+juce::String describeError(const std::exception& ex)
+{
+    juce::String message = ex.what();
+    if (const auto* api = dynamic_cast<const moonbase::api_error*>(&ex))
+        if (! api->detail().empty())
+            message << " (" << api->detail() << ")";
+    return message;
+}
 } // namespace
 
 ActivationController::ActivationController(ActivationConfig config)
@@ -177,7 +190,7 @@ void ActivationController::start()
                     catch (const std::exception& ex)
                     {
                         // Invalid / unreachable-past-grace -> locked.
-                        diag = juce::String("Re-validating stored license failed: ") + ex.what();
+                        diag = juce::String("Re-validating stored license failed: ") + describeError(ex);
                         result = std::nullopt;
                     }
                 }
@@ -185,7 +198,7 @@ void ActivationController::start()
         }
         catch (const std::exception& ex)
         {
-            diag = juce::String("Loading stored license failed: ") + ex.what();
+            diag = juce::String("Loading stored license failed: ") + describeError(ex);
             result = std::nullopt;
         }
 
@@ -228,7 +241,7 @@ void ActivationController::beginOnlineActivation()
         }
         catch (const std::exception& ex)
         {
-            error = ex.what();
+            error = describeError(ex);
         }
 
         juce::MessageManager::callAsync([safe, generation, request, error]() mutable
@@ -239,9 +252,12 @@ void ActivationController::beginOnlineActivation()
 
             if (! request)
             {
+                // Full reason (incl. the entitlement hint) goes to the developer
+                // sink; the user sees a friendly, fixed prompt to retry.
                 self->emitDiagnostic("request_activation failed: " + error);
                 self->setScreen(Screen::Error,
-                                "Couldn't reach Moonbase to start activation. " + error);
+                                "Couldn't reach Moonbase to start activation. "
+                                "Check your internet connection and try again.");
                 return;
             }
 
@@ -315,7 +331,7 @@ void ActivationController::refreshLicense(bool force, std::function<void(bool)> 
         }
         catch (const std::exception& ex)
         {
-            diag = ex.what();
+            diag = describeError(ex);
         }
 
         juce::MessageManager::callAsync([safe, generation, refreshed, expired, currentLicense, wasTrial,
@@ -395,7 +411,7 @@ void ActivationController::timerCallback()
         catch (const std::exception& ex)
         {
             // Transient transport/5xx error — keep polling.
-            transient = ex.what();
+            transient = describeError(ex);
         }
 
         juce::MessageManager::callAsync([safe, generation, fulfilled, fatal, error, transient]() mutable
@@ -563,7 +579,7 @@ void ActivationController::deactivate()
         catch (const moonbase::operation_not_supported_error& ex) { outcome = Outcome::NotRevokable; diag = ex.what(); }
         catch (const moonbase::license_invalid_error&)            { outcome = Outcome::Revoked; }
         catch (const moonbase::license_expired_error&)            { outcome = Outcome::Revoked; }
-        catch (const std::exception& ex)                          { outcome = Outcome::Unreachable; diag = ex.what(); }
+        catch (const std::exception& ex)                          { outcome = Outcome::Unreachable; diag = describeError(ex); }
 
         const int outcomeCode = static_cast<int>(outcome);
         juce::MessageManager::callAsync([safe, generation, outcomeCode, activationId, diag]() mutable
