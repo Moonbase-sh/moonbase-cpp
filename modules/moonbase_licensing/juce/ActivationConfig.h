@@ -88,6 +88,11 @@ struct ActivationConfig
     bool overlayBackdrop = false;  // dim the host behind the panel (modal over a plugin) instead of a full opaque backdrop
     int trialLengthDays = 14;      // trial length shown on the Trial / Expired screens (trials are granted by the backend, not started from the UI)
 
+    // Optional override for the device name shown on the activation screen (the
+    // "<name>  ·  <platform>" chip). When empty, the OS hostname is used
+    // (juce::SystemStats::getComputerName, via the default fingerprint provider).
+    juce::String deviceName;
+
     // Product / manufacturer brand mark shown in the header lockup. When unset,
     // a generated sun mark in the accent colour is drawn. Provide a vector
     // Drawable (e.g. juce::Drawable::createFromSVG(...)) for crispness:
