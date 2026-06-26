@@ -4,6 +4,13 @@ License activation for JUCE 8 apps and plugins, with a polished built-in UI, in 
 drop-in [JUCE module](https://github.com/juce-framework/JUCE/blob/master/docs/JUCE%20Module%20Format.md).
 Add the module, fill in three fields, show one component.
 
+<p align="center">
+  <img src="../../assets/moonbase-juce-trial.png" width="49%"
+       alt="Trial screen: a free-trial panel with days remaining, a progress bar, and an Unlock full version button.">
+  <img src="../../assets/moonbase-juce-license.png" width="49%"
+       alt="License details screen: licensed-to name, email, plan, activation type, expiry, seat count, and a Deactivate this device button.">
+</p>
+
 ## Features
 
 - **Native integration.** Talks to the Moonbase licensing API directly: online
