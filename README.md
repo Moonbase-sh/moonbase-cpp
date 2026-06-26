@@ -255,6 +255,35 @@ cmake -B build -DMOONBASE_BUILD_JUCE_NATIVE_EXAMPLE=ON
 cmake --build build --target MoonbaseActivationNative
 ```
 
+#### Reference implementation: DRIFT
+
+[**DRIFT by Corino**](https://github.com/Moonbase-sh/corino-drift) is a JUCE 8
+VST3 / AU / Standalone plugin built as a reference implementation of this module
+(the native-module counterpart to [HALO](https://github.com/Moonbase-sh/corino-halo),
+which uses the bridge). Its knobs are real, automatable parameters that
+deliberately don't process audio; the point is the activation workflow wrapped
+around a real plugin:
+
+- The processor owns the headless `ActivationController` as the single source of
+  truth and calls `start()` to load + validate any stored license on a background
+  thread, updating the audio-thread-safe `licensedFlag()`.
+- `LicenseGate` reads that lock-free flag in `processBlock` and fades to silence
+  when unlicensed (and back up when licensed), so gating never clicks.
+- The editor shares the processor's controller and shows the module's brandable
+  `ActivationComponent` as a modal overlay (`overlayBackdrop = true`), opened from
+  a "Manage License" button via `appear()`; `onActivationChanged` keeps the UI in
+  sync with no re-wiring.
+- Every connection, branding, trial and telemetry field lives in one
+  `makeDriftActivationConfig()` factory shared by the processor and the editor.
+- GitHub Actions CI + release pipelines build the plugin bundles across platforms.
+
+DRIFT consumes the module via `FetchContent` + `juce_add_module()` (no git
+submodule). See
+[`src/Licensing.h`](https://github.com/Moonbase-sh/corino-drift/blob/main/src/Licensing.h)
+for the single config point and its
+[`CMakeLists.txt`](https://github.com/Moonbase-sh/corino-drift/blob/main/CMakeLists.txt)
+for the full wiring.
+
 ### `OnlineUnlockStatus` bridge
 
 A drop-in bridge ([`docs/juce.md`](docs/juce.md)) that wires Moonbase activation
