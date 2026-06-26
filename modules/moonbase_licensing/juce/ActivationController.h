@@ -10,6 +10,7 @@
 // license() and repaint.
 
 #include <atomic>
+#include <chrono>
 #include <cstdint>
 #include <functional>
 #include <memory>
@@ -97,6 +98,12 @@ public:
                          juce::String previewError = {},
                          bool busy = false);
 
+    // Pin the wall clock used for trial-countdown math (trialDaysRemaining), so
+    // previews and snapshot tests render a fixed number of days regardless of the
+    // real date. Affects display only; no effect on the live activation flow. Pass
+    // nullopt to unpin and fall back to the system clock.
+    void setPreviewClock(std::optional<std::chrono::system_clock::time_point> now);
+
     //== Accessors =============================================================
     [[nodiscard]] Screen screen() const noexcept { return screen_; }
     [[nodiscard]] const std::optional<moonbase::license>& license() const noexcept { return license_; }
@@ -148,6 +155,7 @@ private:
     std::atomic<bool> licensed_{false}; // mirror of license_.has_value() for the audio thread
     std::optional<moonbase::license> expiredTrial_; // display-only backing for the Expired screen
     std::optional<moonbase::activation_request> pendingRequest_;
+    std::optional<std::chrono::system_clock::time_point> previewClock_; // pinned "now" for previews/snapshots (trialDaysRemaining)
 
     juce::String statusMessage_;
     juce::String offlineError_;

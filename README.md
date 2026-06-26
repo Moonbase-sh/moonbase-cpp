@@ -58,7 +58,8 @@ The build provides three options, all useful when consuming the SDK as a subproj
 | --- | --- | --- |
 | `MOONBASE_BUILD_TESTS` | `ON` for the top-level project, `OFF` as a subproject | Build the doctest-based unit and live tests. |
 | `MOONBASE_BUILD_EXAMPLES` | `ON` for the top-level project, `OFF` as a subproject | Build the standalone activation example under `examples/`. |
-| `MOONBASE_BUILD_JUCE_EXAMPLE` | `OFF` | Fetch JUCE and build the JUCE bridge example (see below). |
+| `MOONBASE_BUILD_JUCE_EXAMPLE` | `OFF` | Fetch JUCE and build the JUCE `OnlineUnlockStatus` bridge example (see below). |
+| `MOONBASE_BUILD_JUCE_NATIVE_EXAMPLE` | `OFF` | Fetch JUCE and build the `moonbase_licensing` native module example (see below). |
 
 Override `MOONBASE_BUILD_TESTS` and `MOONBASE_BUILD_EXAMPLES` explicitly when you want a subproject integration to build SDK artifacts too.
 
@@ -212,20 +213,102 @@ native provider and `<moonbase/http_curl.hpp>` for the default CURL transport.
 
 ## JUCE Plugins
 
-For JUCE-based plugins and applications, the SDK ships a drop-in bridge
-([`docs/juce.md`](docs/juce.md)) that wires Moonbase activation into
-`juce::OnlineUnlockStatus`, sources the device fingerprint from JUCE's
-`SystemStats` helpers, and populates activation metadata with host/system
-context (DAW, plugin format, OS, CPU, JUCE version). The bridge header lives
-at [`examples/juce/MoonbaseJuceBridge.h`](examples/juce/MoonbaseJuceBridge.h)
-and is copy-pasteable into any JUCE project.
+For JUCE-based plugins and applications there are two integration paths, both
+built on the same `moonbase::licensing` core SDK. The native
+[`moonbase_licensing`](docs/juce-module.md) module is the recommended choice for
+new projects; the [`juce::OnlineUnlockStatus` bridge](docs/juce.md) remains
+available and unchanged.
 
-### Reference implementation: HALO
+| | Native module | `OnlineUnlockStatus` bridge |
+| --- | --- | --- |
+| **Form** | Drop-in JUCE module | Copy-paste reference header |
+| **Built-in UI** | Yes (polished, animated, themeable) | No (you build it) |
+| **JUCE integration** | Native Moonbase API | `juce::OnlineUnlockStatus` wrapper |
+| **JUCE version** | 8.0.4+ | 7+ |
+| **Third-party deps** | None (JUCE `WebInputStream` HTTP, bundled `nlohmann/json`, OS-native RS256) | Inherits the core SDK's CURL + OpenSSL |
+| **Entry point** | `ActivationComponent` / `ActivationDialog` | `MoonbaseUnlockStatus` |
+| **Best for** | New plugins wanting a ready-made UI | Apps already on `OnlineUnlockStatus`, or JUCE 7 |
+| **Docs** | [`docs/juce-module.md`](docs/juce-module.md) | [`docs/juce.md`](docs/juce.md) |
+
+### Native module: `moonbase_licensing`
+
+A drop-in JUCE 8 module that adds Moonbase activation, plus a built-in
+themeable activation UI, to any app or plugin. It talks to the Moonbase
+licensing API natively (it does not use `juce::OnlineUnlockStatus`) and has no
+third-party dependencies: HTTP goes through `juce::WebInputStream`, JSON is a
+bundled `nlohmann/json`, and RS256 verification uses the OS-native crypto
+(Security.framework, CNG/bcrypt, libcrypto). The module lives at
+[`modules/moonbase_licensing/`](modules/moonbase_licensing/); add it with
+`juce_add_module()` (or via Projucer), fill in three config fields, and show one
+`ActivationComponent`. See [`docs/juce-module.md`](docs/juce-module.md) for the
+full guide.
+
+<p align="center">
+  <img src="assets/moonbase-juce-license.png" width="600"
+       alt="The moonbase_licensing activation UI showing license details: licensed-to name, email, plan, activation type, expiry, seat count, and a Deactivate this device button.">
+</p>
+
+Build the in-repo sample app with:
+
+```bash
+cmake -B build -DMOONBASE_BUILD_JUCE_NATIVE_EXAMPLE=ON
+cmake --build build --target MoonbaseActivationNative
+```
+
+#### Reference implementation: DRIFT
+
+[**DRIFT by Corino**](https://github.com/Moonbase-sh/corino-drift) is a JUCE 8
+VST3 / AU / Standalone plugin built as a reference implementation of this module
+(the native-module counterpart to [HALO](https://github.com/Moonbase-sh/corino-halo),
+which uses the bridge). Its knobs are real, automatable parameters that
+deliberately don't process audio; the point is the activation workflow wrapped
+around a real plugin:
+
+- The processor owns the headless `ActivationController` as the single source of
+  truth and calls `start()` to load + validate any stored license on a background
+  thread, updating the audio-thread-safe `licensedFlag()`.
+- `LicenseGate` reads that lock-free flag in `processBlock` and fades to silence
+  when unlicensed (and back up when licensed), so gating never clicks.
+- The editor shares the processor's controller and shows the module's brandable
+  `ActivationComponent` as a modal overlay (`overlayBackdrop = true`), opened from
+  a "Manage License" button via `appear()`; `onActivationChanged` keeps the UI in
+  sync with no re-wiring.
+- Every connection, branding, trial and telemetry field lives in one
+  `makeDriftActivationConfig()` factory shared by the processor and the editor.
+- GitHub Actions CI + release pipelines build the plugin bundles across platforms.
+
+DRIFT consumes the module via `FetchContent` + `juce_add_module()` (no git
+submodule). See
+[`src/Licensing.h`](https://github.com/Moonbase-sh/corino-drift/blob/main/src/Licensing.h)
+for the single config point and its
+[`CMakeLists.txt`](https://github.com/Moonbase-sh/corino-drift/blob/main/CMakeLists.txt)
+for the full wiring.
+
+### `OnlineUnlockStatus` bridge
+
+A drop-in bridge ([`docs/juce.md`](docs/juce.md)) that wires Moonbase activation
+into `juce::OnlineUnlockStatus`, sources the device fingerprint from JUCE's
+`SystemStats` helpers, and populates activation metadata with host/system
+context (DAW, plugin format, OS, CPU, JUCE version). The bridge header lives at
+[`examples/juce/MoonbaseJuceBridge.h`](examples/juce/MoonbaseJuceBridge.h) and is
+copy-pasteable into any JUCE project; you supply your own activation UI.
+
+Build the in-repo sample app with:
+
+```bash
+cmake -B build -DMOONBASE_BUILD_JUCE_EXAMPLE=ON
+cmake --build build --target MoonbaseJuceExample
+```
+
+The flag is opt-in: JUCE is fetched and compiled only when it's set (the same
+applies to `MOONBASE_BUILD_JUCE_NATIVE_EXAMPLE`).
+
+#### Reference implementation: HALO
 
 [**HALO by Corino**](https://github.com/Moonbase-sh/corino-halo) is a JUCE 8
 standalone GUI application built specifically as a reference implementation
 of this SDK. It's a saturator-styled app that doesn't actually process
-audio — the entire point is the license-gate workflow around it:
+audio; the entire point is the license-gate workflow around it:
 
 - Startup runs a synchronous local JWT check, then re-validates against the
   Moonbase API on a background thread via `tryLoadStoredLicenseAsync`.
@@ -238,21 +321,10 @@ audio — the entire point is the license-gate workflow around it:
   publishes binaries straight to a Moonbase tenant.
 
 HALO vendors the bridge header verbatim from this repo and consumes
-`moonbase::licensing` via `FetchContent` — see
+`moonbase::licensing` via `FetchContent`. See
 [`src/license/HaloLicenseBridge.cpp`](https://github.com/Moonbase-sh/corino-halo/blob/main/src/license/HaloLicenseBridge.cpp)
 and its [`CMakeLists.txt`](https://github.com/Moonbase-sh/corino-halo/blob/main/CMakeLists.txt)
 for the full wiring.
-
-### Building the in-repo example
-
-A smaller standalone example also ships in this repository:
-
-```bash
-cmake -B build -DMOONBASE_BUILD_JUCE_EXAMPLE=ON
-cmake --build build --target MoonbaseJuceExample
-```
-
-The flag is opt-in — JUCE is fetched and compiled only when it's set.
 
 ## Live Tests
 

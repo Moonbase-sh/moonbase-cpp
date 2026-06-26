@@ -44,6 +44,7 @@ ERUn++6CVMPvZo67jVbTY+GCXYfW4gGVZQIDAQAB
 -----END RSA PUBLIC KEY-----)";
     config.productName = "Solstice";
     config.manufacturerName = "Helio Audio";
+    config.deviceName = "Studio Mac"; // fixed so the device chip doesn't render the build host's name
     config.accent = juce::Colour(0xff186cdc);
     config.trialLengthDays = 14;
     config.trialFeatures = {
@@ -61,6 +62,12 @@ ERUn++6CVMPvZo67jVbTY+GCXYfW4gGVZQIDAQAB
     return config;
 }
 
+// A fixed wall-clock anchor for every rendered date and trial countdown, so the
+// snapshots are identical run to run regardless of the real date. Paired with
+// ActivationController::setPreviewClock so trialDaysRemaining() measures against
+// the same instant the license timestamps are built from. 2026-01-01 12:00:00 UTC.
+const std::chrono::system_clock::time_point kPreviewNow{ std::chrono::seconds(1767268800) };
+
 moonbase::license makeLicense(bool trial)
 {
     moonbase::license lic;
@@ -75,11 +82,10 @@ moonbase::license makeLicense(bool trial)
     lic.issued_to.name = "Alex Rivera";
     lic.issued_to.email = "alex@northward.studio";
 
-    const auto now = std::chrono::system_clock::now();
-    lic.issued_at = now;
-    lic.validated_at = now;
+    lic.issued_at = kPreviewNow;
+    lic.validated_at = kPreviewNow;
     if (trial)
-        lic.expires_at = now + std::chrono::hours(24 * 11); // 11 of 14 days left
+        lic.expires_at = kPreviewNow + std::chrono::hours(24 * 11); // 11 of 14 days left
     lic.seat_count = 3; // 2 of 3 device seats used
     lic.seats_used = 2;
     lic.token = "preview.preview.preview";
@@ -98,7 +104,7 @@ moonbase::license makeOfflineLicense()
 moonbase::license makeExpiredTrial()
 {
     auto lic = makeLicense(true);
-    lic.expires_at = std::chrono::system_clock::now() - std::chrono::hours(24 * 6); // ended 6 days ago
+    lic.expires_at = kPreviewNow - std::chrono::hours(24 * 6); // ended 6 days ago
     lic.seat_count.reset();
     lic.seats_used.reset();
     return lic;
@@ -109,7 +115,7 @@ moonbase::license makeExpiredTrial()
 moonbase::license makeSubscriptionLicense()
 {
     auto lic = makeLicense(false);
-    lic.expires_at = std::chrono::system_clock::now() + std::chrono::hours(24 * 27); // renews in ~27 days
+    lic.expires_at = kPreviewNow + std::chrono::hours(24 * 27); // renews in ~27 days
     return lic;
 }
 
@@ -123,6 +129,7 @@ void writeSnapshot(const juce::File& outDir, const juce::String& name,
     ActivationComponent component(std::move(config));
     component.onClose = [] {}; // enable the close button for the snapshots
     component.setSize(gSnapW, gSnapH);
+    component.controller().setPreviewClock(kPreviewNow); // pin the trial countdown
 
     // setPreviewState notifies synchronously, so the screen is active immediately.
     setup(component.controller());

@@ -48,7 +48,9 @@ ActivationController::ActivationController(ActivationConfig config)
     }
 
     cancelInFlight_ = [transport] { transport->cancel(); };
-    setDeviceLabel(juce::String(fingerprint->device_name()));
+    setDeviceLabel(config_.deviceName.isNotEmpty()
+                       ? config_.deviceName
+                       : juce::String(fingerprint->device_name()));
 }
 
 ActivationController::ActivationController(ActivationConfig config,
@@ -684,14 +686,20 @@ void ActivationController::setPreviewState(Screen screen, std::optional<moonbase
     sendSynchronousChangeMessage();
 }
 
+void ActivationController::setPreviewClock(std::optional<std::chrono::system_clock::time_point> now)
+{
+    previewClock_ = now;
+}
+
 //==============================================================================
 int ActivationController::trialDaysRemaining() const
 {
     if (! license_ || ! license_->expires_at)
         return 0;
 
+    const auto now = previewClock_.value_or(std::chrono::system_clock::now());
     const auto seconds = std::chrono::duration_cast<std::chrono::seconds>(
-                             *license_->expires_at - std::chrono::system_clock::now())
+                             *license_->expires_at - now)
                              .count();
     if (seconds <= 0)
         return 0;
