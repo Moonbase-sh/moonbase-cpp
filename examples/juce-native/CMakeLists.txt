@@ -9,7 +9,7 @@ juce_add_gui_app(MoonbaseActivationNative
     PRODUCT_NAME "Moonbase Activation"
     COMPANY_NAME "Moonbase"
     BUNDLE_ID "sh.moonbase.activation.native"
-    VERSION "1.0.0")
+    VERSION "0.0.1")
 
 target_sources(MoonbaseActivationNative PRIVATE Main.cpp)
 

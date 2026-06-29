@@ -74,6 +74,8 @@ struct controller_fixture
         config.accountId = "tenant-1";
         config.productName = "Solstice";
         config.manufacturerName = "Helio Audio";
+        config.licenseFile = licenseFile; // keep sibling state (e.g. the .state.json file)
+                                          // in the temp dir, not real app data
     }
 
     ~controller_fixture()
@@ -251,6 +253,247 @@ TEST_CASE("showDetails on a trial stays on the trial view, not Details")
 
     controller.showDetails();
     CHECK(controller.screen() == Screen::Trial);
+}
+
+//==============================================================================
+// App update flow (newer released version than the running app)
+//==============================================================================
+TEST_CASE("a license whose released version outranks the app routes to UpdateAvailable")
+{
+    controller_fixture fx;
+    fx.config.applicationVersion = "1.2.2"; // older than default_claims p:rel (1.2.3)
+    fx.seedStored(fx.token(default_claims()));
+
+    ActivationController controller(fx.config, fx.makeLicensing());
+    controller.start();
+
+    REQUIRE(pumpUntil([&] { return settled(controller); }));
+    CHECK(controller.screen() == Screen::UpdateAvailable);
+    CHECK(controller.updateAvailable());
+    CHECK(controller.updateInfo().newVersion == "1.2.3");
+    CHECK(controller.updateInfo().currentVersion == "1.2.2");
+    REQUIRE(controller.license().has_value()); // still licensed: gating stays on
+
+    // "Skip this update" records the skip and routes back to Details.
+    controller.dismissUpdate();
+    CHECK(controller.screen() == Screen::Details);
+    controller.showDetails();
+    CHECK(controller.screen() == Screen::Details);
+}
+
+TEST_CASE("an up-to-date app routes straight to Details")
+{
+    controller_fixture fx;
+    fx.config.applicationVersion = "1.2.3"; // equal to the released version
+    fx.seedStored(fx.token(default_claims()));
+
+    ActivationController controller(fx.config, fx.makeLicensing());
+    controller.start();
+
+    REQUIRE(pumpUntil([&] { return settled(controller); }));
+    CHECK(controller.screen() == Screen::Details);
+    CHECK_FALSE(controller.updateAvailable());
+}
+
+TEST_CASE("enableUpdatePrompt=false never shows the update screen")
+{
+    controller_fixture fx;
+    fx.config.applicationVersion = "1.0.0"; // far behind, but updates are disabled
+    fx.config.enableUpdatePrompt = false;
+    fx.seedStored(fx.token(default_claims()));
+
+    ActivationController controller(fx.config, fx.makeLicensing());
+    controller.start();
+
+    REQUIRE(pumpUntil([&] { return settled(controller); }));
+    CHECK(controller.screen() == Screen::Details);
+    CHECK_FALSE(controller.updateAvailable());
+}
+
+TEST_CASE("setPreviewUpdate forces the update screen with synthetic state")
+{
+    controller_fixture fx;
+    fx.config.applicationVersion = "2.3.1";
+    ActivationController controller(fx.config, fx.makeLicensing());
+
+    auto claims = default_claims();
+    claims["p:rel"] = "2.4.0";
+    auto lic = fx.makeLicensing()->validate_token_local_allow_expired(fx.token(claims));
+
+    controller.setPreviewUpdate(ActivationController::UpdateInfo::Phase::Ready, lic, "What's new");
+    CHECK(controller.screen() == Screen::UpdateAvailable);
+    CHECK(controller.updateInfo().newVersion == "2.4.0");
+    CHECK(controller.updateInfo().currentVersion == "2.3.1");
+    CHECK(controller.updateInfo().releaseNotes == "What's new");
+}
+
+TEST_CASE("dismissing the update is remembered across restarts")
+{
+    controller_fixture fx;
+    fx.config.applicationVersion = "1.2.2"; // older than p:rel (1.2.3)
+    fx.seedStored(fx.token(default_claims()));
+
+    {
+        ActivationController controller(fx.config, fx.makeLicensing());
+        controller.start();
+        REQUIRE(pumpUntil([&] { return settled(controller); }));
+        REQUIRE(controller.screen() == Screen::UpdateAvailable);
+        controller.dismissUpdate();
+        CHECK(controller.screen() == Screen::Details);
+    }
+
+    // A fresh controller (same config + license file) must not prompt again: the
+    // dismissal was persisted next to the license.
+    ActivationController restarted(fx.config, fx.makeLicensing());
+    restarted.start();
+    REQUIRE(pumpUntil([&] { return settled(restarted); }));
+    CHECK(restarted.screen() == Screen::Details);
+    CHECK(restarted.updateAvailable()); // an update still exists...
+}
+
+TEST_CASE("a newer release re-prompts after an earlier dismissal")
+{
+    controller_fixture fx;
+    fx.config.applicationVersion = "1.2.2";
+
+    fx.seedStored(fx.token(default_claims())); // p:rel 1.2.3
+    {
+        ActivationController controller(fx.config, fx.makeLicensing());
+        controller.start();
+        REQUIRE(pumpUntil([&] { return settled(controller); }));
+        REQUIRE(controller.screen() == Screen::UpdateAvailable);
+        controller.dismissUpdate(); // remembers 1.2.3
+    }
+
+    // The product now ships an even newer release.
+    auto newer = default_claims();
+    newer["p:rel"] = "1.3.0";
+    fx.seedStored(fx.token(newer));
+
+    ActivationController restarted(fx.config, fx.makeLicensing());
+    restarted.start();
+    REQUIRE(pumpUntil([&] { return settled(restarted); }));
+    CHECK(restarted.screen() == Screen::UpdateAvailable); // newer than the dismissed one
+    CHECK(restarted.updateInfo().newVersion == "1.3.0");
+}
+
+TEST_CASE("showUpdate re-opens the update screen after a dismissal")
+{
+    controller_fixture fx;
+    fx.config.applicationVersion = "1.2.2"; // older than p:rel (1.2.3)
+    fx.seedStored(fx.token(default_claims()));
+
+    ActivationController controller(fx.config, fx.makeLicensing());
+    controller.start();
+    REQUIRE(pumpUntil([&] { return settled(controller); }));
+    REQUIRE(controller.screen() == Screen::UpdateAvailable);
+
+    controller.dismissUpdate();
+    REQUIRE(controller.screen() == Screen::Details);
+    CHECK(controller.updateAvailable()); // still available, just dismissed
+
+    controller.showUpdate(); // e.g. the "Update available" badge in the license view
+    CHECK(controller.screen() == Screen::UpdateAvailable);
+}
+
+TEST_CASE("showUpdate is a no-op when the app is up to date")
+{
+    controller_fixture fx;
+    fx.config.applicationVersion = "1.2.3"; // equal to p:rel -> no update
+    fx.seedStored(fx.token(default_claims()));
+
+    ActivationController controller(fx.config, fx.makeLicensing());
+    controller.start();
+    REQUIRE(pumpUntil([&] { return controller.screen() == Screen::Details; }));
+
+    controller.showUpdate();
+    CHECK(controller.screen() == Screen::Details); // nothing to show
+}
+
+TEST_CASE("autoPresentUpdate=false keeps startup on the license view")
+{
+    controller_fixture fx;
+    fx.config.applicationVersion = "1.2.2"; // older than p:rel (1.2.3): update available
+    fx.config.autoPresentUpdate = false;
+    fx.seedStored(fx.token(default_claims()));
+
+    ActivationController controller(fx.config, fx.makeLicensing());
+    controller.start();
+    REQUIRE(pumpUntil([&] { return settled(controller); }));
+    CHECK(controller.screen() == Screen::Details); // no automatic pop on open
+    CHECK(controller.updateAvailable());            // ...even though an update exists
+
+    controller.showUpdate(/*fromLicenseView*/ true); // the badge still opens it
+    CHECK(controller.screen() == Screen::UpdateAvailable);
+}
+
+TEST_CASE("the update screen tracks whether it was opened from the license view")
+{
+    controller_fixture fx;
+    fx.config.applicationVersion = "1.2.2"; // older than p:rel (1.2.3)
+    fx.seedStored(fx.token(default_claims()));
+
+    ActivationController controller(fx.config, fx.makeLicensing());
+    controller.start();
+    REQUIRE(pumpUntil([&] { return settled(controller); }));
+    REQUIRE(controller.screen() == Screen::UpdateAvailable);
+    CHECK_FALSE(controller.updateCameFromLicenseView()); // auto-routed on startup
+
+    controller.dismissUpdate();
+    REQUIRE(controller.screen() == Screen::Details);
+
+    controller.showUpdate(/*fromLicenseView*/ true); // e.g. the badge
+    REQUIRE(controller.screen() == Screen::UpdateAvailable);
+    CHECK(controller.updateCameFromLicenseView());
+
+    controller.showUpdate(/*fromLicenseView*/ false); // e.g. auto open/focus
+    CHECK_FALSE(controller.updateCameFromLicenseView());
+}
+
+TEST_CASE("revealing a missing installer reverts to the download state")
+{
+    controller_fixture fx;
+    fx.config.applicationVersion = "2.3.1";
+    ActivationController controller(fx.config, fx.makeLicensing());
+
+    auto claims = default_claims();
+    claims["p:rel"] = "2.4.0";
+    auto lic = fx.makeLicensing()->validate_token_local_allow_expired(fx.token(claims));
+
+    using Phase = ActivationController::UpdateInfo::Phase;
+    controller.setPreviewUpdate(Phase::Done, lic); // no installer actually on disk
+    REQUIRE(controller.updateInfo().phase == Phase::Done);
+
+    controller.revealUpdateDownload(); // file is gone -> fall back to Ready
+    CHECK(controller.updateInfo().phase == Phase::Ready);
+    CHECK(controller.updateInfo().progress == doctest::Approx(0.0));
+}
+
+TEST_CASE("ActivationState stores ignored updates as JSON and preserves unknown keys")
+{
+    auto file = juce::File::getSpecialLocation(juce::File::tempDirectory)
+                    .getChildFile("moonbase-state-" + juce::Uuid().toString() + ".json");
+    file.deleteFile();
+    file.replaceWithText(R"({"futureKey":"keep-me"})"); // written by a "newer" build
+
+    {
+        ActivationState state(file);
+        CHECK_FALSE(state.isUpdateIgnored("1.0.0"));
+        state.ignoreUpdate("1.0.0");
+        state.ignoreUpdate("1.0.0"); // idempotent
+        state.ignoreUpdate("2.0.0");
+        CHECK(state.isUpdateIgnored("1.0.0"));
+        CHECK(state.ignoredUpdates().size() == 2);
+        CHECK(state.get("futureKey").toString() == "keep-me"); // untouched
+    }
+
+    // Reload from disk: entries survived and the unknown key was not clobbered.
+    ActivationState reloaded(file);
+    CHECK(reloaded.isUpdateIgnored("1.0.0"));
+    CHECK(reloaded.isUpdateIgnored("2.0.0"));
+    CHECK(reloaded.get("futureKey").toString() == "keep-me");
+
+    file.deleteFile();
 }
 
 TEST_CASE("start() with a valid offline license routes to Details")

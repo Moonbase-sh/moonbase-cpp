@@ -34,8 +34,14 @@ PNG per state:
 | `07-details` | Valid perpetual license (details, seats, deactivate) |
 | `07b-details-subscription` | Subscription license with an expiry date |
 | `07c-details-error` | Details with a deactivate failure (error) |
+| `07d-details-update-available` | Details with a clickable "Update available" badge |
 | `08-details-offline` | Offline-activated (permanent) license |
 | `09-details-deactivating` | Deactivate in progress (inline spinner) |
+| `10-update-loading` | Update available, fetching release notes (skeleton) |
+| `11-update-ready` | Update available, notes loaded (download button) |
+| `12-update-downloading` | Update installer downloading (progress bar) |
+| `13-update-error` | Update details failed to load (error) |
+| `14-update-gated` | Update the license can't download (Unlock CTA) |
 
 Add a state by adding a `writeSnapshot(...)` call.
 

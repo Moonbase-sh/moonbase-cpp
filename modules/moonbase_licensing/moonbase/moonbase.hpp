@@ -8,7 +8,9 @@
 #ifndef MOONBASE_DISABLE_CURL_TRANSPORT
 #include "moonbase/http_curl.hpp"
 #endif
+#include "moonbase/inventory.hpp"
 #include "moonbase/licensing.hpp"
 #include "moonbase/store.hpp"
 #include "moonbase/types.hpp"
 #include "moonbase/validator.hpp"
+#include "moonbase/version.hpp"

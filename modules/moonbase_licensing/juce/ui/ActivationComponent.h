@@ -51,6 +51,11 @@ public:
     void appear();
     void dismiss();
 
+    // Present the update screen now if an update is available (ignores a previous
+    // skip). The module already auto-presents on open when config.autoPresentUpdate
+    // is set; this is exposed so a host can trigger it explicitly too. No-op otherwise.
+    void presentUpdateIfAvailable();
+
     // Preferred window size for this design.
     static constexpr int defaultWidth = 660;
     static constexpr int defaultHeight = 600;

@@ -274,6 +274,46 @@ private:
 };
 
 //==============================================================================
+// A compact, clickable accent pill with a download-tray icon, used as the
+// "Update available" badge in the license view.
+class UpdatePillButton : public juce::Button
+{
+public:
+    explicit UpdatePillButton(ActivationLookAndFeel& l) : juce::Button("Update available"), lnf(l)
+    {
+        setMouseCursor(juce::MouseCursor::PointingHandCursor);
+    }
+
+    [[nodiscard]] int preferredWidth() const
+    {
+        const float tw = juce::GlyphArrangement::getStringWidth(lnf.heading(11.0f), getButtonText());
+        return (int) std::ceil(leftPad + iconSz + gap + tw + rightPad);
+    }
+
+    void paintButton(Graphics& g, bool over, bool /*down*/) override
+    {
+        auto r = getLocalBounds().toFloat();
+        const float radius = r.getHeight() * 0.5f;
+        g.setColour(lnf.accent.withAlpha(over ? 0.26f : 0.16f));
+        g.fillRoundedRectangle(r, radius);
+        g.setColour(lnf.accent.withAlpha(0.45f));
+        g.drawRoundedRectangle(r.reduced(0.5f), radius, 1.0f);
+        if (auto ic = icons::fromStroke(icons::downloadTray, lnf.accent, 1.9f))
+            ic->drawWithin(g, { r.getX() + leftPad, r.getCentreY() - iconSz * 0.5f, iconSz, iconSz },
+                           juce::RectanglePlacement::centred, 1.0f);
+        g.setColour(lnf.palette.textPrimary);
+        g.setFont(lnf.heading(11.0f));
+        g.drawText(getButtonText(),
+                   r.withTrimmedLeft(leftPad + iconSz + gap).withTrimmedRight(rightPad * 0.5f),
+                   Justification::centredLeft);
+    }
+
+private:
+    static constexpr float leftPad = 10.0f, iconSz = 13.0f, gap = 6.0f, rightPad = 12.0f;
+    ActivationLookAndFeel& lnf;
+};
+
+//==============================================================================
 // Offline response-file target: click to browse, or drag a file onto it.
 class DropZone : public juce::Component,
                  public juce::FileDragAndDropTarget
@@ -1372,6 +1412,12 @@ public:
                                                     "Deactivate this device");
         deactivate->onClick = [this] { controller.deactivate(); };
         addAndMakeVisible(*deactivate);
+
+        // Shown (in refresh) only when an update is available but was dismissed;
+        // re-opens the update screen.
+        updateBadge = std::make_unique<UpdatePillButton>(l);
+        updateBadge->onClick = [this] { controller.showUpdate(/*fromLicenseView*/ true); };
+        addChildComponent(*updateBadge);
     }
 
     void refresh() override
@@ -1382,6 +1428,7 @@ public:
             deactivate->setBusyImmediate(controller.isBusy());
         else
             deactivate->setBusy(controller.isBusy());
+        resized(); // positions + toggles the update badge (hidden when there's no room)
         repaint();
     }
 
@@ -1391,6 +1438,20 @@ public:
     {
         if (! isVisible())
             deactivate->setBusy(false);
+    }
+
+    // Hidden escape hatch: double-clicking the "Active" pill (no pointer cursor,
+    // so it isn't advertised) reveals the configured license folder. Handy for
+    // support / debugging where the license + state files live.
+    void mouseDoubleClick(const juce::MouseEvent& e) override
+    {
+        if (! activePillBounds().contains(e.getPosition()))
+            return;
+        const auto file = controller.config().resolvedLicenseFile();
+        if (file.existsAsFile())
+            file.revealToUser();                       // select license.mb in the folder
+        else
+            file.getParentDirectory().revealToUser();  // just open the folder
     }
 
     void paint(Graphics& g) override
@@ -1415,7 +1476,7 @@ public:
         auto headerRow = r.removeFromTop(40);
         drawBrand(g, lnf, controller.config().logo.get(), headerRow, controller.config().resolvedProductName(),
                   controller.config().resolvedManufacturerName(), 34.0f, 15.0f);
-        drawActivePill(g, headerRow);
+        drawActivePill(g);
         r.removeFromTop(22);
 
         // The busy state is shown by the inline spinner in the deactivate button,
@@ -1475,7 +1536,16 @@ public:
         // Always position it (visibility is driven by refresh() on state change).
         auto content = getLocalBounds().removeFromBottom(58).reduced(16, 12);
         const int bw = juce::jmin(180, content.getWidth() / 2);
+
+        // Drop to a short label when the button is too narrow for the full text.
+        const float fullW = juce::GlyphArrangement::getStringWidth(lnf.heading(14.0f),
+                                                                   "Deactivate this device");
+        deactivate->setButtonText((float) bw >= fullW + 24.0f ? juce::String("Deactivate this device")
+                                                              : juce::String("Deactivate"));
+
         deactivate->setBounds(content.removeFromRight(bw).withSizeKeepingCentre(bw, 32));
+
+        layoutUpdateBadge();
     }
 
 private:
@@ -1551,16 +1621,66 @@ private:
         }
     }
 
-    void drawActivePill(Graphics& g, Rectangle<int> headerRow)
+    [[nodiscard]] float activePillWidth() const
+    {
+        // Mirrors drawActivePill: leftPad + dot + gap + text + rightPad.
+        const float tw = juce::GlyphArrangement::getStringWidth(lnf.heading(11.0f), "Active");
+        return 11.0f + 6.0f + 7.0f + tw + 12.0f;
+    }
+
+    // Bounds of the "Active" pill in this view's coordinates (single source of
+    // truth for both drawActivePill and the double-click escape hatch).
+    [[nodiscard]] Rectangle<int> activePillBounds() const
+    {
+        const auto headerRow = getLocalBounds().removeFromTop(40);
+        const int pw = (int) std::ceil(activePillWidth());
+        return { headerRow.getRight() - headerRightInset - pw, headerRow.getCentreY() - 12, pw, 24 };
+    }
+
+    // Right edge of the brand lockup (logo + gap + the wider of the two text lines),
+    // mirroring the drawBrand(..., logoPx=34, titlePx=15) call in paint().
+    [[nodiscard]] int brandRight(Rectangle<int> headerRow) const
+    {
+        const auto& cfg = controller.config();
+        const float textW = juce::jmax(
+            juce::GlyphArrangement::getStringWidth(lnf.heading(15.0f), cfg.resolvedProductName()),
+            juce::GlyphArrangement::getStringWidth(lnf.body(11.5f), cfg.resolvedManufacturerName()));
+        return headerRow.getX() + 34 + 13 + (int) std::ceil(textW);
+    }
+
+    // Place the "Update available" badge just left of the "Active" pill. Shown only
+    // when an update exists AND it fits without overlapping the brand on the left or
+    // the pill / close button on the right; hidden otherwise (e.g. a narrow window).
+    void layoutUpdateBadge()
+    {
+        if (! controller.updateAvailable())
+        {
+            updateBadge->setVisible(false);
+            return;
+        }
+
+        const auto headerRow = getLocalBounds().removeFromTop(40);
+        const int badgeW = updateBadge->preferredWidth();
+        const int activeLeft = headerRow.getRight() - headerRightInset - (int) std::ceil(activePillWidth());
+        const int badgeX = activeLeft - 8 - badgeW;
+
+        if (badgeX < brandRight(headerRow) + 12)
+        {
+            updateBadge->setVisible(false); // no room: hide rather than overlap
+            return;
+        }
+
+        updateBadge->setBounds(badgeX, headerRow.getCentreY() - 12, badgeW, 24);
+        updateBadge->setVisible(true);
+    }
+
+    void drawActivePill(Graphics& g)
     {
         const juce::String label = "Active";
         auto font = lnf.heading(11.0f);
         const float tw = juce::GlyphArrangement::getStringWidth(font, label);
-        const float leftPad = 11.0f, dotD = 6.0f, gap = 7.0f, rightPad = 12.0f;
-        const float pw = leftPad + dotD + gap + tw + rightPad;
-        auto pb = Rectangle<float>(0, 0, pw, 24.0f)
-                      .withCentre({ (float) (headerRow.getRight() - headerRightInset) - pw * 0.5f,
-                                    (float) headerRow.getCentreY() });
+        const float leftPad = 11.0f, dotD = 6.0f, gap = 7.0f;
+        const auto pb = activePillBounds().toFloat();
         g.setColour(lnf.palette.successFill);
         g.fillRoundedRectangle(pb, 12.0f);
         g.setColour(lnf.palette.successBorder);
@@ -1597,6 +1717,334 @@ private:
     }
 
     std::unique_ptr<StyledButton> deactivate;
+    std::unique_ptr<UpdatePillButton> updateBadge;
+};
+
+//==============================================================================
+// Update available: a valid license, but the backend reports a newer released
+// version (the p:rel claim outranks the app version). Shows release notes and an
+// in-app installer download with progress; "Remind me later" dismisses it.
+class UpdateNotesList : public juce::Component
+{
+public:
+    using Phase = ActivationController::UpdateInfo::Phase;
+    static constexpr int skeletonStep = 18; // skeleton bar pitch while loading
+
+    UpdateNotesList(ActivationController& c, ActivationLookAndFeel& l) : controller(c), lnf(l)
+    {
+        // Intercept mouse events (do not pass them through) so wheel scrolls are
+        // forwarded to the enclosing Viewport, matching TrialFeatureList.
+    }
+
+    [[nodiscard]] juce::String notes() const
+    {
+        return controller.updateInfo().releaseNotes.trim();
+    }
+
+    // Release notes rendered verbatim as plain text (newlines preserved, long
+    // lines word-wrapped). No bullet/markdown parsing.
+    [[nodiscard]] juce::AttributedString attributed() const
+    {
+        juce::AttributedString as;
+        as.append(notes(), lnf.body(13.0f), lnf.palette.textBody);
+        as.setJustification(Justification::topLeft);
+        return as;
+    }
+
+    // Height the notes need at a given width, so the viewport can decide whether
+    // to scroll. Drives UpdateAvailableView::resized().
+    [[nodiscard]] int measureHeight(int width) const
+    {
+        if (controller.updateInfo().phase == Phase::Loading)
+            return 3 * skeletonStep;
+        if (notes().isEmpty())
+            return 20;
+        juce::TextLayout tl;
+        tl.createLayout(attributed(), (float) juce::jmax(1, width));
+        return (int) std::ceil(tl.getHeight()) + 2;
+    }
+
+    void paint(Graphics& g) override
+    {
+        if (controller.updateInfo().phase == Phase::Loading)
+        {
+            // Skeleton bars while the notes load.
+            const float widths[] = { 1.0f, 0.82f, 0.55f };
+            for (int i = 0; i < 3; ++i)
+            {
+                auto bar = Rectangle<int>(0, i * skeletonStep,
+                                          (int) ((float) getWidth() * widths[i]), 11);
+                g.setColour(Colour(0x10ffffff));
+                g.fillRoundedRectangle(bar.toFloat(), 5.5f);
+            }
+            return;
+        }
+
+        if (notes().isEmpty())
+        {
+            g.setColour(lnf.palette.textSecondary);
+            g.setFont(lnf.body(13.0f));
+            g.drawText("No release notes for this version.", getLocalBounds(),
+                       Justification::topLeft);
+            return;
+        }
+
+        attributed().draw(g, getLocalBounds().toFloat());
+    }
+
+private:
+    ActivationController& controller;
+    ActivationLookAndFeel& lnf;
+};
+
+class UpdateAvailableView : public ScreenView
+{
+public:
+    using Phase = ActivationController::UpdateInfo::Phase;
+
+    UpdateAvailableView(ActivationController& c, ActivationLookAndFeel& l) : ScreenView(c, l)
+    {
+        download = std::make_unique<StyledButton>(l, StyledButton::Style::accent, "Download",
+                                                  icons::fromStroke(icons::downloadTray,
+                                                                    juce::Colours::white, 1.8f));
+        download->onClick = [this]
+        {
+            if (controller.updateInfo().phase == Phase::Done)
+                controller.revealUpdateDownload();
+            else
+                controller.startUpdateDownload();
+        };
+        addAndMakeVisible(*download);
+
+        // Shown instead of Download when this license can't fetch the installer
+        // (e.g. a trial when the product restricts downloads to owners).
+        unlock = std::make_unique<StyledButton>(l, StyledButton::Style::accent, "Unlock full version",
+                                                icons::fromStroke(icons::lock, juce::Colours::white, 1.8f));
+        unlock->onClick = [this] { controller.beginOnlineActivation(); };
+        addChildComponent(*unlock);
+
+        skip = std::make_unique<LinkButton>(l, "Skip this update", l.palette.textSecondary);
+        skip->onClick = [this]
+        {
+            // Record the skip and route the screen back to the license view. If the
+            // update view was auto-presented (on open / focus) rather than reached
+            // from the license-view badge, also close the overlay so we just dismiss
+            // the view instead of revealing the license screen.
+            const bool fromLicenseView = controller.updateCameFromLicenseView();
+            controller.dismissUpdate();
+            if (! fromLicenseView && onCloseRequested)
+                onCloseRequested();
+        };
+        addAndMakeVisible(*skip);
+
+        notesList = std::make_unique<UpdateNotesList>(c, l);
+        notesViewport.setViewedComponent(notesList.get(), false);
+        notesViewport.setScrollBarsShown(true, false);
+        notesViewport.setScrollBarThickness(11);
+        auto& scrollbar = notesViewport.getVerticalScrollBar();
+        scrollbar.setColour(juce::ScrollBar::thumbColourId, Colour(0x80ffffff));
+        scrollbar.setColour(juce::ScrollBar::trackColourId, Colour(0x1affffff));
+        addAndMakeVisible(notesViewport);
+    }
+
+    void refresh() override
+    {
+        const auto& info = controller.updateInfo();
+        const bool reduce = controller.config().reduceMotion;
+        const bool busy = info.phase == Phase::Loading || info.phase == Phase::Downloading;
+
+        // Once notes have loaded, swap the Download button for an Unlock CTA when
+        // this license isn't entitled to the installer.
+        const bool gated = info.phase != Phase::Loading && ! info.canDownload;
+        download->setVisible(! gated);
+        unlock->setVisible(gated);
+
+        switch (info.phase)
+        {
+            case Phase::Loading:     download->setButtonText("Checking for updates"); break;
+            case Phase::Downloading: download->setButtonText("Downloading"); break;
+            case Phase::Done:        download->setButtonText("Reveal installer"); break;
+            case Phase::Ready:
+            default:
+                download->setButtonText(info.newVersion.isNotEmpty()
+                                            ? "Download " + info.newVersion
+                                            : juce::String("Download update"));
+                break;
+        }
+        if (reduce) download->setBusyImmediate(busy);
+        else        download->setBusy(busy);
+
+        resized(); // notes height depends on phase (skeleton vs lines)
+        repaint();
+    }
+
+    void visibilityChanged() override
+    {
+        if (! isVisible())
+            download->setBusy(false);
+    }
+
+    void paint(Graphics& g) override
+    {
+        const auto& cfg = controller.config();
+        const auto& info = controller.updateInfo();
+        const auto l = computeLayout();
+
+        drawBrand(g, lnf, cfg.logo.get(), l.header, cfg.resolvedProductName(),
+                  cfg.resolvedManufacturerName(), 34.0f, 15.0f);
+
+        drawUpdatePill(g, l.pill);
+
+        g.setColour(lnf.palette.textPrimary);
+        g.setFont(lnf.heading(24.0f));
+        const auto headingText = (cfg.resolvedProductName()
+                                  + (info.newVersion.isNotEmpty() ? " " + info.newVersion : juce::String())
+                                  + " is ready");
+        g.drawFittedText(headingText, l.heading, Justification::topLeft, 1);
+
+        // "What's new" card frame + label (the notes viewport sits inside it).
+        g.setColour(Colour(0x06ffffff));
+        g.fillRoundedRectangle(l.card.toFloat(), 12.0f);
+        g.setColour(lnf.palette.panelBorder);
+        g.drawRoundedRectangle(l.card.toFloat().reduced(0.5f), 12.0f, 1.0f);
+        g.setColour(lnf.palette.textSecondary);
+        g.setFont(lnf.heading(11.0f));
+        g.drawText("WHAT'S NEW", l.card.reduced(16, 0).withTop(l.card.getY() + 14).withHeight(14),
+                   Justification::topLeft);
+
+        drawStatusRow(g, l.status, info);
+    }
+
+    void resized() override
+    {
+        const auto l = computeLayout();
+        download->setBounds(l.button);
+        unlock->setBounds(l.button);
+        skip->setBounds(l.skip);
+
+        const auto area = l.notes;
+        notesViewport.setBounds(area);
+        const int fullWidth = area.getWidth();
+        if (notesList->measureHeight(fullWidth) > area.getHeight())
+        {
+            // Overflow: leave a gutter for the scrollbar and re-measure at the
+            // narrower width so wrapping is correct.
+            const int w = juce::jmax(0, fullWidth - 13);
+            notesList->setSize(w, notesList->measureHeight(w));
+        }
+        else
+        {
+            // Fits: fill the area so the text sits top-aligned, no scrollbar.
+            notesList->setSize(fullWidth, area.getHeight());
+        }
+    }
+
+private:
+    struct Layout { Rectangle<int> header, pill, heading, card, notes, status, button, skip; };
+
+    [[nodiscard]] Layout computeLayout() const
+    {
+        const auto& info = controller.updateInfo();
+        // The status row (progress bar / error / access note) only exists while
+        // downloading, after a failure, or when downloads are gated; collapsing it
+        // otherwise gives the notes card more room.
+        const bool gated = ! info.canDownload && info.phase != Phase::Loading;
+        const bool showStatus = info.phase == Phase::Downloading || info.error.isNotEmpty() || gated;
+
+        auto r = getLocalBounds();
+
+        Layout l;
+        l.skip = r.removeFromBottom(20);
+        r.removeFromBottom(10);
+        if (showStatus)
+        {
+            l.status = r.removeFromBottom(18);
+            r.removeFromBottom(10);
+        }
+        l.button = r.removeFromBottom(46);
+        r.removeFromBottom(14);
+
+        l.header = r.removeFromTop(40);
+        r.removeFromTop(14);
+        l.pill = r.removeFromTop(24);
+        r.removeFromTop(10);
+        l.heading = r.removeFromTop(30);
+        r.removeFromTop(14);
+        l.card = r; // the notes card takes all remaining height
+
+        auto inner = l.card.reduced(16, 12);
+        inner.removeFromTop(18); // "WHAT'S NEW" label + gap
+        l.notes = inner;
+        return l;
+    }
+
+    void drawUpdatePill(Graphics& g, Rectangle<int> slot) const
+    {
+        const juce::String text = "Update available";
+        auto pf = lnf.heading(11.5f);
+        const float iconSz = 14.0f, lpad = 11.0f, gap = 7.0f, rpad = 12.0f;
+        const float tw = juce::GlyphArrangement::getStringWidth(pf, text);
+        const float pw = lpad + iconSz + gap + tw + rpad;
+        auto pb = Rectangle<float>(0, 0, pw, 24.0f)
+                      .withCentre({ (float) slot.getX() + pw * 0.5f, (float) slot.getCentreY() });
+        g.setColour(lnf.accent.withAlpha(0.16f));
+        g.fillRoundedRectangle(pb, 12.0f);
+        g.setColour(lnf.accent.withAlpha(0.40f));
+        g.drawRoundedRectangle(pb, 12.0f, 1.0f);
+        if (auto ic = icons::fromStroke(icons::downloadTray, lnf.accent, 1.9f))
+            ic->drawWithin(g, { pb.getX() + lpad, pb.getCentreY() - iconSz * 0.5f, iconSz, iconSz },
+                           juce::RectanglePlacement::centred, 1.0f);
+        g.setColour(lnf.palette.textPrimary);
+        g.setFont(pf);
+        g.drawText(text, Rectangle<float>(pb.getX() + lpad + iconSz + gap, pb.getY(), tw + 2.0f,
+                                          pb.getHeight()),
+                   Justification::centredLeft);
+    }
+
+    void drawStatusRow(Graphics& g, Rectangle<int> row, const ActivationController::UpdateInfo& info) const
+    {
+        if (info.phase == Phase::Downloading)
+        {
+            auto pct = row.removeFromRight(44);
+            row.removeFromRight(10);
+            auto bar = row.withSizeKeepingCentre(row.getWidth(), 6);
+            g.setColour(Colour(0x12ffffff));
+            g.fillRoundedRectangle(bar.toFloat(), 3.0f);
+            auto fill = bar.toFloat().withWidth((float) bar.getWidth()
+                                                * (float) juce::jlimit(0.0, 1.0, info.progress));
+            g.setColour(lnf.accent);
+            g.fillRoundedRectangle(fill, 3.0f);
+            g.setColour(lnf.palette.textSecondary);
+            g.setFont(lnf.body(12.0f));
+            g.drawText(juce::String(juce::roundToInt(info.progress * 100.0)) + "%", pct,
+                       Justification::centredRight);
+        }
+        else if (info.error.isNotEmpty())
+        {
+            if (auto warn = icons::fromStroke(icons::warning, lnf.palette.error, 1.8f))
+                warn->drawWithin(g, row.removeFromLeft(20).toFloat().withSizeKeepingCentre(15, 15),
+                                 juce::RectanglePlacement::centred, 1.0f);
+            g.setColour(lnf.palette.error);
+            g.setFont(lnf.body(12.5f));
+            g.drawFittedText(info.error, row, Justification::centredLeft, 2, 1.0f);
+        }
+        else if (! info.canDownload)
+        {
+            const auto& lic = controller.license();
+            const juce::String note = (lic && lic->trial)
+                ? "This update is included with a full license."
+                : juce::String("Sign in to download this update.");
+            g.setColour(lnf.palette.textSecondary);
+            g.setFont(lnf.body(12.5f));
+            g.drawFittedText(note, row, Justification::centredLeft, 2, 1.0f);
+        }
+    }
+
+    juce::Viewport notesViewport;
+    std::unique_ptr<UpdateNotesList> notesList;
+    std::unique_ptr<StyledButton> download;
+    std::unique_ptr<StyledButton> unlock;
+    std::unique_ptr<LinkButton> skip;
 };
 
 //==============================================================================
@@ -1638,6 +2086,7 @@ struct ActivationComponent::Impl : public juce::ChangeListener,
         trial = std::make_unique<TrialView>(controller, lnf);
         expired = std::make_unique<ExpiredView>(controller, lnf);
         details = std::make_unique<DetailsView>(controller, lnf);
+        updateView = std::make_unique<UpdateAvailableView>(controller, lnf);
 
         for (auto* v : views())
         {
@@ -1671,11 +2120,21 @@ struct ActivationComponent::Impl : public juce::ChangeListener,
         controller.removeChangeListener(this);
     }
 
+    // Explicitly present the update screen now (host hook). Routes to the update
+    // screen as an auto-presentation; the overlay then appears via the change
+    // callback. No-op when no update is available.
+    void presentUpdate()
+    {
+        if (controller.updateAvailable())
+            controller.showUpdate(/*fromLicenseView*/ false);
+    }
+
     void timerCallback() override { updater.update(); }
 
     std::vector<ScreenView*> views()
     {
-        return { welcome.get(), browser.get(), success.get(), offline.get(), trial.get(), expired.get(), details.get() };
+        return { welcome.get(), browser.get(), success.get(), offline.get(), trial.get(),
+                 expired.get(), details.get(), updateView.get() };
     }
 
     ScreenView* viewFor(ActivationController::Screen s)
@@ -1687,11 +2146,12 @@ struct ActivationComponent::Impl : public juce::ChangeListener,
             case S::BrowserWait: return browser.get();
             case S::Success:     return success.get();
             case S::Offline:     return offline.get();
-            case S::Trial:       return trial.get();
-            case S::Expired:     return expired.get();
-            case S::Details:     return details.get();
-            case S::Error:       return welcome.get();
-            case S::Loading:     default: return nullptr;
+            case S::Trial:           return trial.get();
+            case S::Expired:         return expired.get();
+            case S::Details:         return details.get();
+            case S::UpdateAvailable: return updateView.get();
+            case S::Error:           return welcome.get();
+            case S::Loading:         default: return nullptr;
         }
     }
 
@@ -1721,6 +2181,13 @@ struct ActivationComponent::Impl : public juce::ChangeListener,
             }
             layoutActive();
             startTransition(dir);
+
+            // Auto-present the overlay when the controller routes to the update
+            // screen on its own (startup / re-validation), so the update shows on
+            // open. Not when reached from the license-view badge (already visible).
+            if (screen == ActivationController::Screen::UpdateAvailable
+                && ! controller.updateCameFromLicenseView())
+                appear();
         }
         else if (active != nullptr)
         {
@@ -1825,6 +2292,12 @@ struct ActivationComponent::Impl : public juce::ChangeListener,
 
     void dismiss()
     {
+        // Closing the overlay while the update screen is up returns the resting
+        // screen to the license view, so re-opening (e.g. the host's License
+        // button) never lands back on the update screen.
+        if (controller.screen() == ActivationController::Screen::UpdateAvailable)
+            controller.showDetails();
+
         if (controller.config().reduceMotion || ! appearAnim)
         {
             owner.setVisible(false);
@@ -1867,7 +2340,8 @@ struct ActivationComponent::Impl : public juce::ChangeListener,
         {
             case S::Loading: case S::Welcome: case S::Error:                   return 0;
             case S::Offline: case S::BrowserWait:                              return 1;
-            case S::Trial:   case S::Success: case S::Details: case S::Expired: return 2;
+            case S::Trial:   case S::Success: case S::Details: case S::Expired:
+            case S::UpdateAvailable:                                          return 2;
         }
         return 0;
     }
@@ -1996,6 +2470,11 @@ struct ActivationComponent::Impl : public juce::ChangeListener,
         const int inset = canClose ? (closeSize + 10) : 0;
         for (auto* v : views())
             v->headerRightInset = inset;
+
+        // The inset just changed; re-lay the active view so any inset-dependent
+        // header content (e.g. the Details update badge) repositions to match.
+        if (active != nullptr)
+            active->resized();
     }
 
     void layoutActive()
@@ -2070,6 +2549,7 @@ struct ActivationComponent::Impl : public juce::ChangeListener,
     std::unique_ptr<TrialView> trial;
     std::unique_ptr<ExpiredView> expired;
     std::unique_ptr<DetailsView> details;
+    std::unique_ptr<UpdateAvailableView> updateView;
     ScreenView* active = nullptr;
     ScreenView* outgoing = nullptr;
     ActivationController::Screen lastScreen = ActivationController::Screen::Loading;
@@ -2110,6 +2590,8 @@ ActivationComponent::~ActivationComponent() = default;
 ActivationController& ActivationComponent::controller() { return impl->controller; }
 
 void ActivationComponent::appear() { impl->appear(); }
+
+void ActivationComponent::presentUpdateIfAvailable() { impl->presentUpdate(); }
 
 void ActivationComponent::dismiss() { impl->dismiss(); }
 
