@@ -38,6 +38,12 @@ Add the module, fill in three fields, show one component.
 
 Requires **JUCE 8** (8.0.4+) and C++17. Supports macOS, Windows, and Linux.
 
+<p align="center">
+  <img src="../../assets/moonbase-juce-update.png" width="66%"
+       alt="Update available screen: an 'Update available' pill, a 'Solstice 1.0.0 is ready' heading, a 'What's new' changelog card, a Download button, and a 'Skip this update' link.">
+</p>
+<p align="center"><em>The in-app update notification: release notes and a one-click installer download.</em></p>
+
 ## Add it to your project
 
 Add this repository (as a git submodule, say) and point your build at the module folder.
