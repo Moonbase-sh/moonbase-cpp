@@ -1816,6 +1816,13 @@ public:
         };
         addAndMakeVisible(*download);
 
+        // Shown instead of Download when this license can't fetch the installer
+        // (e.g. a trial when the product restricts downloads to owners).
+        unlock = std::make_unique<StyledButton>(l, StyledButton::Style::accent, "Unlock full version",
+                                                icons::fromStroke(icons::lock, juce::Colours::white, 1.8f));
+        unlock->onClick = [this] { controller.beginOnlineActivation(); };
+        addChildComponent(*unlock);
+
         skip = std::make_unique<LinkButton>(l, "Skip this update", l.palette.textSecondary);
         skip->onClick = [this]
         {
@@ -1845,6 +1852,12 @@ public:
         const auto& info = controller.updateInfo();
         const bool reduce = controller.config().reduceMotion;
         const bool busy = info.phase == Phase::Loading || info.phase == Phase::Downloading;
+
+        // Once notes have loaded, swap the Download button for an Unlock CTA when
+        // this license isn't entitled to the installer.
+        const bool gated = info.phase != Phase::Loading && ! info.canDownload;
+        download->setVisible(! gated);
+        unlock->setVisible(gated);
 
         switch (info.phase)
         {
@@ -1906,6 +1919,7 @@ public:
     {
         const auto l = computeLayout();
         download->setBounds(l.button);
+        unlock->setBounds(l.button);
         skip->setBounds(l.skip);
 
         const auto area = l.notes;
@@ -1931,9 +1945,11 @@ private:
     [[nodiscard]] Layout computeLayout() const
     {
         const auto& info = controller.updateInfo();
-        // The status row (progress bar / error line) only exists while downloading
-        // or after a failure; collapsing it otherwise gives the notes card more room.
-        const bool showStatus = info.phase == Phase::Downloading || info.error.isNotEmpty();
+        // The status row (progress bar / error / access note) only exists while
+        // downloading, after a failure, or when downloads are gated; collapsing it
+        // otherwise gives the notes card more room.
+        const bool gated = ! info.canDownload && info.phase != Phase::Loading;
+        const bool showStatus = info.phase == Phase::Downloading || info.error.isNotEmpty() || gated;
 
         auto r = getLocalBounds();
 
@@ -2012,11 +2028,22 @@ private:
             g.setFont(lnf.body(12.5f));
             g.drawFittedText(info.error, row, Justification::centredLeft, 2, 1.0f);
         }
+        else if (! info.canDownload)
+        {
+            const auto& lic = controller.license();
+            const juce::String note = (lic && lic->trial)
+                ? "This update is included with a full license."
+                : juce::String("Sign in to download this update.");
+            g.setColour(lnf.palette.textSecondary);
+            g.setFont(lnf.body(12.5f));
+            g.drawFittedText(note, row, Justification::centredLeft, 2, 1.0f);
+        }
     }
 
     juce::Viewport notesViewport;
     std::unique_ptr<UpdateNotesList> notesList;
     std::unique_ptr<StyledButton> download;
+    std::unique_ptr<StyledButton> unlock;
     std::unique_ptr<LinkButton> skip;
 };
 

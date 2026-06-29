@@ -64,6 +64,10 @@ public:
         juce::String releaseNotes;    // plain text; empty until loaded
         juce::String error;           // non-empty when a fetch/download failed
         double progress = 0.0;        // 0..1 while Downloading
+        // Whether this license may download the installer, derived from the
+        // product's release access-control level. False e.g. for a trial when the
+        // product restricts downloads to owners. Known once notes have loaded.
+        bool canDownload = true;
     };
 
     explicit ActivationController(ActivationConfig config);
@@ -165,7 +169,8 @@ public:
                           moonbase::license license,
                           juce::String releaseNotes = {},
                           double progress = 0.0,
-                          juce::String error = {});
+                          juce::String error = {},
+                          bool canDownload = true);
 
     //== Accessors =============================================================
     [[nodiscard]] Screen screen() const noexcept { return screen_; }
@@ -199,6 +204,9 @@ private:
 
     void beginUpdateFlow(Screen destination); // sets UpdateInfo + fetches notes
     void fetchUpdateInfo();
+    // Whether the current license may download the installer, given the product's
+    // release access-control flags (needs-user / needs-ownership).
+    [[nodiscard]] bool licenseCanDownload(const moonbase::release_info& info) const;
     void beginFileDownload(const moonbase::download_target& target);
     void failUpdateDownload(const juce::String& message);
     [[nodiscard]] juce::String defaultInstallerName() const;

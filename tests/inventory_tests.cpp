@@ -56,6 +56,54 @@ TEST_CASE("get_release queries the product endpoint with the license token")
     CHECK(request.request_timeout == std::chrono::milliseconds{5678});
 }
 
+TEST_CASE("get_release parses the download access-control flags")
+{
+    auto transport = std::make_shared<moonbase::tests::recording_transport>(std::deque<http_response>{
+        http_response{200, {},
+            R"({"id":"demo-app","name":"Solstice","version":"2.4.0",)"
+            R"("downloadsNeedsUser":true,"downloadsNeedsOwnership":true,)"
+            R"("downloads":[{"name":"Solstice-2.4.0.dmg","platform":"Mac"}]})"},
+    });
+    inventory_client client(make_options(), transport);
+
+    const auto info = client.get_release("2.4.0", "tok");
+    CHECK(info.downloads_need_user);
+    CHECK(info.downloads_need_ownership);
+}
+
+TEST_CASE("can_download enforces the access-control flags against the license")
+{
+    const auto make_license = [](bool trial, std::string userId) {
+        license lic;
+        lic.trial = trial;
+        lic.issued_to.id = std::move(userId);
+        return lic;
+    };
+    const auto full = make_license(false, "user-1");
+    const auto trial_owned = make_license(true, "user-1");
+    const auto trial_anon = make_license(true, "00000000-0000-0000-0000-000000000000");
+
+    release_info anon;       // AllowAnonymous
+    release_info customers;  customers.downloads_need_user = true;            // AllowCustomers
+    release_info owners;     owners.downloads_need_user = true;               // AllowOwners
+                             owners.downloads_need_ownership = true;
+
+    // Anonymous access: everyone can download.
+    CHECK(can_download(full, anon));
+    CHECK(can_download(trial_owned, anon));
+    CHECK(can_download(trial_anon, anon));
+
+    // Needs a user: a full license and an owned trial pass; an anonymous trial doesn't.
+    CHECK(can_download(full, customers));
+    CHECK(can_download(trial_owned, customers));
+    CHECK_FALSE(can_download(trial_anon, customers));
+
+    // Needs ownership: only the full (non-trial) license passes.
+    CHECK(can_download(full, owners));
+    CHECK_FALSE(can_download(trial_owned, owners));
+    CHECK_FALSE(can_download(trial_anon, owners));
+}
+
 TEST_CASE("get_release tolerates a release with no notes or downloads")
 {
     auto transport = std::make_shared<moonbase::tests::recording_transport>(std::deque<http_response>{

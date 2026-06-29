@@ -295,9 +295,16 @@ Details / Trial screen (it never interrupts the locked Expired screen). It then:
    `GET /api/customer/inventory/products/{productId}/download/{platform}/latest?redirect=false`
    and downloads it into `config.downloadDirectory` with progress, then reveals it.
 
+**Download gating.** The product response reports the release access-control level
+(`downloadsNeedsUser` / `downloadsNeedsOwnership`). `moonbase::can_download(license, info)`
+applies it: a full (non-trial) license owns the product and can download; a trial cannot
+download from an owners-only product (the default). When the license isn't entitled, the
+screen swaps the Download button for an **Unlock full version** CTA and a short note, so
+the user never hits a 403 (`updateInfo().canDownload`).
+
 Both inventory requests authenticate with the license token via the
 `Authorization: LicenseToken <jwt>` scheme (`moonbase::inventory_client`). Observe
-`controller().updateInfo()` for the phase, versions, notes, and progress.
+`controller().updateInfo()` for the phase, versions, notes, progress, and `canDownload`.
 
 **When it appears.** With `config.autoPresentUpdate` (default on), the module presents the
 update screen automatically when the plugin **opens** with an available, non-skipped update

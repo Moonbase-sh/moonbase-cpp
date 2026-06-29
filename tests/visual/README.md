@@ -41,6 +41,7 @@ PNG per state:
 | `11-update-ready` | Update available, notes loaded (download button) |
 | `12-update-downloading` | Update installer downloading (progress bar) |
 | `13-update-error` | Update details failed to load (error) |
+| `14-update-gated` | Update the license can't download (Unlock CTA) |
 
 Add a state by adding a `writeSnapshot(...)` call.
 

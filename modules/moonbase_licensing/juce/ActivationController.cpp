@@ -869,6 +869,7 @@ void ActivationController::fetchUpdateInfo()
             if (info)
             {
                 self->updateInfo_.releaseNotes = juce::String::fromUTF8(info->description.c_str());
+                self->updateInfo_.canDownload = self->licenseCanDownload(*info);
                 self->updateInfo_.error.clear();
             }
             else
@@ -880,6 +881,11 @@ void ActivationController::fetchUpdateInfo()
             self->sendChangeMessage();
         });
     });
+}
+
+bool ActivationController::licenseCanDownload(const moonbase::release_info& info) const
+{
+    return license_ && moonbase::can_download(*license_, info);
 }
 
 void ActivationController::startUpdateDownload()
@@ -1054,7 +1060,7 @@ void ActivationController::dismissUpdate()
 
 void ActivationController::setPreviewUpdate(UpdateInfo::Phase phase, moonbase::license license,
                                             juce::String releaseNotes, double progressValue,
-                                            juce::String error)
+                                            juce::String error, bool canDownload)
 {
     ++generation_;
     ++updateGeneration_;
@@ -1074,6 +1080,7 @@ void ActivationController::setPreviewUpdate(UpdateInfo::Phase phase, moonbase::l
     updateInfo_.releaseNotes = std::move(releaseNotes);
     updateInfo_.progress = progressValue;
     updateInfo_.error = std::move(error);
+    updateInfo_.canDownload = canDownload;
 
     screen_ = Screen::UpdateAvailable;
     sendSynchronousChangeMessage();

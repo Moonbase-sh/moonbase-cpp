@@ -24,11 +24,14 @@
 
 namespace moonbase {
 
-// The plain-text release notes plus enough to know an installer exists.
+// The plain-text release notes plus enough to know an installer exists and who
+// may download it (the product's release access-control level).
 struct release_info {
     std::string version;     // the queried release version (echoed back by the server)
     std::string description; // release notes (plain text); empty when none
     bool has_downloads = false;
+    bool downloads_need_user = false;      // download requires an authenticated customer
+    bool downloads_need_ownership = false; // download requires owning / subscribing to the product
 };
 
 // A resolved, ready-to-fetch installer URL. `url` is a short-lived presigned
@@ -39,6 +42,25 @@ struct download_target {
     std::string url;
     std::string filename;
 };
+
+// Whether `license` may download the installer for a release with the given
+// access flags (from release_info). Mirrors the backend's release access control:
+// a full (non-trial) license owns or subscribes to the product, a trial does not;
+// an authenticated customer has a real user id, while an anonymous trial carries
+// the nil GUID.
+inline bool can_download(const license& lic, const release_info& info)
+{
+    const bool owns = !lic.trial;
+    const bool has_user = !lic.issued_to.id.empty()
+        && lic.issued_to.id != "00000000-0000-0000-0000-000000000000";
+    if (info.downloads_need_ownership && !owns) {
+        return false;
+    }
+    if (info.downloads_need_user && !has_user) {
+        return false;
+    }
+    return true;
+}
 
 namespace detail {
 
@@ -180,6 +202,8 @@ public:
             }
             info.has_downloads = json.contains("downloads") && json.at("downloads").is_array()
                 && !json.at("downloads").empty();
+            info.downloads_need_user = json.value("downloadsNeedsUser", false);
+            info.downloads_need_ownership = json.value("downloadsNeedsOwnership", false);
             return info;
         } catch (const std::exception& ex) {
             throw api_error(static_cast<int>(response.status_code),

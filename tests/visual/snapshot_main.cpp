@@ -129,6 +129,15 @@ moonbase::license makeUpdateLicense()
     return lic;
 }
 
+// A trial with the same available update; used to render the download-gated state
+// (a trial can't download installers from an owners-only product).
+moonbase::license makeUpdateTrialLicense()
+{
+    auto lic = makeLicense(true);
+    lic.licensed_product.current_release_version = "2.4.0";
+    return lic;
+}
+
 int gSnapW = ActivationComponent::defaultWidth;
 int gSnapH = ActivationComponent::defaultHeight;
 
@@ -348,6 +357,12 @@ int main(int argc, char* argv[])
                       { c.setPreviewUpdate(UpdatePhase::Ready, makeUpdateLicense(), {}, 0.0,
                                            "Couldn't load the release details. "
                                            "Check your connection and try again."); },
+                      cfg);
+
+        writeSnapshot(outDir, "14-update-gated",
+                      [notes](ActivationController& c)
+                      { c.setPreviewUpdate(UpdatePhase::Ready, makeUpdateTrialLicense(), notes, 0.0,
+                                           {}, /*canDownload*/ false); },
                       cfg);
     }
 
