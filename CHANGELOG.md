@@ -1,3 +1,10 @@
+# [3.3.0](https://github.com/Moonbase-sh/moonbase-cpp/compare/v3.2.0...v3.3.0) (2026-06-29)
+
+
+### Features
+
+* in-app "Update available" view with release notes and installer download ([#18](https://github.com/Moonbase-sh/moonbase-cpp/issues/18)) ([7aee6e6](https://github.com/Moonbase-sh/moonbase-cpp/commit/7aee6e6f6e8fe2003d2cb0797c58be899d6a7663))
+
 # [3.2.0](https://github.com/Moonbase-sh/moonbase-cpp/compare/v3.1.0...v3.2.0) (2026-06-26)
 
 
