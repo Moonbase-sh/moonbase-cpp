@@ -100,6 +100,13 @@ The screens:
   and a Deactivate action (server-side `revoke_activation`, with a local-forget fallback
   for offline or trial licenses).
 - **Trial expired** — a locked "trial has ended" screen with Unlock / Activate offline.
+- **Update available.** Shown when a validated license reports a released version
+  (the `current_release_version` / `p:rel` claim) newer than the app version. Loads the
+  release notes from the inventory endpoints and downloads the new installer for the
+  current platform in-app, with progress. "Skip this update" dismisses it (recorded so
+  the quiet startup path won't re-prompt for that version; a newer release still does).
+  Controlled by `config.enableUpdatePrompt` / `config.applicationVersion` /
+  `config.downloadDirectory` / `config.autoPresentUpdate`.
 
 All transitions use JUCE 8's animation API (`juce::Animator` / `ValueAnimatorBuilder`
 / `Easings`, driven by a `VBlankAnimatorUpdater`): cross-fade + fade-up between
@@ -225,6 +232,11 @@ It is invoked on the message thread. A missing or malformed `endpoint` / `produc
 `publicKey` does not throw out of construction; the component shows an Error state and the
 reason is reported through this sink (and `DBG` in debug builds).
 
+**Escape hatch:** on the license details screen, double-clicking the green "Active" pill
+reveals the configured license folder (where `license.mb` and `license.state.json` live) in
+the OS file browser. It's an undocumented gesture (no pointer cursor) for support /
+debugging, e.g. to inspect or clear persisted state.
+
 ## Refreshing entitlements
 
 After a user buys something mid-session (a sub-product, an upgrade), re-validate the
@@ -260,6 +272,58 @@ The SDK never polls on a timer; it validates on launch (`start()`) and whenever 
 `refreshLicense()`, throttled to no more than once per `onlineCheckInterval`. A license
 stays usable offline until `onlineGracePeriod` elapses since its last successful online
 validation.
+
+## App updates
+
+A validated license carries the product's current released version in its claims
+(`license.licensed_product.current_release_version`, the JWT `p:rel` claim). On launch
+and after every re-validation, the controller compares it (via `moonbase::update_available`,
+a small SemVer compare in `moonbase/version.hpp`) against the running app version:
+
+```cpp
+config.applicationVersion = "2.3.1";   // or rely on JucePlugin_VersionString
+config.enableUpdatePrompt = true;       // default; set false to never prompt
+config.downloadDirectory  = {};         // default: the user's Downloads folder
+```
+
+When the released version is newer, the **Update available** screen shows instead of the
+Details / Trial screen (it never interrupts the locked Expired screen). It then:
+
+1. Fetches the release notes (plain text) from
+   `GET /api/customer/inventory/products/{productId}?version={released}`.
+2. On "Download", resolves an authenticated, short-lived installer URL from
+   `GET /api/customer/inventory/products/{productId}/download/{platform}/latest?redirect=false`
+   and downloads it into `config.downloadDirectory` with progress, then reveals it.
+
+Both inventory requests authenticate with the license token via the
+`Authorization: LicenseToken <jwt>` scheme (`moonbase::inventory_client`). Observe
+`controller().updateInfo()` for the phase, versions, notes, and progress.
+
+**When it appears.** With `config.autoPresentUpdate` (default on), the module presents the
+update screen automatically when the plugin **opens** with an available, non-skipped update
+(the controller routes there on startup / re-validation and the component appears the
+overlay). Opening the license view explicitly (e.g. the host's "License" button) never
+auto-shows it — closing the update overlay returns the resting screen to the license view,
+so re-opening lands on the license screen. The license view also keeps a clickable
+**"Update available"** badge next to the "Active" pill (whenever `updateAvailable()` is
+true) that opens it on demand; `ActivationComponent::presentUpdateIfAvailable()` is the
+explicit host hook.
+
+**"Skip this update".** Dismissing records the version in the `ignoredUpdates` list (so it
+won't auto-present again for that version; a newer release still does). Where it goes
+depends on how the screen was entered (tracked via `updateCameFromLicenseView()`): from the
+license-view badge → back to the license view; auto-presented on open → it just closes the
+overlay (the host's `onClose`).
+
+**What is and isn't cached between sessions.** The released *version* is part of the
+license token, so it is read from the persisted `license.mb` on every launch (no network
+needed) and refreshed on the next successful online validation. The release *notes* and
+the installer URL are **not** cached: `fetchUpdateInfo()` re-fetches the notes each time
+the screen is shown, and the presigned installer URL is resolved fresh on each "Download"
+click (it expires after ~15 minutes). The skip list lives in a small JSON state file
+beside the license (`<license>.state.json`); that file (`ActivationState`) is the general
+place for client state that should survive restarts, so future cached/remembered values
+live there too.
 
 ## Telemetry / analytics
 

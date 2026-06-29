@@ -19,9 +19,13 @@ Add the module, fill in three fields, show one component.
   you want that bridge instead, see [`examples/juce/`](../../examples/juce/).)
 - **Built-in UI.** A configurable, themeable `ActivationComponent` (and one-call
   `ActivationDialog`) covering every state — welcome, activating, success, offline,
-  trial, trial expired, license details — with JUCE 8 animated transitions and drag-and-drop for
-  offline license files. Designed to sit as a modal over your plugin and lock it
-  until activated.
+  trial, trial expired, license details, and update-available — with JUCE 8 animated
+  transitions and drag-and-drop for offline license files. Designed to sit as a modal
+  over your plugin and lock it until activated.
+- **In-app updates.** When a validated license reports a newer released version than
+  the running app, the update screen surfaces the release notes and downloads the new
+  installer for the user's platform in-app (with progress). Opt out with
+  `config.enableUpdatePrompt = false`.
 - **Zero third-party dependencies.** HTTP over `juce::WebInputStream` (no CURL), JSON
   via a bundled `nlohmann/json`, and RS256 verification via OS-native crypto:
   Security.framework (macOS/iOS), CNG/bcrypt (Windows), system libcrypto (Linux).
@@ -99,6 +103,10 @@ richer gating, and `onActivationChanged` fires whenever it changes.
 - **Refresh entitlements** — `controller().refreshLicense()` re-validates online so a
   freshly purchased sub-product/upgrade loads without a restart (async, silent, with an
   optional completion callback).
+- **App updates.** Set `config.applicationVersion` (or rely on `JucePlugin_VersionString`);
+  when the license's released-version claim outranks it, the update screen shows, fetches
+  release notes, and downloads the installer into `config.downloadDirectory` (defaults to
+  the user's Downloads folder). Disable with `config.enableUpdatePrompt = false`.
 - **Persistence** — the validated license is stored at
   `userApplicationDataDirectory/<manufacturer>/<product>/license.mb` by default
   (override with `config.licenseFile`).

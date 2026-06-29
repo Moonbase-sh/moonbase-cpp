@@ -160,10 +160,12 @@ if(MOONBASE_BUILD_TESTS)
         tests/client_tests.cpp
         tests/fingerprint_tests.cpp
         tests/header_smoke_tests.cpp
+        tests/inventory_tests.cpp
         tests/licensing_tests.cpp
         tests/process_dedup_tests.cpp
         tests/store_tests.cpp
         tests/validator_tests.cpp
+        tests/version_tests.cpp
         tests/live_tests.cpp)
     target_link_libraries(moonbase_tests PRIVATE moonbase::licensing doctest::doctest)
     moonbase_apply_sanitizer(moonbase_tests)

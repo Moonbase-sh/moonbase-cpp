@@ -88,6 +88,21 @@ struct ActivationConfig
     bool overlayBackdrop = false;  // dim the host behind the panel (modal over a plugin) instead of a full opaque backdrop
     int trialLengthDays = 14;      // trial length shown on the Trial / Expired screens (trials are granted by the backend, not started from the UI)
 
+    // When a validated license reports a newer released version than
+    // applicationVersion (the p:rel claim), show the "Update available" screen and
+    // offer an in-app download of the new installer. Set false to never prompt.
+    bool enableUpdatePrompt = true;
+
+    // Automatically present the update screen when the plugin opens with an
+    // available (non-skipped) update. Set false to surface updates only via the
+    // "Update available" badge in the license view (no automatic pop on open).
+    bool autoPresentUpdate = true;
+
+    // Where the downloaded installer is saved. Defaults to the user's Downloads
+    // folder (falling back to the temp directory) when left empty; see
+    // resolvedDownloadDirectory().
+    juce::File downloadDirectory;
+
     // Optional override for the device name shown on the activation screen (the
     // "<name>  ·  <platform>" chip). When empty, the OS hostname is used
     // (juce::SystemStats::getComputerName, via the default fingerprint provider).
@@ -147,6 +162,19 @@ struct ActivationConfig
             return manufacturerName;
        #if defined (JucePlugin_Manufacturer)
         return JucePlugin_Manufacturer;
+       #else
+        return {};
+       #endif
+    }
+    // The running app version compared against the license's released-version
+    // claim. Mirrors the resolution in toLicensingOptions(): explicit config, then
+    // the JUCE plugin macro. Empty when neither is set (no update prompt then).
+    [[nodiscard]] juce::String resolvedApplicationVersion() const
+    {
+        if (applicationVersion.isNotEmpty())
+            return applicationVersion;
+       #if defined (JucePlugin_VersionString)
+        return JucePlugin_VersionString;
        #else
         return {};
        #endif
@@ -220,6 +248,18 @@ struct ActivationConfig
             .getChildFile(manufacturer)
             .getChildFile(product)
             .getChildFile("license.mb");
+    }
+
+    [[nodiscard]] juce::File resolvedDownloadDirectory() const
+    {
+        if (downloadDirectory != juce::File())
+            return downloadDirectory;
+
+        auto downloads = juce::File::getSpecialLocation(juce::File::userHomeDirectory)
+                             .getChildFile("Downloads");
+        if (downloads.isDirectory())
+            return downloads;
+        return juce::File::getSpecialLocation(juce::File::tempDirectory);
     }
 
     [[nodiscard]] moonbase::licensing_options toLicensingOptions() const

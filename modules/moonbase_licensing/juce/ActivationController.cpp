@@ -45,6 +45,9 @@ ActivationController::ActivationController(ActivationConfig config)
         std::filesystem::path(file.getFullPathName().toStdString()));
     auto fingerprint = std::make_shared<juce_fingerprint_provider>();
     auto transport = std::make_shared<juce_http_transport>();
+    // A second transport for the inventory (update) calls, so an update download
+    // URL fetch and a license validation can't block on each other's stream.
+    auto inventoryTransport = std::make_shared<juce_http_transport>();
 
     try
     {
@@ -60,10 +63,17 @@ ActivationController::ActivationController(ActivationConfig config)
         return;
     }
 
-    cancelInFlight_ = [transport] { transport->cancel(); };
+    inventory_.emplace(config_.toLicensingOptions(), inventoryTransport);
+
+    cancelInFlight_ = [transport, inventoryTransport]
+    {
+        transport->cancel();
+        inventoryTransport->cancel();
+    };
     setDeviceLabel(config_.deviceName.isNotEmpty()
                        ? config_.deviceName
                        : juce::String(fingerprint->device_name()));
+    state_.emplace(stateFilePath());
 }
 
 ActivationController::ActivationController(ActivationConfig config,
@@ -75,11 +85,14 @@ ActivationController::ActivationController(ActivationConfig config,
 {
     jassert(licensing_ != nullptr);
     setDeviceLabel(std::move(deviceName));
+    state_.emplace(stateFilePath());
 }
 
 ActivationController::~ActivationController()
 {
     stopTimer();
+    ++updateGeneration_;     // drop any queued update-flow continuations
+    updateDownload_.reset(); // cancels + joins the installer download thread
     // Unblock any in-flight request, then wait for the workers to finish, so no
     // detached thread keeps running module code after we (and possibly the
     // plugin binary) are gone. cancelInFlight_ makes the drain near-instant.
@@ -751,7 +764,20 @@ void ActivationController::applyLicense(std::optional<moonbase::license> value)
     setLicense(std::move(value));
     expiredTrial_.reset();
     statusMessage_.clear();
-    setScreen(screenForCurrentLicense());
+
+    // A validated license that outranks the running app routes to the update
+    // screen first (unless dismissed this session); "Remind me later" then falls
+    // through to the normal Details / Trial screen.
+    const auto dest = screenForCurrentLicense();
+    if ((dest == Screen::Details || dest == Screen::Trial) && config_.autoPresentUpdate
+        && updateAvailable() && ! updateDismissedForCurrentLicense())
+    {
+        updateFromLicenseView_ = false; // auto-routed, not from the badge
+        beginUpdateFlow(dest);
+        return;
+    }
+
+    setScreen(dest);
 }
 
 void ActivationController::showTrialExpired(moonbase::license expired)
@@ -762,6 +788,295 @@ void ActivationController::showTrialExpired(moonbase::license expired)
     setLicense(std::nullopt);
     statusMessage_.clear();
     setScreen(Screen::Expired);
+}
+
+//==============================================================================
+// App update flow
+bool ActivationController::updateAvailable() const
+{
+    if (! config_.enableUpdatePrompt || ! license_)
+        return false;
+    const auto& released = license_->licensed_product.current_release_version;
+    if (! released)
+        return false;
+    return moonbase::update_available(config_.resolvedApplicationVersion().toStdString(), *released);
+}
+
+juce::File ActivationController::stateFilePath() const
+{
+    // A small JSON state file beside the license. Named after the license file so
+    // it stays unique to this product/store.
+    const auto license = config_.resolvedLicenseFile();
+    return license.getSiblingFile(license.getFileNameWithoutExtension() + ".state.json");
+}
+
+bool ActivationController::updateDismissedForCurrentLicense() const
+{
+    if (! state_ || ! license_)
+        return false;
+    const auto& released = license_->licensed_product.current_release_version;
+    if (! released)
+        return false;
+    return state_->isUpdateIgnored(juce::String(*released));
+}
+
+void ActivationController::beginUpdateFlow(Screen /*destination*/)
+{
+    updateInfo_ = {};
+    updateInfo_.phase = UpdateInfo::Phase::Loading;
+    updateInfo_.currentVersion = config_.resolvedApplicationVersion();
+    if (license_ && license_->licensed_product.current_release_version)
+        updateInfo_.newVersion = juce::String(*license_->licensed_product.current_release_version);
+
+    setScreen(Screen::UpdateAvailable);
+    fetchUpdateInfo();
+}
+
+void ActivationController::fetchUpdateInfo()
+{
+    if (! inventory_ || ! license_)
+    {
+        // No way to fetch (test seam): show the screen with whatever we have.
+        updateInfo_.phase = UpdateInfo::Phase::Ready;
+        sendChangeMessage();
+        return;
+    }
+
+    const auto generation = ++updateGeneration_;
+    juce::WeakReference<ActivationController> safe(this);
+    auto inventory = *inventory_;
+    auto token = license_->token;
+    auto version = updateInfo_.newVersion.toStdString();
+
+    threadPool_.addJob([safe, generation, inventory, token, version]() mutable
+    {
+        std::optional<moonbase::release_info> info;
+        juce::String diag;
+        try
+        {
+            info = inventory.get_release(version, token);
+        }
+        catch (const std::exception& ex)
+        {
+            diag = juce::String("fetchUpdateInfo failed: ") + describeError(ex);
+        }
+
+        juce::MessageManager::callAsync([safe, generation, info, diag]() mutable
+        {
+            auto* self = safe.get();
+            if (self == nullptr || generation != self->updateGeneration_.load())
+                return;
+            if (info)
+            {
+                self->updateInfo_.releaseNotes = juce::String::fromUTF8(info->description.c_str());
+                self->updateInfo_.error.clear();
+            }
+            else
+            {
+                self->updateInfo_.error = "Couldn't load the release details.";
+                self->emitDiagnostic(diag);
+            }
+            self->updateInfo_.phase = UpdateInfo::Phase::Ready;
+            self->sendChangeMessage();
+        });
+    });
+}
+
+void ActivationController::startUpdateDownload()
+{
+    if (! inventory_ || ! license_ || screen_ != Screen::UpdateAvailable)
+        return;
+    if (updateInfo_.phase == UpdateInfo::Phase::Downloading)
+        return;
+
+    updateInfo_.phase = UpdateInfo::Phase::Downloading;
+    updateInfo_.progress = 0.0;
+    updateInfo_.error.clear();
+    sendChangeMessage();
+
+    const auto generation = ++updateGeneration_;
+    juce::WeakReference<ActivationController> safe(this);
+    auto inventory = *inventory_;
+    auto token = license_->token;
+    const auto platformName = moonbase::to_string(moonbase::current_platform());
+
+    threadPool_.addJob([safe, generation, inventory, token, platformName]() mutable
+    {
+        std::optional<moonbase::download_target> target;
+        juce::String diag;
+        try
+        {
+            target = inventory.get_download_url(platformName, token);
+        }
+        catch (const std::exception& ex)
+        {
+            diag = juce::String("startUpdateDownload failed: ") + describeError(ex);
+        }
+
+        juce::MessageManager::callAsync([safe, generation, target, diag]() mutable
+        {
+            auto* self = safe.get();
+            if (self == nullptr || generation != self->updateGeneration_.load())
+                return;
+            if (target)
+            {
+                self->beginFileDownload(*target);
+            }
+            else
+            {
+                self->emitDiagnostic(diag);
+                self->failUpdateDownload("Couldn't reach Moonbase to download the update. Try again when online.");
+            }
+        });
+    });
+}
+
+void ActivationController::beginFileDownload(const moonbase::download_target& target)
+{
+    auto dir = config_.resolvedDownloadDirectory();
+    dir.createDirectory();
+
+    const auto suggested = target.filename.empty()
+                               ? defaultInstallerName()
+                               : juce::File::createLegalFileName(juce::String(target.filename));
+    updateFile_ = dir.getNonexistentChildFile(suggested.upToLastOccurrenceOf(".", false, false),
+                                              suggested.fromLastOccurrenceOf(".", true, false));
+
+    downloadGeneration_.store(updateGeneration_.load());
+    const auto options = juce::URL::DownloadTaskOptions().withListener(this);
+    updateDownload_ = juce::URL(juce::String(target.url)).downloadToFile(updateFile_, options);
+    if (updateDownload_ == nullptr)
+        failUpdateDownload("Couldn't start the download.");
+}
+
+void ActivationController::failUpdateDownload(const juce::String& message)
+{
+    updateInfo_.phase = UpdateInfo::Phase::Ready;
+    updateInfo_.progress = 0.0;
+    updateInfo_.error = message;
+    sendChangeMessage();
+}
+
+juce::String ActivationController::defaultInstallerName() const
+{
+#if JUCE_MAC
+    const char* ext = ".dmg";
+#elif JUCE_WINDOWS
+    const char* ext = ".exe";
+#else
+    const char* ext = ".zip";
+#endif
+    auto base = config_.resolvedProductName();
+    if (updateInfo_.newVersion.isNotEmpty())
+        base << "-" << updateInfo_.newVersion;
+    return juce::File::createLegalFileName(base + ext);
+}
+
+void ActivationController::progress(juce::URL::DownloadTask*, juce::int64 bytesDownloaded,
+                                    juce::int64 totalLength)
+{
+    const double frac = totalLength > 0
+                            ? juce::jlimit(0.0, 1.0, (double) bytesDownloaded / (double) totalLength)
+                            : 0.0;
+    const auto generation = downloadGeneration_.load();
+    juce::WeakReference<ActivationController> safe(this);
+    juce::MessageManager::callAsync([safe, generation, frac]
+    {
+        auto* self = safe.get();
+        if (self == nullptr || generation != self->updateGeneration_.load())
+            return;
+        if (self->updateInfo_.phase != UpdateInfo::Phase::Downloading)
+            return;
+        self->updateInfo_.progress = frac;
+        self->sendChangeMessage();
+    });
+}
+
+void ActivationController::finished(juce::URL::DownloadTask*, bool success)
+{
+    const auto generation = downloadGeneration_.load();
+    juce::WeakReference<ActivationController> safe(this);
+    juce::MessageManager::callAsync([safe, generation, success]
+    {
+        auto* self = safe.get();
+        if (self == nullptr || generation != self->updateGeneration_.load())
+            return;
+        if (success)
+        {
+            self->updateInfo_.phase = UpdateInfo::Phase::Done;
+            self->updateInfo_.progress = 1.0;
+            self->updateInfo_.error.clear();
+            self->updateFile_.revealToUser();
+            self->sendChangeMessage();
+        }
+        else
+        {
+            self->failUpdateDownload("The download didn't finish. Try again.");
+        }
+    });
+}
+
+void ActivationController::showUpdate(bool fromLicenseView)
+{
+    if (! updateAvailable())
+        return;
+    updateFromLicenseView_ = fromLicenseView;
+    beginUpdateFlow(screenForCurrentLicense());
+}
+
+void ActivationController::revealUpdateDownload()
+{
+    if (updateFile_ != juce::File() && updateFile_.existsAsFile())
+    {
+        updateFile_.revealToUser();
+        return;
+    }
+
+    // The downloaded installer is gone (moved, deleted, or cleaned up). Drop back
+    // to the ready state so the button offers to download it again.
+    updateFile_ = juce::File();
+    updateInfo_.phase = UpdateInfo::Phase::Ready;
+    updateInfo_.progress = 0.0;
+    sendChangeMessage();
+}
+
+void ActivationController::dismissUpdate()
+{
+    // Remember the dismissed version so we don't prompt for it again next session
+    // (a newer release still prompts). Persisted in the JSON state file.
+    if (state_)
+        state_->ignoreUpdate(updateInfo_.newVersion);
+
+    ++updateGeneration_;     // drop any in-flight fetch / download continuations
+    updateDownload_.reset(); // cancel an active file download
+    setScreen(screenForCurrentLicense());
+}
+
+void ActivationController::setPreviewUpdate(UpdateInfo::Phase phase, moonbase::license license,
+                                            juce::String releaseNotes, double progressValue,
+                                            juce::String error)
+{
+    ++generation_;
+    ++updateGeneration_;
+    stopTimer();
+    pollInFlight_ = false;
+    busy_ = false;
+
+    setLicense(std::move(license));
+    expiredTrial_.reset();
+    statusMessage_.clear();
+
+    updateInfo_ = {};
+    updateInfo_.phase = phase;
+    updateInfo_.currentVersion = config_.resolvedApplicationVersion();
+    if (license_ && license_->licensed_product.current_release_version)
+        updateInfo_.newVersion = juce::String(*license_->licensed_product.current_release_version);
+    updateInfo_.releaseNotes = std::move(releaseNotes);
+    updateInfo_.progress = progressValue;
+    updateInfo_.error = std::move(error);
+
+    screen_ = Screen::UpdateAvailable;
+    sendSynchronousChangeMessage();
 }
 
 juce::String ActivationController::shortPlatformName()

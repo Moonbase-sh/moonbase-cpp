@@ -16,6 +16,7 @@
 
 using namespace moonbase::juce_integration;
 using Screen = ActivationController::Screen;
+using UpdatePhase = ActivationController::UpdateInfo::Phase;
 
 namespace {
 
@@ -116,6 +117,15 @@ moonbase::license makeSubscriptionLicense()
 {
     auto lic = makeLicense(false);
     lic.expires_at = kPreviewNow + std::chrono::hours(24 * 27); // renews in ~27 days
+    return lic;
+}
+
+// A full license whose product has a newer released version (2.4.0) than the
+// app version the update snapshots run with (2.3.1), so the update screen shows.
+moonbase::license makeUpdateLicense()
+{
+    auto lic = makeLicense(false);
+    lic.licensed_product.current_release_version = "2.4.0";
     return lic;
 }
 
@@ -284,6 +294,62 @@ int main(int argc, char* argv[])
 
     writeSnapshot(outDir, "09-details-deactivating", [](ActivationController& c)
                   { c.setPreviewState(Screen::Details, makeLicense(false), {}, /*busy*/ true); });
+
+    {
+        // Details with the "Update available" badge: an update exists but was
+        // dismissed, so we stay on Details and offer the badge to re-open it.
+        auto cfg = demoConfig();
+        cfg.applicationVersion = "2.3.1"; // older than the license's released version
+        writeSnapshot(outDir, "07d-details-update-available",
+                      [](ActivationController& c)
+                      { c.setPreviewState(Screen::Details, makeUpdateLicense()); },
+                      cfg);
+    }
+
+    {
+        // The update screen runs with an app version (2.3.1) older than the
+        // license's released version (2.4.0); release notes are plain text.
+        auto cfg = demoConfig();
+        cfg.applicationVersion = "2.3.1";
+        // Plain-text release notes, long enough to overflow the card so the
+        // snapshot exercises the scrollable area + scrollbar.
+        const juce::String notes =
+            "Version 2.4.0\n"
+            "\n"
+            "New oversampling modes up to 16x for cleaner high-gain tones.\n"
+            "8 new factory presets from the Laniakea sound pack.\n"
+            "Reworked the modulation matrix with per-slot depth control.\n"
+            "Fixes Apple Silicon AU validation under Logic 11.\n"
+            "Fixes a rare crash when loading presets saved in the 1.x series.\n"
+            "Lower CPU usage in the analyzer view.\n"
+            "Retina-correct metering on mixed-DPI multi-monitor setups.\n"
+            "New A/B compare with copy-from-B and snapshot slots.\n"
+            "MIDI learn now supports relative encoders.\n"
+            "Improved oversampling latency reporting to the host.\n"
+            "Various accessibility and keyboard-navigation improvements.";
+
+        writeSnapshot(outDir, "10-update-loading",
+                      [](ActivationController& c)
+                      { c.setPreviewUpdate(UpdatePhase::Loading, makeUpdateLicense()); },
+                      cfg);
+
+        writeSnapshot(outDir, "11-update-ready",
+                      [notes](ActivationController& c)
+                      { c.setPreviewUpdate(UpdatePhase::Ready, makeUpdateLicense(), notes); },
+                      cfg);
+
+        writeSnapshot(outDir, "12-update-downloading",
+                      [notes](ActivationController& c)
+                      { c.setPreviewUpdate(UpdatePhase::Downloading, makeUpdateLicense(), notes, 0.42); },
+                      cfg);
+
+        writeSnapshot(outDir, "13-update-error",
+                      [](ActivationController& c)
+                      { c.setPreviewUpdate(UpdatePhase::Ready, makeUpdateLicense(), {}, 0.0,
+                                           "Couldn't load the release details. "
+                                           "Check your connection and try again."); },
+                      cfg);
+    }
 
     juce::Logger::outputDebugString("UI snapshots written to " + outDir.getFullPathName());
     return 0;
