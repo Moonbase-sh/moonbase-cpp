@@ -4,7 +4,7 @@ set(CMAKE_POLICY_VERSION_MINIMUM 3.5)
 
 project(moonbase_cpp
     # VERSION is managed by semantic-release; do not edit by hand.
-    VERSION 3.3.0
+    VERSION 4.0.0
     DESCRIPTION "Header-only C++ SDK for Moonbase license activation"
     LANGUAGES CXX)
 

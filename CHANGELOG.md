@@ -1,3 +1,95 @@
+# [4.0.0](https://github.com/Moonbase-sh/moonbase-cpp/compare/v3.3.0...v4.0.0) (2026-08-02)
+
+
+* feat!: adopt the Moonbase device fingerprint spec v2 for device ids ([#19](https://github.com/Moonbase-sh/moonbase-cpp/issues/19)) ([c7c222a](https://github.com/Moonbase-sh/moonbase-cpp/commit/c7c222a52b462d167c72b729c76e62a5ba6eeb24))
+
+
+### BREAKING CHANGES
+
+* The default device id now follows the cross-SDK Moonbase device
+fingerprint spec (`moonbase:fingerprint:v2`, vendored as FINGERPRINT_SPEC.md and
+pinned by tests/vectors/fingerprint-vectors.json). Existing device-bound licenses
+must be re-activated, which consumes an activation seat and resets any
+device-scoped trial. To avoid that, wrap the default in
+moonbase::migrating_device_id_resolver together with
+moonbase::legacy_cpp_device_id_resolver and/or
+moonbase::juce_integration::legacy_juce_device_id_resolver; see "Migrating from
+3.x" in README.md.
+
+moonbase::fingerprint_provider is renamed to moonbase::device_id_resolver and
+static_fingerprint_provider to static_device_id_resolver, with deprecated aliases
+kept until 5.0.0 (define MOONBASE_DISABLE_DEPRECATED_ALIASES to compile them out).
+default_fingerprint_provider now resolves to the spec resolver; the previous
+algorithm is preserved verbatim as moonbase::legacy_cpp_device_id_resolver.
+licensing::fingerprint() is deprecated in favour of licensing::device_resolver().
+
+A device mismatch now throws moonbase::license_device_mismatch_error
+(error_type::license_device_mismatch), which derives from license_invalid_error so
+existing catch sites and the offline grace period still behave, but code switching
+on error_type::license_invalid must add the case. A machine with no readable
+hardware identity now throws moonbase::insufficient_device_identity_error
+(error_type::device_identity_unavailable) instead of silently hashing the host
+name; opt back in with moonbase_device_id_resolver_options::fallback, or
+ActivationConfig::allowDeviceNameFallback, neither of which applies on iOS or
+Android where the host name is the same on every device.
+
+* refactor: read iOS and Android identity in the core, not through JUCE
+
+The device fingerprint is meant to be framework-independent, and it was for
+macOS, Linux and Windows: the core SDK reads IOKit, sysfs and the firmware table
+itself. iOS and Android were the odd ones out, implemented in the JUCE module and
+then duplicated into the OnlineUnlockStatus bridge so it had something to use.
+Two copies of the same readers, and neither available to a non-JUCE consumer.
+
+Both now live in moonbase_device_id_resolver.hpp alongside the others.
+identifierForVendor is reached through the Objective-C runtime's C API, so the
+header stays plain C++ with no framework and no .mm file. ANDROID_ID goes through
+plain JNI from the NDK.
+
+Android needs one thing a native library genuinely cannot obtain by itself, an
+application Context, so the host supplies it once via
+moonbase::android::set_jni_environment(vm, context). The JUCE module calls that
+from the controller; a non-JUCE app calls it from JNI_OnLoad. Until it is called
+Android resolves to insufficient_device_identity_error rather than to a constant,
+which is the honest answer for a machine the SDK cannot identify.
+
+Deletes modules/moonbase_licensing/juce/{ios,android}_device_id_resolver.h and
+the bridge's copy of them, and collapses
+ActivationConfig::defaultDeviceIdResolver() back to a single resolver, since
+there is no longer a platform for which the core one is wrong. Net 169 lines
+removed from the JUCE surface.
+
+No device id changes: the iOS material is the same identifierForVendor,
+normalized the same way, and Android was previously unreachable from the core at
+all.
+
+* fix: replace std::call_once memoization, which deadlocks under ThreadSanitizer
+
+The sanitizers workflow was not slow, it was hung. Its log stops dead at
+"Start 22: a failed identity read is retried, not cached" and sits there until
+the 20-minute timeout kills it. Everything before that is fast: tests 1-21 take
+about one second under TSan, including the 8-thread memoization test (0.02s) and
+the 20,000-iteration SMBIOS sweep (0.17s). TSan overhead was never the issue.
+
+moonbase_device_id_resolver::description() lets
+insufficient_device_identity_error escape the std::call_once callable on purpose,
+so a machine that is momentarily unreadable retries instead of caching the
+failure. libstdc++ implements call_once on pthread_once, and TSan's pthread_once
+interceptor does not model the reset that the exception path performs, so the
+*second* call blocks forever. That is exactly what test 22 does, and it is why
+ASan and UBSan pass on the same libstdc++ while TSan does not.
+
+Replaces both memos, and the one in migrating_device_id_resolver whose
+allocations can also throw, with a mutex and a flag set only after the value is
+stored. Same semantics, including the deliberate retry, without depending on the
+one corner of call_once that is fragile. Returning a reference stays safe because
+neither value is mutated once its flag is set, and the lock provides the
+happens-before edge.
+
+Worth fixing in the header rather than skipping the test: any consumer running
+TSan against a machine with no readable hardware identity would hit the same
+deadlock in shipped code.
+
 # [3.3.0](https://github.com/Moonbase-sh/moonbase-cpp/compare/v3.2.0...v3.3.0) (2026-06-29)
 
 

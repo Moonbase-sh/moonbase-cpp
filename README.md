@@ -32,7 +32,7 @@ To pull the SDK into your own CMake build without a separate install step:
 include(FetchContent)
 FetchContent_Declare(moonbase_cpp
     GIT_REPOSITORY https://github.com/Moonbase-sh/moonbase-cpp.git
-    GIT_TAG v3.3.0)
+    GIT_TAG v4.0.0)
 set(MOONBASE_BUILD_TESTS OFF)
 set(MOONBASE_BUILD_EXAMPLES OFF)
 FetchContent_MakeAvailable(moonbase_cpp)
