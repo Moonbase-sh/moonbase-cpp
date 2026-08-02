@@ -4,7 +4,7 @@
 #include <memory>
 
 #include "moonbase/detail/time.hpp"
-#include "moonbase/fingerprint.hpp"
+#include "moonbase/device_id_resolver.hpp"
 #include "moonbase/validator.hpp"
 
 #include "test_helpers.hpp"
@@ -28,7 +28,7 @@ license_validator make_validator(const std::string& public_key, const std::strin
 {
     return license_validator(
         options_for(public_key),
-        std::make_shared<static_fingerprint_provider>("device-name", device_id));
+        std::make_shared<static_device_id_resolver>("device-name", device_id));
 }
 
 } // namespace

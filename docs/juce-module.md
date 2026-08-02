@@ -163,12 +163,100 @@ manufacturer name, `accent` colour, the Moonbase co-brand badge (`showMoonbaseBa
 (every colour is a token) or bundle real Inter / Space Mono typefaces and point the
 `heading` / `body` / `mono` font helpers at them.
 
-## Fingerprinting
+## Device identity
 
-By default the module identifies the device via
-`juce::SystemStats::getUniqueDeviceID()` (so it never shells out to ioreg/dmidecode
-inside a sandboxed host). Pick one fingerprint source when you ship and keep it —
-changing it changes the device id Moonbase sees and invalidates existing activations.
+By default the module identifies the device with
+`moonbase::moonbase_device_id_resolver`, which implements the cross-SDK
+[device fingerprint spec](../FINGERPRINT_SPEC.md) (`moonbase:fingerprint:v2`). A
+license activated in a web or Electron app built on `@moonbase.sh/licensing`
+validates in your plugin, and the other way round. See
+[Device fingerprint](../README.md#device-fingerprint) for the stability contract and
+the Linux caveats.
+
+It still shells out to nothing: IOKit on macOS, world-readable files on Linux and
+the firmware table on Windows all work inside a sandboxed host, and none of them
+depend on the process running elevated.
+
+Supply your own with `config.deviceIdResolver`, and inspect what the default
+resolved to with `controller().describeDevice()`, which returns the id, spec
+version, platform tag and the *names* of the contributing parameters. That is safe
+to put behind a "Copy diagnostics" button; parameter values are hardware serial
+numbers and are never exposed.
+
+### Migrating an already-shipped plugin
+
+**This changed in 4.0.0.** Earlier versions used
+`juce::SystemStats::getUniqueDeviceID()`, so every already-activated user's license
+is bound to that id. Without action they are locked out at next launch and must
+re-activate, which consumes a fresh activation seat and resets any device-scoped
+trial. One line avoids it:
+
+```cpp
+config.deviceIdResolver = std::make_shared<moonbase::migrating_device_id_resolver>(
+    // The platform default, NOT moonbase_device_id_resolver directly: on iOS and
+    // Android that has no identity to read and throws, and a migrating resolver
+    // asks its current resolver for an id before consulting any historical one,
+    // so hard-coding it locks mobile users out of validation *and* activation.
+    ActivationConfig::defaultDeviceIdResolver(),                                     // binds
+    std::make_shared<moonbase::juce_integration::legacy_juce_device_id_resolver>()); // still accepted
+```
+
+New activations bind the spec id; existing licenses keep validating; the fleet
+migrates as devices naturally re-activate, and you drop the wrapper in a later
+release. Because `getUniqueDeviceID()` is JUCE's own derivation rather than a
+published format, the historical resolver only vouches for a binding if the plugin
+still ships the JUCE version that created it, so do not combine this upgrade with a
+JUCE major bump. Full options in
+[Migrating from 3.x](../README.md#migrating-from-3x).
+
+### iOS and Android use a scoped identity
+
+On iOS and Android the module emits a **scoped** spec id, stamped `mbd2s_`, built
+from `identifierForVendor` and `ANDROID_ID` respectively.
+
+Neither platform exposes a device identifier that unrelated applications can read.
+iOS has had no accessible hardware serial since iOS 7, and `identifierForVendor` is
+scoped to the App Store vendor; Android's `Build.SERIAL` returns `unknown` without a
+privileged permission from Android 10, and `ANDROID_ID` has been scoped to the app
+signing key since Android 8. **Cross-SDK parity on mobile is therefore impossible by
+construction.** Rather than hide that, the spec's
+[scoped identity](../FINGERPRINT_SPEC.md#scoped-identity) rules stamp the limitation
+into the id: it is stable for your device within the platform's scope, and must
+never be correlated with an id from another scope, in either direction.
+
+Note the scope is the platform's, not yours: one vendor's two differently-signed
+Android apps do not share an id.
+
+`config.allowDeviceNameFallback` is **forbidden** on both, not merely ignored. Since
+iOS 17 `gethostname()` returns the literal `localhost` on every device and
+`UIDevice.name` returns the model name; on Android the label is `Build.MODEL`. An
+SDK that fell through to the fallback when the scoped identifier was momentarily
+absent would hand its entire install base one device id, and a single activation
+would unlock every device. The ladder is scoped identity, then insufficient
+identity, and nothing else. Absence is transient, so retry later.
+
+> The Android reader deliberately does **not** use
+> `juce::SystemStats::getUniqueDeviceID()`. That reads the *static field*
+> `Settings.Secure.ANDROID_ID`, which is the key name `"android_id"` rather than the
+> device's value, so every JUCE Android app reports the same id. The spec's
+> `^[0-9a-f]{1,16}$` rule makes that mistake mechanically impossible here, since
+> `"android_id"` is not hex.
+
+**Mobile needs the same migration as desktop.** `mbd2s_<hash>` is a different value
+from the raw `getUniqueDeviceID()` string bound before 4.0.0, so pass
+`legacy_juce_device_id_resolver` as a historical resolver there too.
+
+### When a machine has no hardware identity
+
+Elsewhere, activation fails with `moonbase::insufficient_device_identity_error`
+rather than binding something weak, and the controller routes it to the `Error`
+screen with a diagnostic explaining why. This is reachable on cloned VM images whose
+SMBIOS carries an unset UUID and a blank baseboard serial, and on minimal containers.
+
+Set `config.allowDeviceNameFallback = true` to accept a weaker id derived from the
+computer name instead. Those ids are stamped `mbd2n_` so the server can tell them
+apart from real hardware bindings. Weigh it against the `"iPhone"` problem above:
+the fallback is only safe where computer names are actually distinct.
 
 ## Sample app
 

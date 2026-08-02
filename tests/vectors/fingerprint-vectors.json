@@ -1,0 +1,938 @@
+{
+  "$comment": "Conformance suite for the Moonbase device fingerprint spec (FINGERPRINT_SPEC.md). Every Moonbase SDK must reproduce every vector here. Note that no material ends with a newline.",
+  "version": 2,
+  "materialPrefix": "moonbase:fingerprint:v2",
+  "stampPrefix": "mbd2_",
+  "sourceTags": {
+    "identity": "",
+    "deviceName": "n",
+    "scoped": "s"
+  },
+  "canonicalizeValue": [
+    {
+      "description": "trailing newline from a sysfs read",
+      "input": "LENOVO\n",
+      "expected": "LENOVO"
+    },
+    {
+      "description": "surrounding whitespace of every kind",
+      "input": "  \t\r\nvalue\n\r \t",
+      "expected": "value"
+    },
+    {
+      "description": "interior spaces survive",
+      "input": " a b ",
+      "expected": "a b"
+    },
+    {
+      "description": "interior control characters are removed, not preserved",
+      "input": "a\nb",
+      "expected": "ab"
+    },
+    {
+      "description": "non-ASCII is removed",
+      "input": "caf\u00e9",
+      "expected": "caf"
+    },
+    {
+      "description": "NFC first: a decomposed e-acute composes, then drops whole",
+      "input": "cafe\u0301",
+      "expected": "caf"
+    },
+    {
+      "description": "a non-breaking space is not ASCII and is removed",
+      "input": "a\u00a0b",
+      "expected": "ab"
+    },
+    {
+      "description": "capped at 128 characters",
+      "input": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "expected": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    },
+    {
+      "description": "trimming runs after the cap, so no trailing space survives",
+      "input": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa   b",
+      "expected": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    },
+    {
+      "description": "an all-whitespace value is empty and gets dropped",
+      "input": " \t\r\n",
+      "expected": ""
+    }
+  ],
+  "material": [
+    {
+      "description": "macOS, the single identity parameter",
+      "platform": "mac",
+      "source": "identity",
+      "params": [
+        [
+          "ioPlatformUuid",
+          "0123456789ABCDEF0123456789ABCDEF"
+        ]
+      ],
+      "material": "moonbase:fingerprint:v2\nplatform=mac\nioPlatformUuid=0123456789ABCDEF0123456789ABCDEF",
+      "digest": "b465194056ff7721bf549799b4532bfca0bc72fffc0f6969c77c46d6b8e28e32",
+      "deviceId": "mbd2_b465194056ff7721bf549799b4532bfca0bc72fffc0f6969c77c46d6b8e28e32"
+    },
+    {
+      "description": "Linux, machine-id plus world-readable DMI model fields",
+      "platform": "linux",
+      "source": "identity",
+      "params": [
+        [
+          "machineId",
+          "b08dfa6083e7567a1921a715000001fb\n"
+        ],
+        [
+          "sysVendor",
+          "LENOVO\n"
+        ],
+        [
+          "productName",
+          "20HRCTO1WW\n"
+        ],
+        [
+          "boardVendor",
+          "LENOVO\n"
+        ],
+        [
+          "boardName",
+          "20HRCTO1WW\n"
+        ]
+      ],
+      "material": "moonbase:fingerprint:v2\nplatform=linux\nmachineId=b08dfa6083e7567a1921a715000001fb\nsysVendor=LENOVO\nproductName=20HRCTO1WW\nboardVendor=LENOVO\nboardName=20HRCTO1WW",
+      "digest": "ba16d78604f90c6c8b00dc1065a70c866884fadfa818ed2db83b2bfe0dc94933",
+      "deviceId": "mbd2_ba16d78604f90c6c8b00dc1065a70c866884fadfa818ed2db83b2bfe0dc94933"
+    },
+    {
+      "description": "Windows, first System and Baseboard structures",
+      "platform": "windows",
+      "source": "identity",
+      "params": [
+        [
+          "systemManufacturer",
+          "ACME"
+        ],
+        [
+          "systemProductName",
+          "Server 9000"
+        ],
+        [
+          "systemUuid",
+          "0123456789ABCDEF0123456789ABCDEF"
+        ],
+        [
+          "baseboardManufacturer",
+          "ACME"
+        ],
+        [
+          "baseboardProduct",
+          "MB-1"
+        ],
+        [
+          "baseboardSerialNumber",
+          "BSN-42"
+        ]
+      ],
+      "material": "moonbase:fingerprint:v2\nplatform=windows\nsystemManufacturer=ACME\nsystemProductName=Server 9000\nsystemUuid=0123456789ABCDEF0123456789ABCDEF\nbaseboardManufacturer=ACME\nbaseboardProduct=MB-1\nbaseboardSerialNumber=BSN-42",
+      "digest": "fadd75457e44f669e9865caff122b4706a4501089ac9e73b8735139bf57676ad",
+      "deviceId": "mbd2_fadd75457e44f669e9865caff122b4706a4501089ac9e73b8735139bf57676ad"
+    },
+    {
+      "description": "empty and whitespace-only values are dropped, order preserved",
+      "platform": "linux",
+      "source": "identity",
+      "params": [
+        [
+          "machineId",
+          " b08dfa60 "
+        ],
+        [
+          "sysVendor",
+          ""
+        ],
+        [
+          "productName",
+          "  "
+        ],
+        [
+          "boardVendor",
+          "\n\t"
+        ],
+        [
+          "boardName",
+          "20HRCTO1WW"
+        ]
+      ],
+      "material": "moonbase:fingerprint:v2\nplatform=linux\nmachineId=b08dfa60\nboardName=20HRCTO1WW",
+      "digest": "c78ac9d4f2c926745b97393ae4ba520a8411757c39befb44750938b5d740c686",
+      "deviceId": "mbd2_c78ac9d4f2c926745b97393ae4ba520a8411757c39befb44750938b5d740c686"
+    },
+    {
+      "description": "parameter order is significant (same pairs, swapped)",
+      "platform": "linux",
+      "source": "identity",
+      "params": [
+        [
+          "sysVendor",
+          "LENOVO"
+        ],
+        [
+          "machineId",
+          "b08dfa60"
+        ]
+      ],
+      "material": "moonbase:fingerprint:v2\nplatform=linux\nsysVendor=LENOVO\nmachineId=b08dfa60",
+      "digest": "c837942b1105074051fefb82fbf7f340197e03da0b0844dad0835640ac04b580",
+      "deviceId": "mbd2_c837942b1105074051fefb82fbf7f340197e03da0b0844dad0835640ac04b580"
+    },
+    {
+      "description": "control characters are dropped, so a value cannot forge an extra line",
+      "platform": "linux",
+      "source": "identity",
+      "params": [
+        [
+          "machineId",
+          "ABC\nsysVendor=GenuineIntel"
+        ]
+      ],
+      "material": "moonbase:fingerprint:v2\nplatform=linux\nmachineId=ABCsysVendor=GenuineIntel",
+      "digest": "e19d9f6ec29cd1070db07a72b53131224c37fcfb24762789cc27d15a23fa5296",
+      "deviceId": "mbd2_e19d9f6ec29cd1070db07a72b53131224c37fcfb24762789cc27d15a23fa5296"
+    },
+    {
+      "description": "non-ASCII is dropped, making the firmware-string decoding choice immaterial",
+      "platform": "windows",
+      "source": "identity",
+      "params": [
+        [
+          "systemManufacturer",
+          "Ac\u00e9me \u4e2d\u6587"
+        ],
+        [
+          "systemProductName",
+          "caf\u00e9"
+        ],
+        [
+          "systemUuid",
+          "0123456789ABCDEF0123456789ABCDEF"
+        ]
+      ],
+      "material": "moonbase:fingerprint:v2\nplatform=windows\nsystemManufacturer=Acme\nsystemProductName=caf\nsystemUuid=0123456789ABCDEF0123456789ABCDEF",
+      "digest": "c6d7b9d15db1d3a1f5bec22422c77e664e262d89bdc4d5c293d72c5611217398",
+      "deviceId": "mbd2_c6d7b9d15db1d3a1f5bec22422c77e664e262d89bdc4d5c293d72c5611217398"
+    },
+    {
+      "description": "NFC runs before the ASCII filter, so a decomposed e-acute leaves no bare \"e\"",
+      "platform": "windows",
+      "source": "identity",
+      "params": [
+        [
+          "systemManufacturer",
+          "Cafe\u0301 Corp"
+        ],
+        [
+          "systemUuid",
+          "0123456789ABCDEF0123456789ABCDEF"
+        ]
+      ],
+      "material": "moonbase:fingerprint:v2\nplatform=windows\nsystemManufacturer=Caf Corp\nsystemUuid=0123456789ABCDEF0123456789ABCDEF",
+      "digest": "3e8ce76bfc7b49bffec638c0438a384cdb27e1df1dee624ec7964f4c299a8233",
+      "deviceId": "mbd2_3e8ce76bfc7b49bffec638c0438a384cdb27e1df1dee624ec7964f4c299a8233"
+    },
+    {
+      "description": "values are capped at 128 characters",
+      "platform": "linux",
+      "source": "identity",
+      "params": [
+        [
+          "machineId",
+          "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        ]
+      ],
+      "material": "moonbase:fingerprint:v2\nplatform=linux\nmachineId=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "digest": "fe2f0b99e6def565c30601301a82634556f16f0f5ce034b53b9176ed32ebd914",
+      "deviceId": "mbd2_fe2f0b99e6def565c30601301a82634556f16f0f5ce034b53b9176ed32ebd914"
+    },
+    {
+      "description": "an unprogrammed serial is dropped, but a real system UUID still identifies the machine",
+      "platform": "windows",
+      "source": "identity",
+      "params": [
+        [
+          "systemManufacturer",
+          "ACME"
+        ],
+        [
+          "systemProductName",
+          "Server 9000"
+        ],
+        [
+          "systemUuid",
+          "0123456789ABCDEF0123456789ABCDEF"
+        ],
+        [
+          "baseboardSerialNumber",
+          "Default string"
+        ]
+      ],
+      "material": "moonbase:fingerprint:v2\nplatform=windows\nsystemManufacturer=ACME\nsystemProductName=Server 9000\nsystemUuid=0123456789ABCDEF0123456789ABCDEF",
+      "digest": "15b3d0f8e8e82500790653fbfc087ea0baa45c909afd6f246456d43893f4aee4",
+      "deviceId": "mbd2_15b3d0f8e8e82500790653fbfc087ea0baa45c909afd6f246456d43893f4aee4"
+    },
+    {
+      "description": "filler detection applies to identifying params only \u2014 a model may genuinely be named \"None\"",
+      "platform": "linux",
+      "source": "identity",
+      "params": [
+        [
+          "machineId",
+          "b08dfa60"
+        ],
+        [
+          "productName",
+          "None"
+        ]
+      ],
+      "material": "moonbase:fingerprint:v2\nplatform=linux\nmachineId=b08dfa60\nproductName=None",
+      "digest": "063d7bf0605a0da040b0046007a4993eaf41b557e414bea99105800560f6efdc",
+      "deviceId": "mbd2_063d7bf0605a0da040b0046007a4993eaf41b557e414bea99105800560f6efdc"
+    },
+    {
+      "description": "iOS offers only a vendor-scoped identifier, so the id is stamped mbd2s_",
+      "platform": "ios",
+      "source": "scoped",
+      "params": [
+        [
+          "identifierForVendor",
+          "0123456789ABCDEF0123456789ABCDEF"
+        ]
+      ],
+      "material": "moonbase:fingerprint:v2\nplatform=ios\nidentifierForVendor=0123456789ABCDEF0123456789ABCDEF",
+      "digest": "298ced47f8d983939db1d5fce6d4b4f2f8766aa19e3e17536fcd1604a81febf1",
+      "deviceId": "mbd2s_298ced47f8d983939db1d5fce6d4b4f2f8766aa19e3e17536fcd1604a81febf1"
+    },
+    {
+      "description": "Android ANDROID_ID from Settings.Secure.getString, lowercased and scoped to the signing key",
+      "platform": "android",
+      "source": "scoped",
+      "params": [
+        [
+          "androidId",
+          "a1b2c3d4e5f60718\n"
+        ]
+      ],
+      "material": "moonbase:fingerprint:v2\nplatform=android\nandroidId=a1b2c3d4e5f60718",
+      "digest": "ca988ecf5c529964bfaa80734da3dbe070dd41881aa43f8c472f3a5d512b4eff",
+      "deviceId": "mbd2s_ca988ecf5c529964bfaa80734da3dbe070dd41881aa43f8c472f3a5d512b4eff"
+    },
+    {
+      "description": "the deviceName fallback material (stamped mbd2n_, see stamps)",
+      "platform": "unknown",
+      "source": "deviceName",
+      "params": [
+        [
+          "deviceName",
+          "PC-1"
+        ]
+      ],
+      "material": "moonbase:fingerprint:v2\nplatform=unknown\ndeviceName=PC-1",
+      "digest": "493978eb157552e60a13694bd6861b2a82d0dba2746431a5f7921951ed460045",
+      "deviceId": "mbd2n_493978eb157552e60a13694bd6861b2a82d0dba2746431a5f7921951ed460045"
+    },
+    {
+      "description": "a rejected androidId constant is still a valid baseboard serial: per-parameter rejections must not leak across platforms",
+      "platform": "windows",
+      "source": "identity",
+      "params": [
+        [
+          "systemManufacturer",
+          "ACME"
+        ],
+        [
+          "baseboardSerialNumber",
+          "9774d56d682e549c"
+        ]
+      ],
+      "material": "moonbase:fingerprint:v2\nplatform=windows\nsystemManufacturer=ACME\nbaseboardSerialNumber=9774d56d682e549c",
+      "digest": "cdd01d6f586662f25e5aaa542ccaf373eea6cfb1271a2c94efd5ab828611b477",
+      "deviceId": "mbd2_cdd01d6f586662f25e5aaa542ccaf373eea6cfb1271a2c94efd5ab828611b477"
+    }
+  ],
+  "materialErrors": [
+    {
+      "description": "no parameters at all must be an error, never a digest \u2014 otherwise every unidentifiable machine on a platform shares one device id",
+      "platform": "linux",
+      "params": [],
+      "error": "InsufficientDeviceIdentity"
+    },
+    {
+      "description": "all parameters canonicalize to empty, non-ASCII whitespace included",
+      "platform": "mac",
+      "params": [
+        [
+          "ioPlatformUuid",
+          " \t\r\n"
+        ],
+        [
+          "systemUuid",
+          "\u00a0"
+        ]
+      ],
+      "error": "InsufficientDeviceIdentity"
+    },
+    {
+      "description": "duplicate parameter names are unrepresentable in the material grammar",
+      "platform": "windows",
+      "params": [
+        [
+          "systemUuid",
+          "AAAA"
+        ],
+        [
+          "systemUuid",
+          "BBBB"
+        ]
+      ],
+      "error": "DuplicateParameter"
+    },
+    {
+      "description": "Linux with no machine-id has only model-level fields left, which every unit of this model shares",
+      "platform": "linux",
+      "params": [
+        [
+          "machineId",
+          ""
+        ],
+        [
+          "sysVendor",
+          "LENOVO"
+        ],
+        [
+          "productName",
+          "20HRCTO1WW"
+        ],
+        [
+          "boardVendor",
+          "LENOVO"
+        ],
+        [
+          "boardName",
+          "20HRCTO1WW"
+        ]
+      ],
+      "error": "InsufficientDeviceIdentity"
+    },
+    {
+      "description": "an uninitialized all-zero machine-id is not identity either",
+      "platform": "linux",
+      "params": [
+        [
+          "machineId",
+          "00000000000000000000000000000000"
+        ],
+        [
+          "sysVendor",
+          "LENOVO"
+        ]
+      ],
+      "error": "InsufficientDeviceIdentity"
+    },
+    {
+      "description": "the literal \"uninitialized\" marker from machine-id(5) is shared by every machine deployed from an image",
+      "platform": "linux",
+      "params": [
+        [
+          "machineId",
+          "uninitialized"
+        ],
+        [
+          "sysVendor",
+          "QEMU"
+        ],
+        [
+          "productName",
+          "Standard PC"
+        ]
+      ],
+      "error": "InsufficientDeviceIdentity"
+    },
+    {
+      "description": "Windows with an unset system UUID and a blank baseboard serial identifies only the model \u2014 the common case on cloned VMs",
+      "platform": "windows",
+      "params": [
+        [
+          "systemManufacturer",
+          "ACME"
+        ],
+        [
+          "systemProductName",
+          "Server 9000"
+        ],
+        [
+          "systemUuid",
+          ""
+        ],
+        [
+          "baseboardManufacturer",
+          "ACME"
+        ],
+        [
+          "baseboardProduct",
+          "MB-1"
+        ],
+        [
+          "baseboardSerialNumber",
+          ""
+        ]
+      ],
+      "error": "InsufficientDeviceIdentity"
+    },
+    {
+      "description": "macOS with no IOPlatformUUID has nothing else to fall back on",
+      "platform": "mac",
+      "params": [
+        [
+          "ioPlatformUuid",
+          ""
+        ]
+      ],
+      "error": "InsufficientDeviceIdentity"
+    },
+    {
+      "description": "an OEM filler serial is not a serial: every unit of the model ships it",
+      "platform": "windows",
+      "params": [
+        [
+          "systemManufacturer",
+          "ACME"
+        ],
+        [
+          "systemProductName",
+          "Server 9000"
+        ],
+        [
+          "baseboardSerialNumber",
+          "To be filled by O.E.M."
+        ]
+      ],
+      "error": "InsufficientDeviceIdentity"
+    },
+    {
+      "description": "filler detection is case-insensitive",
+      "platform": "windows",
+      "params": [
+        [
+          "systemManufacturer",
+          "ACME"
+        ],
+        [
+          "baseboardSerialNumber",
+          "DEFAULT STRING"
+        ]
+      ],
+      "error": "InsufficientDeviceIdentity"
+    },
+    {
+      "description": "Not Available is a serial-number filler, not a serial number",
+      "platform": "windows",
+      "params": [
+        [
+          "systemManufacturer",
+          "ACME"
+        ],
+        [
+          "baseboardSerialNumber",
+          "Not Available"
+        ]
+      ],
+      "error": "InsufficientDeviceIdentity"
+    },
+    {
+      "description": "the OEM filler is also written without dots",
+      "platform": "windows",
+      "params": [
+        [
+          "systemManufacturer",
+          "ACME"
+        ],
+        [
+          "baseboardSerialNumber",
+          "To Be Filled By OEM"
+        ]
+      ],
+      "error": "InsufficientDeviceIdentity"
+    },
+    {
+      "description": "an all-F system UUID that reached the material as text is still unset",
+      "platform": "windows",
+      "params": [
+        [
+          "systemManufacturer",
+          "ACME"
+        ],
+        [
+          "systemUuid",
+          "FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF"
+        ]
+      ],
+      "error": "InsufficientDeviceIdentity"
+    },
+    {
+      "description": "iOS with no identifierForVendor yet has nothing else to offer",
+      "platform": "ios",
+      "params": [
+        [
+          "identifierForVendor",
+          ""
+        ]
+      ],
+      "error": "InsufficientDeviceIdentity"
+    },
+    {
+      "description": "Android with no androidId has nothing else to offer",
+      "platform": "android",
+      "params": [
+        [
+          "androidId",
+          ""
+        ]
+      ],
+      "error": "InsufficientDeviceIdentity"
+    },
+    {
+      "description": "the literal \"android_id\" is the key name, not an id: reading the static field instead of calling getString gives every device on the platform the same value",
+      "platform": "android",
+      "params": [
+        [
+          "androidId",
+          "android_id"
+        ]
+      ],
+      "error": "InsufficientDeviceIdentity"
+    },
+    {
+      "description": "Build.SERIAL returns \"unknown\" without a privileged permission, which is a fleet-wide constant",
+      "platform": "android",
+      "params": [
+        [
+          "androidId",
+          "unknown"
+        ]
+      ],
+      "error": "InsufficientDeviceIdentity"
+    },
+    {
+      "description": "9774d56d682e549c is a real ANDROID_ID shared by a large batch of devices whose ro.serialno was unset",
+      "platform": "android",
+      "params": [
+        [
+          "androidId",
+          "9774d56d682e549c"
+        ]
+      ],
+      "error": "InsufficientDeviceIdentity"
+    },
+    {
+      "description": "an androidId that is not lowercase hex did not come from Settings.Secure",
+      "platform": "android",
+      "params": [
+        [
+          "androidId",
+          "A1B2C3D4E5F60718"
+        ]
+      ],
+      "error": "InsufficientDeviceIdentity"
+    },
+    {
+      "description": "the host-name fallback is forbidden on iOS, where gethostname() returns \"localhost\" on every device",
+      "platform": "ios",
+      "params": [
+        [
+          "deviceName",
+          "iPhone"
+        ]
+      ],
+      "error": "InsufficientDeviceIdentity"
+    },
+    {
+      "description": "the host-name fallback is forbidden on Android, where the host name is a model name or an image-wide constant",
+      "platform": "android",
+      "params": [
+        [
+          "deviceName",
+          "localhost"
+        ]
+      ],
+      "error": "InsufficientDeviceIdentity"
+    }
+  ],
+  "smbios": [
+    {
+      "description": "System + Baseboard, the ordinary case",
+      "table": "011B0100010200000123456789ABCDEF0123456789ABCDEF06000041434D450053657276657220393030300000020F02000102030400090000000A0041434D45004D422D3100312E300042534E2D343200007F04FEFF0000",
+      "params": [
+        [
+          "systemManufacturer",
+          "ACME"
+        ],
+        [
+          "systemProductName",
+          "Server 9000"
+        ],
+        [
+          "systemUuid",
+          "0123456789ABCDEF0123456789ABCDEF"
+        ],
+        [
+          "baseboardManufacturer",
+          "ACME"
+        ],
+        [
+          "baseboardProduct",
+          "MB-1"
+        ],
+        [
+          "baseboardSerialNumber",
+          "BSN-42"
+        ]
+      ]
+    },
+    {
+      "description": "Processor structures contribute nothing \u2014 their count tracks vCPUs, so collecting them would change the id when a VM is resized",
+      "table": "011B0100010200000123456789ABCDEF0123456789ABCDEF06000041434D450053657276657220393030300000041A04000103C601020000000000000003000000000000000000496E74656C0058656F6E0053523342300000041A04000103C601020000000000000003000000000000000000496E74656C0058656F6E00535233423000007F04FEFF0000",
+      "params": [
+        [
+          "systemManufacturer",
+          "ACME"
+        ],
+        [
+          "systemProductName",
+          "Server 9000"
+        ],
+        [
+          "systemUuid",
+          "0123456789ABCDEF0123456789ABCDEF"
+        ]
+      ]
+    },
+    {
+      "description": "only the first structure of each type contributes",
+      "table": "011B0100010200000123456789ABCDEF0123456789ABCDEF06000041434D450053657276657220393030300000011B0500010200000123456789ABCDEF0123456789ABCDEF0600004F5448455200536572766572203100007F04FEFF0000",
+      "params": [
+        [
+          "systemManufacturer",
+          "ACME"
+        ],
+        [
+          "systemProductName",
+          "Server 9000"
+        ],
+        [
+          "systemUuid",
+          "0123456789ABCDEF0123456789ABCDEF"
+        ]
+      ]
+    },
+    {
+      "description": "string index 0 means absent; an index past the end of the string table is absent too",
+      "table": "011B0100000900000123456789ABCDEF0123456789ABCDEF06000041434D4500007F04FEFF0000",
+      "params": [
+        [
+          "systemManufacturer",
+          ""
+        ],
+        [
+          "systemProductName",
+          ""
+        ],
+        [
+          "systemUuid",
+          "0123456789ABCDEF0123456789ABCDEF"
+        ]
+      ]
+    },
+    {
+      "description": "an all-FF system UUID means \"not set\" and must not become identity",
+      "table": "011B010001020000FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF06000041434D4500536572766572203930303000007F04FEFF0000",
+      "params": [
+        [
+          "systemManufacturer",
+          "ACME"
+        ],
+        [
+          "systemProductName",
+          "Server 9000"
+        ],
+        [
+          "systemUuid",
+          ""
+        ]
+      ]
+    },
+    {
+      "description": "an all-zero system UUID means \"not set\" too",
+      "table": "011B0100010200000000000000000000000000000000000006000041434D4500536572766572203930303000007F04FEFF0000",
+      "params": [
+        [
+          "systemManufacturer",
+          "ACME"
+        ],
+        [
+          "systemProductName",
+          "Server 9000"
+        ],
+        [
+          "systemUuid",
+          ""
+        ]
+      ]
+    },
+    {
+      "description": "a structure with no strings is just the double-NUL",
+      "table": "011B0100000000000123456789ABCDEF0123456789ABCDEF0600000000020F02000100000200090000000A0041434D450042534E2D343200007F04FEFF0000",
+      "params": [
+        [
+          "systemManufacturer",
+          ""
+        ],
+        [
+          "systemProductName",
+          ""
+        ],
+        [
+          "systemUuid",
+          "0123456789ABCDEF0123456789ABCDEF"
+        ],
+        [
+          "baseboardManufacturer",
+          "ACME"
+        ],
+        [
+          "baseboardProduct",
+          ""
+        ],
+        [
+          "baseboardSerialNumber",
+          "BSN-42"
+        ]
+      ]
+    },
+    {
+      "description": "an OEM filler serial is reported verbatim \u2014 the parser describes the firmware, canonicalization decides what counts",
+      "table": "020F02000102030400090000000A0041434D45004D422D3100312E3000546F2062652066696C6C6564206279204F2E452E4D2E00007F04FEFF0000",
+      "params": [
+        [
+          "baseboardManufacturer",
+          "ACME"
+        ],
+        [
+          "baseboardProduct",
+          "MB-1"
+        ],
+        [
+          "baseboardSerialNumber",
+          "To be filled by O.E.M."
+        ]
+      ]
+    },
+    {
+      "description": "an empty table yields no parameters",
+      "table": "",
+      "params": []
+    }
+  ],
+  "stamps": [
+    {
+      "description": "the current version, hardware identity",
+      "deviceId": "mbd2_b465194056ff7721bf549799b4532bfca0bc72fffc0f6969c77c46d6b8e28e32",
+      "parsed": {
+        "version": 2,
+        "sourceTag": "",
+        "source": "identity",
+        "digest": "b465194056ff7721bf549799b4532bfca0bc72fffc0f6969c77c46d6b8e28e32"
+      }
+    },
+    {
+      "description": "the current version, host-name fallback",
+      "deviceId": "mbd2n_b465194056ff7721bf549799b4532bfca0bc72fffc0f6969c77c46d6b8e28e32",
+      "parsed": {
+        "version": 2,
+        "sourceTag": "n",
+        "source": "deviceName",
+        "digest": "b465194056ff7721bf549799b4532bfca0bc72fffc0f6969c77c46d6b8e28e32"
+      }
+    },
+    {
+      "description": "another version parses, so a validator can report \"re-activate\" rather than \"wrong device\"",
+      "deviceId": "mbd7_b465194056ff7721bf549799b4532bfca0bc72fffc0f6969c77c46d6b8e28e32",
+      "parsed": {
+        "version": 7,
+        "sourceTag": "",
+        "source": "identity",
+        "digest": "b465194056ff7721bf549799b4532bfca0bc72fffc0f6969c77c46d6b8e28e32"
+      }
+    },
+    {
+      "description": "a bare digest is not a stamp",
+      "deviceId": "b465194056ff7721bf549799b4532bfca0bc72fffc0f6969c77c46d6b8e28e32",
+      "parsed": null
+    },
+    {
+      "description": "a legacy base64 id is not a stamp",
+      "deviceId": "kR8kWLPFR0j0LNYlPTQRhF6JQnPqmA0GjXf3TrGDvXA",
+      "parsed": null
+    },
+    {
+      "description": "uppercase hex is not a stamp",
+      "deviceId": "mbd2_B465194056FF7721BF549799B4532BFCA0BC72FFFC0F6969C77C46D6B8E28E32",
+      "parsed": null
+    },
+    {
+      "description": "a truncated digest is not a stamp",
+      "deviceId": "mbd2_b465194056ff7721bf549799b4532bfca0bc72fffc0f6969c77c46d6b8e28e3",
+      "parsed": null
+    },
+    {
+      "description": "the current version, app-scoped identity",
+      "deviceId": "mbd2s_b465194056ff7721bf549799b4532bfca0bc72fffc0f6969c77c46d6b8e28e32",
+      "parsed": {
+        "version": 2,
+        "sourceTag": "s",
+        "source": "scoped",
+        "digest": "b465194056ff7721bf549799b4532bfca0bc72fffc0f6969c77c46d6b8e28e32"
+      }
+    },
+    {
+      "description": "an unrecognised source tag still parses, so the id is compared literally rather than rejected as \"not a Moonbase id\"",
+      "deviceId": "mbd2x_b465194056ff7721bf549799b4532bfca0bc72fffc0f6969c77c46d6b8e28e32",
+      "parsed": {
+        "version": 2,
+        "sourceTag": "x",
+        "source": null,
+        "digest": "b465194056ff7721bf549799b4532bfca0bc72fffc0f6969c77c46d6b8e28e32"
+      }
+    },
+    {
+      "description": "a multi-character tag parses too, so a future tag needs no version bump",
+      "deviceId": "mbd2zz_b465194056ff7721bf549799b4532bfca0bc72fffc0f6969c77c46d6b8e28e32",
+      "parsed": {
+        "version": 2,
+        "sourceTag": "zz",
+        "source": null,
+        "digest": "b465194056ff7721bf549799b4532bfca0bc72fffc0f6969c77c46d6b8e28e32"
+      }
+    },
+    {
+      "description": "an uppercase source tag is not a stamp",
+      "deviceId": "mbd2S_b465194056ff7721bf549799b4532bfca0bc72fffc0f6969c77c46d6b8e28e32",
+      "parsed": null
+    },
+    {
+      "description": "a tag with a digit in it is not a stamp",
+      "deviceId": "mbd2n2_b465194056ff7721bf549799b4532bfca0bc72fffc0f6969c77c46d6b8e28e32",
+      "parsed": null
+    }
+  ]
+}

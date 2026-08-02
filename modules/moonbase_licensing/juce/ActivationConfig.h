@@ -11,12 +11,21 @@
 #include <string>
 #include <vector>
 
+#if defined(__APPLE__)
+ #include <TargetConditionals.h> // TARGET_OS_IPHONE, for the iOS resolver default
+#endif
+
 #include <moonbase/moonbase.hpp>
 
 #include <juce_graphics/juce_graphics.h>
 #include <juce_gui_basics/juce_gui_basics.h>
 
 #include "JuceMetadata.h"
+// Both are named by resolvedDeviceIdResolver(). Included here rather than relied
+// on from the module umbrella so this header stays usable on its own.
+#include "android_device_id_resolver.h"
+#include "ios_device_id_resolver.h"
+#include "legacy_juce_device_id_resolver.h"
 
 // Normally defined by the module umbrella header; fall back so this header is
 // self-contained if included on its own.
@@ -103,9 +112,33 @@ struct ActivationConfig
     // resolvedDownloadDirectory().
     juce::File downloadDirectory;
 
+    //==============================================================================
+    // Device identity.
+
+    // Overrides how this machine is identified to Moonbase. Leave null for the
+    // default moonbase::moonbase_device_id_resolver, which implements the
+    // cross-SDK device fingerprint spec, so a license activated in a web or
+    // Electron app built on @moonbase.sh/licensing validates here too.
+    //
+    // Set it to a moonbase::migrating_device_id_resolver when upgrading a plugin
+    // that already has activated users: the device id changed in 4.0.0, so
+    // without one every existing install must re-activate, which consumes a fresh
+    // activation seat and resets any device-scoped trial. See "Migrating from
+    // 3.x" in the README.
+    std::shared_ptr<moonbase::device_id_resolver> deviceIdResolver;
+
+    // Accept a deliberately weaker device id (a hash of the host name, stamped
+    // mbd2n_) on machines with no readable hardware identity, instead of failing
+    // activation with moonbase::insufficient_device_identity_error.
+    //
+    // Off by default, because a host name is user-renameable, frequently
+    // duplicated across imaged machines, and regenerated on every container
+    // start. Ignored when deviceIdResolver is set.
+    bool allowDeviceNameFallback = false;
+
     // Optional override for the device name shown on the activation screen (the
-    // "<name>  ·  <platform>" chip). When empty, the OS hostname is used
-    // (juce::SystemStats::getComputerName, via the default fingerprint provider).
+    // "<name>  ·  <platform>" chip). When empty, the resolver's own label is
+    // used: the OS host name, with a trailing ".local" removed on macOS.
     juce::String deviceName;
 
     // Product / manufacturer brand mark shown in the header lockup. When unset,
@@ -261,6 +294,96 @@ struct ActivationConfig
             return downloads;
         return juce::File::getSpecialLocation(juce::File::tempDirectory);
     }
+
+    // The resolver the controller will use.
+    [[nodiscard]] std::shared_ptr<moonbase::device_id_resolver> resolvedDeviceIdResolver() const
+    {
+        if (deviceIdResolver != nullptr)
+            return deviceIdResolver;
+
+        return defaultDeviceIdResolver(allowDeviceNameFallback);
+    }
+
+    /// The resolver this platform gets when `deviceIdResolver` is left unset.
+    ///
+    /// Static and public because a migrating configuration must wrap *this*, not a
+    /// hard-coded `moonbase_device_id_resolver`. On iOS and Android the spec
+    /// resolver has no identity parameters to read and throws, and a migrating
+    /// wrapper asks its current resolver for an id before consulting any historical
+    /// one, so hard-coding it there locks mobile users out of both validation and
+    /// new activation:
+    ///
+    /// \code
+    /// config.deviceIdResolver = std::make_shared<moonbase::migrating_device_id_resolver>(
+    ///     ActivationConfig::defaultDeviceIdResolver(),
+    ///     std::make_shared<legacy_juce_device_id_resolver>());
+    /// \endcode
+    [[nodiscard]] static std::shared_ptr<moonbase::device_id_resolver> defaultDeviceIdResolver(
+        bool allowHostNameFallback = false)
+    {
+        // A constexpr flag with an ordinary `if`, rather than an #if around the
+        // returns: in a non-template function both branches are still compiled, so
+        // the mobile paths cannot rot unnoticed on a desktop-only CI matrix.
+        if (isAndroid)
+        {
+            // Android's only device identifier is scoped to the app signing key, so
+            // the id is scoped and stamped mbd2s_. Deliberately not
+            // juce::SystemStats::getUniqueDeviceID(): it hashes the string constant
+            // "android_id" rather than the device's value, so every JUCE Android app
+            // reports the same id. See android_device_id_resolver.h.
+            //
+            // allowHostNameFallback is ignored, as it is on iOS: the label is
+            // Build.MODEL on most devices, so hashing it would give a whole product
+            // line one id. build_fingerprint_material refuses it outright.
+            return std::make_shared<android_device_id_resolver>();
+        }
+
+        if (isMobileApple)
+        {
+            // iOS gets a *scoped* spec identity, stamped mbd2s_.
+            //
+            // iOS exposes no device identifier that unrelated applications can
+            // read: no hardware serial since iOS 7, and identifierForVendor is
+            // scoped to the App Store vendor. Cross-SDK parity is therefore
+            // impossible by construction, and the stamp says so rather than
+            // pretending otherwise.
+            //
+            // Note this excludes Mac Catalyst, which runs on macOS, can read IOKit,
+            // and so takes the cross-SDK hardware identity below.
+            return std::make_shared<ios_device_id_resolver>();
+        }
+
+        moonbase::moonbase_device_id_resolver_options options;
+        options.fallback = allowHostNameFallback
+            ? moonbase::device_id_fallback::device_name
+            : moonbase::device_id_fallback::none;
+        return std::make_shared<moonbase::moonbase_device_id_resolver>(std::move(options));
+    }
+
+    // Platforms whose only device identifier is scoped, so the default resolver is
+    // a scoped one rather than the cross-SDK hardware fingerprint. Exposed so a
+    // consumer (and the module's tests) can reason about which default they get
+    // without duplicating the platform test.
+    // True on a real iOS/tvOS/watchOS device, and on an unmodified iOS app running
+    // on Apple silicon. Deliberately NOT Mac Catalyst: TARGET_OS_IPHONE is 1 there
+    // too, but a Catalyst build runs on macOS and can read IOKit, so it takes the
+    // cross-SDK hardware identity. See platform_tag() in fingerprint_spec.hpp.
+    static constexpr bool isMobileApple =
+#if defined(__APPLE__) && TARGET_OS_IPHONE && !TARGET_OS_MACCATALYST
+        true;
+#else
+        false;
+#endif
+
+    static constexpr bool isAndroid =
+#if defined(__ANDROID__) || JUCE_ANDROID
+        true;
+#else
+        false;
+#endif
+
+    /// True where the device id is scoped, and therefore not cross-SDK comparable.
+    static constexpr bool hasScopedIdentityOnly = isMobileApple || isAndroid;
 
     [[nodiscard]] moonbase::licensing_options toLicensingOptions() const
     {

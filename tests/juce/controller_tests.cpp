@@ -51,8 +51,8 @@ bool settled(const ActivationController& c)
 struct controller_fixture
 {
     moonbase::tests::generated_key key = moonbase::tests::generate_key();
-    std::shared_ptr<moonbase::static_fingerprint_provider> fingerprint =
-        std::make_shared<moonbase::static_fingerprint_provider>("Studio Mac", "device-id");
+    std::shared_ptr<moonbase::static_device_id_resolver> fingerprint =
+        std::make_shared<moonbase::static_device_id_resolver>("Studio Mac", "device-id");
     std::shared_ptr<recording_transport> transport = std::make_shared<recording_transport>();
     std::shared_ptr<moonbase::file_license_store> store;
     juce::File licenseFile;
@@ -1063,6 +1063,170 @@ TEST_CASE("destroying the controller mid-request cancels and joins without hangi
 
     // Reaching here means the destructor cancelled + drained promptly.
     CHECK(blocking->entered.load());
+}
+
+//==============================================================================
+// Device identity
+//==============================================================================
+TEST_CASE("the module default is the cross-SDK spec resolver, except on iOS")
+{
+    controller_fixture fx;
+
+    auto resolved = fx.config.resolvedDeviceIdResolver();
+    REQUIRE(resolved != nullptr);
+
+    if (ActivationConfig::hasScopedIdentityOnly)
+    {
+        // iOS and Android get a scoped spec identity, because their only device
+        // identifiers are scoped by the platform (identifierForVendor to the
+        // vendor, ANDROID_ID to the app signing key). The mbd2s_ stamp makes that
+        // legible rather than implicit. Deliberately NOT the host-name fallback:
+        // since iOS 17 gethostname() returns "localhost" on every device and
+        // UIDevice.name returns "iPhone", so it would give a whole install base
+        // one id.
+        const auto id = resolved->device_id();
+        CHECK(id.rfind("mbd2s_", 0) == 0);
+        CHECK(id.size() == 70);
+
+        const auto stamp = moonbase::fingerprint_spec::parse_device_id_stamp(id);
+        REQUIRE(stamp.has_value());
+        CHECK(stamp->source == moonbase::fingerprint_spec::device_id_source::scoped);
+
+        const auto described = resolved->describe_device();
+        REQUIRE(described.has_value());
+        CHECK(described->platform == (ActivationConfig::isAndroid ? "android" : "ios"));
+        CHECK(described->param_names
+            == std::vector<std::string>{
+                ActivationConfig::isAndroid ? "androidId" : "identifierForVendor"});
+        return;
+    }
+
+    // Everywhere else: an unconfigured plugin computes the same device id as
+    // @moonbase.sh/licensing on the same machine, which is the point of 4.0.0.
+    try
+    {
+        const auto id = resolved->device_id();
+        CHECK(id.rfind("mbd2_", 0) == 0);
+        CHECK(id.size() == 69);
+    }
+    catch (const moonbase::insufficient_device_identity_error&)
+    {
+        // A runner may genuinely have no hardware identity, and refusing is the
+        // correct answer. What matters is that the default is no longer the old
+        // SystemStats id, which never throws and never carries a stamp.
+        MESSAGE("no hardware identity on this host");
+    }
+}
+
+TEST_CASE("allowDeviceNameFallback opts into the weaker host-name id")
+{
+    controller_fixture fx;
+    fx.config.allowDeviceNameFallback = true;
+
+    if (ActivationConfig::hasScopedIdentityOnly)
+    {
+        // Forbidden outright on iOS and Android: the host name there is
+        // "localhost" or a model name, so the fallback would hand an entire
+        // install base one device id. The ladder is scoped, then insufficient.
+        const auto id = fx.config.resolvedDeviceIdResolver()->device_id();
+        CHECK(id.rfind("mbd2s_", 0) == 0);
+        return;
+    }
+
+    const auto described = fx.config.resolvedDeviceIdResolver()->describe_device();
+    REQUIRE(described.has_value());
+
+    // Whether this host has hardware identity or not, the weaker binding must be
+    // separately stamped so the server and support can tell them apart.
+    const bool stamped_weaker = described->device_id.rfind("mbd2n_", 0) == 0;
+    CHECK((described->source == moonbase::fingerprint_spec::device_id_source::device_name)
+        == stamped_weaker);
+}
+
+TEST_CASE("an explicit deviceIdResolver overrides the default")
+{
+    controller_fixture fx;
+    fx.config.deviceIdResolver =
+        std::make_shared<moonbase::static_device_id_resolver>("Studio Mac", "custom-device-id");
+
+    CHECK(fx.config.resolvedDeviceIdResolver()->device_id() == "custom-device-id");
+
+    // A custom resolver's id is compared literally and needs no mbd2_ stamp.
+    // seedRawToken, not seedStored: the fixture's own resolver would reject a token
+    // bound to this config's id before it could be written.
+    fx.seedRawToken(fx.token(default_claims("custom-device-id")));
+    ActivationController controller(fx.config);
+    controller.start();
+    REQUIRE(pumpUntil([&] { return settled(controller); }));
+    CHECK(controller.screen() == Screen::Details);
+}
+
+TEST_CASE("a migrating resolver keeps a license bound under the old id working")
+{
+    controller_fixture fx;
+
+    // What an already-shipped plugin does on upgrade: bind the spec id on new
+    // activations, while still accepting the id this device was bound to before.
+    const std::string legacyId = "old-juce-unique-device-id";
+    fx.config.deviceIdResolver = std::make_shared<moonbase::migrating_device_id_resolver>(
+        std::make_shared<moonbase::static_device_id_resolver>("Studio Mac", "mbd2_" + std::string(64, 'a')),
+        std::make_shared<moonbase::static_device_id_resolver>("Studio Mac", legacyId));
+
+    // seedRawToken: the fixture's resolver is not the migrating one under test.
+    fx.seedRawToken(fx.token(default_claims(legacyId)));
+
+    ActivationController controller(fx.config);
+    controller.start();
+    REQUIRE(pumpUntil([&] { return settled(controller); }));
+
+    // Without the wrapper this lands on Welcome with the user locked out, costing
+    // them a re-activation and an activation seat.
+    CHECK(controller.screen() == Screen::Details);
+}
+
+TEST_CASE("without a migration, an old binding is diagnosed as a device mismatch")
+{
+    controller_fixture fx;
+    juce::StringArray diags;
+    fx.config.onDiagnostic = [&](const juce::String& message) { diags.add(message); };
+    fx.config.deviceIdResolver =
+        std::make_shared<moonbase::static_device_id_resolver>("Studio Mac", "mbd2_" + std::string(64, 'a'));
+
+    fx.seedRawToken(fx.token(default_claims("old-juce-unique-device-id")));
+
+    ActivationController controller(fx.config);
+    controller.start();
+    REQUIRE(pumpUntil([&] { return settled(controller); }));
+
+    // The diagnostic must name the real problem and point at the remedy, rather
+    // than the old blanket "not valid for this device".
+    const auto joined = diags.joinIntoString(" | ");
+    INFO("diagnostics: " << joined);
+    CHECK(joined.contains("not bound to this device"));
+    CHECK(joined.contains("migrating_device_id_resolver"));
+}
+
+TEST_CASE("describeDevice reports provenance, and nothing for an opaque resolver")
+{
+    controller_fixture fx;
+    ActivationController controller(fx.config);
+
+    if (const auto described = controller.describeDevice())
+    {
+        CHECK(described->version == 2);
+        CHECK(!described->platform.empty());
+        for (const auto& name : described->param_names)
+            CHECK(!name.empty());
+    }
+
+    SUBCASE("a custom resolver that cannot describe itself yields nothing")
+    {
+        controller_fixture custom;
+        custom.config.deviceIdResolver =
+            std::make_shared<moonbase::static_device_id_resolver>("Studio Mac", "custom-device-id");
+        ActivationController other(custom.config);
+        CHECK(!other.describeDevice().has_value());
+    }
 }
 
 //==============================================================================

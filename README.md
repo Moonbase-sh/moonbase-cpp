@@ -1,12 +1,12 @@
 # Moonbase C++ Activation SDK
 
-Header-only C++17 SDK for Moonbase license activation. It supports activation requests, polling for fulfilled activations, local RS256 JWT validation, overridable device fingerprinting, and overridable license storage.
+Header-only C++17 SDK for Moonbase license activation. It supports activation requests, polling for fulfilled activations, local RS256 JWT validation, cross-SDK device fingerprinting (spec v2), and overridable license storage.
 
 ## Requirements
 
 - CMake 3.20 or newer
 - A C++17 compiler
-- Windows, macOS, or Linux (the default fingerprint provider has native implementations for each)
+- Windows, macOS, or Linux (the default device id resolver has native implementations for each)
 - `CURL::libcurl` and OpenSSL (`OpenSSL::SSL`, `OpenSSL::Crypto`) — must be findable on the system (e.g. via your distro, Homebrew, or vcpkg)
 - `nlohmann_json` 3.11+ — used if `find_package(nlohmann_json)` succeeds; otherwise it is fetched automatically at build time from the upstream release tarball
 
@@ -60,6 +60,7 @@ The build provides three options, all useful when consuming the SDK as a subproj
 | `MOONBASE_BUILD_EXAMPLES` | `ON` for the top-level project, `OFF` as a subproject | Build the standalone activation example under `examples/`. |
 | `MOONBASE_BUILD_JUCE_EXAMPLE` | `OFF` | Fetch JUCE and build the JUCE `OnlineUnlockStatus` bridge example (see below). |
 | `MOONBASE_BUILD_JUCE_NATIVE_EXAMPLE` | `OFF` | Fetch JUCE and build the `moonbase_licensing` native module example (see below). |
+| `MOONBASE_BUILD_DEVICE_ID_TOOL` | `ON` for the top-level project, `OFF` as a subproject | Build the `moonbase_device_id` diagnostic, which prints this machine's device id and how it was derived. |
 
 Override `MOONBASE_BUILD_TESTS` and `MOONBASE_BUILD_EXAMPLES` explicitly when you want a subproject integration to build SDK artifacts too.
 
@@ -187,29 +188,209 @@ requires the token to have been issued via offline activation, throwing
 and [cannot be revoked](#revoking-an-activation); they stay valid until the
 machine's device fingerprint changes.
 
-## Custom Fingerprinting and Storage
+## Device fingerprint
+
+Every license is bound to the machine via a device id, stored in the token's `sig`
+claim and re-checked on every local validation. The default
+`moonbase_device_id_resolver` computes it from the cross-SDK
+**[device fingerprint spec](FINGERPRINT_SPEC.md)** (`moonbase:fingerprint:v2`): a
+SHA-256 of stable native hardware identifiers, stamped with the spec version.
+
+```
+mbd2_9f3c…            // 'mbd' + version + '_' + 64 lowercase hex characters
+```
+
+Sources are SMBIOS on Windows, `IOPlatformUUID` via IOKit on macOS, and
+`machine-id` plus world-readable DMI on Linux. No subprocess is spawned and no
+root-only file is read, so the id is the same elevated or not, and the resolver
+works inside an App Sandbox and a plugin host.
+
+The algorithm is language-neutral by design: any Moonbase SDK that implements the
+spec and passes the shipped
+[`fingerprint-vectors.json`](tests/vectors/fingerprint-vectors.json) computes the
+same id on a given machine, so a license activated by one validates in the others.
+Adoption is per-SDK: **this SDK conforms from 4.0.0; `@moonbase.sh/licensing`
+conforms from 3.0.0.** Check the version of whichever SDK you are pairing with
+before relying on it.
+
+The id survives a rename, a locale change, a firmware update, a vCPU resize, and
+running with or without elevated privileges. The spec's **stability contract** is
+the definitive list. Read it before shipping, along with the two Linux exceptions,
+which exist because every per-unit hardware serial is root-only there and the id is
+therefore tied to the OS installation rather than the hardware:
+
+- A Linux **OS reinstall** requires re-activation.
+- A Linux **VM cloned without clearing `/etc/machine-id`** keeps its device id, so
+  a license copied with the disk keeps validating. `machine-id(5)` requires
+  reusable images to ship that file empty; when they do, clones behave correctly.
+  The SDK cannot detect a badly-prepared image, because the value that would
+  distinguish the instances is root-only.
+
+Because the version is part of the id, a mismatch is diagnosable. `validate_token`
+throws `license_device_mismatch_error` either way, and the message says which case
+you are in:
 
 ```cpp
-class my_fingerprint final : public moonbase::fingerprint_provider {
+try {
+    licensing.validator().validate_token(token);
+} catch (const moonbase::moonbase_error& ex) {
+    if (ex.type() == moonbase::error_type::license_device_mismatch)
+        std::cerr << ex.what(); // 'not for this device', plus any version difference
+}
+```
+
+### When there is no hardware identity
+
+The resolver throws `insufficient_device_identity_error` rather than falling back
+to something weak, in two cases:
+
+- **Nothing readable.** A locked-down process, or a platform with no defined
+  parameters (Android, BSD).
+- **Only model-level values readable.** Vendor, product and board names are
+  byte-identical across every unit of a product line, so fingerprinting them would
+  let those machines validate one another's licenses. In practice: a Linux install
+  with no `machine-id`, or a machine whose SMBIOS carries an unset UUID *and* a
+  blank or filler baseboard serial, the usual shape of a cloned VM image.
+
+Opt in explicitly if a weaker id beats none. Those ids are stamped `mbd2n_` so the
+server can tell them apart:
+
+```cpp
+moonbase::moonbase_device_id_resolver_options resolver_options;
+resolver_options.fallback = moonbase::device_id_fallback::device_name;
+auto resolver = std::make_shared<moonbase::moonbase_device_id_resolver>(resolver_options);
+```
+
+### Diagnostics and parity checks
+
+`describe_device()` returns the id, spec version, platform tag and the *names* of
+the parameters that contributed. It is safe to log or attach to a support ticket,
+and returns a fresh copy each call so editing it cannot disturb the binding.
+
+```cpp
+if (const auto described = licensing.describe_device())
+    std::cout << described->device_id << " (" << described->platform << ")\n";
+```
+
+Parameter values are never exposed there, and neither are per-parameter hashes.
+They are hardware serial numbers, and an unsalted per-value digest is no safer to
+publish than the value, since low-entropy values such as host names or sequential
+serials fall to a dictionary. Which parameters contributed is the useful
+diagnostic; what they read is not.
+
+The device id itself is a one-way hash of all of them together, so it discloses no
+individual serial. It is, however, **derived identically for every
+Moonbase-powered product**. The material contains no product- or account-specific
+input, so the same machine yields the same device id everywhere, and merchants
+receive that string through the integration API and webhooks. Treat it as a stable
+cross-vendor machine identifier. That is more than `machine-id(5)` intends, which
+asks that the Linux machine id only leave the host through an
+*application-specific keyed* derivation. If that matters for your deployment,
+supply a custom `device_id_resolver` that mixes in a key of your own.
+
+The lower-level `build_fingerprint_material`, `fingerprint_digest`,
+`fingerprint_device_id` and `parse_device_id_stamp` helpers are exported from
+`<moonbase/fingerprint_spec.hpp>` so you can verify cross-SDK parity against the
+vector file. `examples/device_id.cpp` builds as the `moonbase_device_id` target and
+prints all of the above as JSON, which is what
+[the parity workflow](.github/workflows/fingerprint-parity.yml) compares against
+`@moonbase.sh/licensing` on every OS.
+
+## Migrating from 3.x
+
+Device ids computed by 3.x do not follow the spec, so **by default every device
+must re-activate once** after you upgrade. That is not free: a new device id
+consumes a fresh activation seat (the old one is not reclaimed) and resets any
+device-scoped trial. On a license with few seats, a fleet-wide upgrade can exhaust
+them immediately.
+
+Three options, in increasing order of effort:
+
+**1. Let devices re-activate (default).** Simplest, and the id is correct from then
+on. Catch `error_type::license_device_mismatch` and call `request_activation()`.
+Best when seats are generous or the install base is small.
+
+**2. Accept the old id while binding the new one (recommended for existing
+fleets).** `migrating_device_id_resolver` keeps recognising ids this device was
+previously bound to, without ever issuing one:
+
+```cpp
+auto resolver = std::make_shared<moonbase::migrating_device_id_resolver>(
+    std::make_shared<moonbase::moonbase_device_id_resolver>(),  // always what a new activation binds
+    std::make_shared<moonbase::legacy_cpp_device_id_resolver>()); // additionally accepted at validation
+
+moonbase::licensing licensing(options, store, resolver);
+```
+
+Existing licenses keep validating untouched, while anything newly activated binds
+the current fingerprint. The fleet migrates as devices naturally re-activate, with
+no flag day and no seat churn. The legacy id is computed lazily, only when the fast
+comparison fails, and then memoized, so apps on the happy path pay nothing. Drop
+the wrapper in a later release to finish the migration.
+
+**Which legacy resolver to name depends on which integration path you shipped**,
+and this is the one thing to get right:
+
+| You shipped | Historical resolver |
+| --- | --- |
+| The core SDK's default | `moonbase::legacy_cpp_device_id_resolver` (`<moonbase/legacy_fingerprint.hpp>`) |
+| The `moonbase_licensing` JUCE module | `moonbase::juce_integration::legacy_juce_device_id_resolver` |
+| The `OnlineUnlockStatus` bridge | `MoonbaseJuceDeviceIdResolver` from your copy of `MoonbaseJuceBridge.h` |
+| More than one, or you are not sure | Pass all of them |
+
+iOS and Android need migrating too. Neither has an identifier that unrelated apps
+can read, so the JUCE module emits a [scoped](FINGERPRINT_SPEC.md#scoped-identity)
+id there, stamped `mbd2s_` and derived from `identifierForVendor` or `ANDROID_ID`:
+stable for the device within the platform's own scope, and deliberately never
+correlated across scopes. That is still a different value from the raw id bound
+before 4.0.0, so name `legacy_juce_device_id_resolver` as a historical resolver on
+mobile as well.
+
+The wrapper takes any number of historical resolvers, and the only cost of an extra
+one is a single lazy hardware read on the mismatch path, so "pass both if unsure"
+is the safe advice. Note that the JUCE resolver derives its id from
+`juce::SystemStats::getUniqueDeviceID()`, which is not a published stable format,
+so it only vouches for a binding if your plugin still ships the JUCE version that
+created it.
+
+**3. Stay on the old id.** Pin `legacy_cpp_device_id_resolver` as the current
+resolver. Nothing changes, but you keep the old algorithm's defects (on Linux the
+id depended on whether the process ran elevated; on Windows the SMBIOS read never
+succeeded, so the id silently degraded to a hash of the computer name and renaming
+a PC invalidated its license) and you get no cross-SDK compatibility. Use this only
+as a short-term hold.
+
+> Options 1 and 2 both recompute every accepted id from the machine's own hardware
+> on each call. Nothing about a device binding is ever read from disk, so widening
+> what a validator accepts does not widen what an attacker can assert.
+
+## Custom storage and device resolvers
+
+```cpp
+class my_resolver final : public moonbase::device_id_resolver {
 public:
     std::string device_name() const override { return "Studio Mac"; }
     std::string device_id() const override { return "stable-device-id"; }
 };
 
 auto store = std::make_shared<moonbase::file_license_store>("licenses/license.mb");
-auto fingerprint = std::make_shared<my_fingerprint>();
-moonbase::licensing licensing(options, store, fingerprint);
+auto resolver = std::make_shared<my_resolver>();
+moonbase::licensing licensing(options, store, resolver);
 ```
 
 The default store is in-memory. `file_license_store` persists a JSON representation of the validated license.
 
-The default fingerprint provider builds a stable, native hardware fingerprint
-from platform identity parameters such as SMBIOS fields on Windows,
-`IOPlatformUUID` on macOS, and board/BIOS/CPU fields on Linux. Use a custom
-`fingerprint_provider` when you need an exact legacy fingerprint or any other
-application-specific device ID. If you include narrow SDK headers instead of
-`<moonbase/moonbase.hpp>`, include `<moonbase/default_fingerprint.hpp>` for the
-native provider and `<moonbase/http_curl.hpp>` for the default CURL transport.
+A custom resolver's id is compared literally, so it does not need to follow the
+`mbd2_` stamp format, and it gives up cross-SDK compatibility by definition. If you
+include narrow SDK headers instead of `<moonbase/moonbase.hpp>`, include
+`<moonbase/moonbase_device_id_resolver.hpp>` for the default resolver and
+`<moonbase/http_curl.hpp>` for the default CURL transport.
+
+> **Renamed in 4.0.0.** `fingerprint_provider` is now `device_id_resolver`,
+> `static_fingerprint_provider` is `static_device_id_resolver`, and
+> `licensing::fingerprint()` is `licensing::device_resolver()`. The old names remain
+> as deprecated aliases and will be removed in 5.0.0; define
+> `MOONBASE_DISABLE_DEPRECATED_ALIASES` to find every remaining use now.
 
 ## JUCE Plugins
 
@@ -225,6 +406,7 @@ available and unchanged.
 | **Built-in UI** | Yes (polished, animated, themeable) | No (you build it) |
 | **JUCE integration** | Native Moonbase API | `juce::OnlineUnlockStatus` wrapper |
 | **JUCE version** | 8.0.4+ | 7+ |
+| **Device fingerprint** | Spec v2 (`mbd2_`), cross-SDK; scoped `mbd2s_` on mobile | Spec v2 (`mbd2_`), cross-SDK; scoped `mbd2s_` on mobile |
 | **Third-party deps** | None (JUCE `WebInputStream` HTTP, bundled `nlohmann/json`, OS-native RS256) | Inherits the core SDK's CURL + OpenSSL |
 | **Entry point** | `ActivationComponent` / `ActivationDialog` | `MoonbaseUnlockStatus` |
 | **Best for** | New plugins wanting a ready-made UI | Apps already on `OnlineUnlockStatus`, or JUCE 7 |
@@ -287,8 +469,8 @@ for the full wiring.
 ### `OnlineUnlockStatus` bridge
 
 A drop-in bridge ([`docs/juce.md`](docs/juce.md)) that wires Moonbase activation
-into `juce::OnlineUnlockStatus`, sources the device fingerprint from JUCE's
-`SystemStats` helpers, and populates activation metadata with host/system
+into `juce::OnlineUnlockStatus`, uses the same spec device id as the rest of the
+SDK, and populates activation metadata with host/system
 context (DAW, plugin format, OS, CPU, JUCE version). The bridge header lives at
 [`examples/juce/MoonbaseJuceBridge.h`](examples/juce/MoonbaseJuceBridge.h) and is
 copy-pasteable into any JUCE project; you supply your own activation UI.

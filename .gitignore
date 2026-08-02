@@ -13,3 +13,11 @@ CMakeLists.txt.bak
 ui-snapshots/
 node_modules
 .argos
+__pycache__/
+
+# The fingerprint parity workflow installs @moonbase.sh/licensing here at run
+# time (npm install --prefix .github/scripts). Committing that manifest would
+# pin the reference SDK, defeating the point of comparing against what is
+# currently published.
+.github/scripts/package.json
+.github/scripts/package-lock.json

@@ -17,6 +17,17 @@ Add the module, fill in three fields, show one component.
   (browser) activation, offline (machine-file) activation, validation with a grace
   period, and server-side deactivation. Not a `juce::OnlineUnlockStatus` wrapper. (If
   you want that bridge instead, see [`examples/juce/`](../../examples/juce/).)
+- **Cross-SDK device identity.** Implements the
+  [Moonbase device fingerprint spec](../../FINGERPRINT_SPEC.md) v2, so a license
+  activated in a web or Electron app built on `@moonbase.sh/licensing` validates in
+  your plugin, and the other way round. No subprocess is spawned and no root-only
+  file is read, so it works inside a sandboxed host and gives the same id whether or
+  not the process is elevated. iOS and Android have no identifier unrelated apps can
+  read, so they get a *scoped* spec id (`mbd2s_`) that is stable within the
+  platform's own scope but not cross-SDK; see
+  [`docs/juce-module.md`](../../docs/juce-module.md#ios-and-android-use-a-scoped-identity).
+  **Changed in 4.0.0**: see [Upgrading from 3.x](#upgrading-from-3x) if you have
+  already shipped.
 - **Built-in UI.** A configurable, themeable `ActivationComponent` (and one-call
   `ActivationDialog`) covering every state — welcome, activating, success, offline,
   trial, trial expired, license details, and update-available — with JUCE 8 animated
@@ -36,7 +47,7 @@ Add the module, fill in three fields, show one component.
   misconfiguration, exposes a diagnostics sink for field debugging, and can attach
   JUCE system/host telemetry to requests. Brandable end to end.
 
-Requires **JUCE 8** (8.0.4+) and C++17. Supports macOS, Windows, and Linux.
+Requires **JUCE 8** (8.0.4+) and C++17. Supports macOS, Windows, Linux, iOS and Android.
 
 <p align="center">
   <img src="../../assets/moonbase-juce-update.png" width="66%"
@@ -127,3 +138,42 @@ richer gating, and `onActivationChanged` fires whenever it changes.
 
 See [`docs/juce-module.md`](../../docs/juce-module.md) for the full guide and
 [`examples/juce-native/`](../../examples/juce-native/) for a runnable sample app.
+
+## Upgrading from 3.x
+
+The device id changed in 4.0.0: the module now computes the cross-SDK
+[fingerprint spec](../../FINGERPRINT_SPEC.md) id instead of
+`juce::SystemStats::getUniqueDeviceID()`. If your plugin already has activated
+users, their licenses are bound to the old id and will fail to validate, locking
+them out until they re-activate, which consumes a fresh activation seat and resets
+any device-scoped trial.
+
+**iOS and Android are affected too.** They move to a scoped spec id (`mbd2s_`, from
+`identifierForVendor` and `ANDROID_ID`) rather than the raw `getUniqueDeviceID()`
+string, so the same migrating resolver applies. See
+[iOS and Android use a scoped identity](../../docs/juce-module.md#ios-and-android-use-a-scoped-identity).
+
+One line avoids that:
+
+```cpp
+config.deviceIdResolver = std::make_shared<moonbase::migrating_device_id_resolver>(
+    // The platform default, NOT moonbase_device_id_resolver directly: on iOS and
+    // Android that has no identity to read and throws, and a migrating resolver
+    // asks its current resolver for an id before consulting any historical one,
+    // so hard-coding it locks mobile users out of validation *and* activation.
+    ActivationConfig::defaultDeviceIdResolver(),                                     // binds
+    std::make_shared<moonbase::juce_integration::legacy_juce_device_id_resolver>()); // still accepted
+```
+
+New activations bind the spec id, existing licenses keep working, and the fleet
+migrates as devices naturally re-activate. Drop the wrapper in a later release to
+finish the migration.
+
+Because `getUniqueDeviceID()` is JUCE's own derivation rather than a published
+format, the historical resolver only vouches for a binding if the plugin still
+ships the JUCE version that created it, so do not combine this upgrade with a JUCE
+major bump.
+
+See [`docs/juce-module.md`](../../docs/juce-module.md#migrating-an-already-shipped-plugin)
+for the details, and [Migrating from 3.x](../../README.md#migrating-from-3x) for the
+other options.

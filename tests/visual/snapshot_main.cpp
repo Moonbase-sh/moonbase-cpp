@@ -179,7 +179,10 @@ int main(int argc, char* argv[])
         moonbase::licensing licensing(
             config.toLicensingOptions(),
             std::make_shared<moonbase::memory_license_store>(),
-            std::make_shared<juce_fingerprint_provider>(),
+            // A fixed identity rather than the runner's: this check exercises the
+            // HTTP transport only, and reading real hardware would make it fail on
+            // any machine with no readable device identity.
+            std::make_shared<moonbase::static_device_id_resolver>("snapshot-host", "snapshot-device-id"),
             std::make_shared<juce_http_transport>());
         try
         {

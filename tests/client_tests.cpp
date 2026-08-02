@@ -7,7 +7,7 @@
 #include <nlohmann/json.hpp>
 
 #include "moonbase/client.hpp"
-#include "moonbase/fingerprint.hpp"
+#include "moonbase/device_id_resolver.hpp"
 #include "moonbase/validator.hpp"
 
 #include "test_helpers.hpp"
@@ -19,14 +19,14 @@ namespace {
 struct client_fixture {
     moonbase::tests::generated_key key = moonbase::tests::generate_key();
     licensing_options options;
-    std::shared_ptr<static_fingerprint_provider> fingerprints;
+    std::shared_ptr<static_device_id_resolver> fingerprints;
     std::shared_ptr<license_validator> validator;
     std::shared_ptr<moonbase::tests::recording_transport> transport;
     license_client client;
 
     explicit client_fixture(std::deque<http_response> responses)
         : options(),
-          fingerprints(std::make_shared<static_fingerprint_provider>("Test Device", "device-id")),
+          fingerprints(std::make_shared<static_device_id_resolver>("Test Device", "device-id")),
           validator(),
           transport(std::make_shared<moonbase::tests::recording_transport>(std::move(responses))),
           client(make_options(), fingerprints, make_validator(), transport)
