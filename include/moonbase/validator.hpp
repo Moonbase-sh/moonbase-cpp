@@ -5,6 +5,7 @@
 #include <cctype>
 #include <cstring>
 #include <memory>
+#include <optional>
 #include <sstream>
 #include <stdexcept>
 #include <string>
@@ -16,8 +17,8 @@
 #include "moonbase/detail/base64.hpp"
 #include "moonbase/detail/crypto/crypto.hpp"
 #include "moonbase/detail/time.hpp"
+#include "moonbase/device_id_resolver.hpp"
 #include "moonbase/errors.hpp"
-#include "moonbase/fingerprint.hpp"
 #include "moonbase/types.hpp"
 
 namespace moonbase {
@@ -183,16 +184,138 @@ inline nlohmann::json object_claim_or_empty(const nlohmann::json& payload, const
     return payload.at(key);
 }
 
+// A factual note when the binding's stamp differs from what this SDK computes, or
+// empty when it does not.
+//
+// Deliberately conditional about the machine. Reaching this point means nothing
+// reproduced the bound id: a migrating_device_id_resolver, the only thing that
+// could prove continuity, has already declined or was never configured. So the
+// stamp says only which algorithm created the binding, never that it was *this*
+// machine, because a token copied from another computer carries exactly the same
+// relationship.
+[[nodiscard]] inline std::string describe_version_difference(
+    const fingerprint_spec::device_id_stamp& expected,
+    const std::optional<fingerprint_spec::device_id_stamp>& bound)
+{
+    const auto expected_version = std::to_string(expected.version);
+
+    // Direction matters. An older binding may need migrating; a newer one means
+    // this SDK is behind, and re-activating would rebind the device to an
+    // algorithm the issuing SDK has already moved on from.
+    if (bound && bound->version > expected.version) {
+        return "The binding was created by device fingerprint v" + std::to_string(bound->version)
+            + ", which is newer than the v" + expected_version + " this SDK computes."
+            + " Update the SDK rather than re-activating, which would rebind the device to the"
+              " older algorithm.";
+    }
+
+    const auto bound_version = bound
+        ? "device fingerprint v" + std::to_string(bound->version)
+        : std::string("an SDK predating versioned device fingerprints");
+
+    return "The binding was created by " + bound_version + ", while this SDK computes v"
+        + expected_version + ", so this may instead be the same machine bound under the older"
+          " algorithm. Re-activate to find out, or configure a migrating_device_id_resolver to keep"
+          " accepting the previous id.";
+}
+
+// Same fingerprint version, different source tag: the two ids were built from
+// different *kinds* of identity, so they were never going to match even on one
+// machine. Saying only "not for this device" would point at the wrong remedy.
+//
+// Ordered by how badly a wrong message would mislead.
+[[nodiscard]] inline std::string describe_source_difference(
+    const fingerprint_spec::device_id_stamp& expected,
+    const fingerprint_spec::device_id_stamp& bound)
+{
+    using source = fingerprint_spec::device_id_source;
+
+    // A scoped id is stable only within one platform-defined scope. Comparing it
+    // with anything from another scope is meaningless in both directions, so this
+    // must not borrow the version path's "may be the same machine" phrasing: that
+    // would be actively false.
+    //
+    // Which *side* is scoped decides the wording. A custom resolver or a native
+    // bridge can make this SDK the scoped one, and saying "the binding is scoped"
+    // there would describe the wrong id and point at the wrong remedy.
+    if (bound.source == source::scoped) {
+        return "The binding uses an app-scoped device identity, which cannot be compared with the id"
+               " this SDK computes, not even on the same device. Re-activate here to bind this build.";
+    }
+
+    if (expected.source == source::scoped) {
+        return "This SDK computes an app-scoped device identity, which cannot be compared with the one"
+               " the binding carries, not even on the same device. Re-activate here to bind this app.";
+    }
+
+    // An unrecognised tag can only have come from a newer SDK. Before the parser
+    // accepted arbitrary tags this fell through to the version branch and was
+    // reported as predating versioned fingerprints, which was exactly backwards.
+    if (!bound.source.has_value() || !expected.source.has_value()) {
+        const auto& unknown = !bound.source.has_value() ? bound : expected;
+        return "The binding carries the device identity tag \"" + unknown.source_tag
+            + "\", which this SDK does not recognise. It was created by a newer Moonbase SDK, so"
+              " update rather than re-activating.";
+    }
+
+    // Hardware identity versus the opt-in host-name fallback. Direction matters as
+    // much as it does for versions, and the remedies are opposites.
+    if (bound.source == source::device_name) {
+        return "The binding was created from the host-name fallback, while this SDK reads hardware"
+               " identity, so this may instead be the same machine bound while no hardware identity"
+               " could be read. Re-activate to find out.";
+    }
+
+    return "The binding was created from hardware identity, while this SDK has fallen back to the"
+           " host name. Check why hardware identity cannot be read here rather than re-activating,"
+           " which would rebind the device to the weaker id.";
+}
+
+// The stamp difference behind a mismatch, or empty when there is none to report.
+[[nodiscard]] inline std::string describe_stamp_difference(
+    const std::string& expected,
+    const std::string& bound)
+{
+    const auto expected_stamp = fingerprint_spec::parse_device_id_stamp(expected);
+    if (!expected_stamp) {
+        // A custom resolver's id, compared literally. Nothing to say about stamps.
+        return {};
+    }
+
+    const auto bound_stamp = fingerprint_spec::parse_device_id_stamp(bound);
+
+    if (!bound_stamp || bound_stamp->version != expected_stamp->version) {
+        return describe_version_difference(*expected_stamp, bound_stamp);
+    }
+
+    if (bound_stamp->source_tag != expected_stamp->source_tag) {
+        return describe_source_difference(*expected_stamp, *bound_stamp);
+    }
+
+    return {};
+}
+
+// Explain a `sig` mismatch. Leads with the only thing that is certain, that the
+// bound id is not this device's, and appends the stamp difference when there is one.
+[[nodiscard]] inline license_device_mismatch_error device_mismatch_error(
+    const std::string& expected,
+    const std::string& bound)
+{
+    const std::string detail = "This license is not for this device";
+    const auto note = describe_stamp_difference(expected, bound);
+    return license_device_mismatch_error(note.empty() ? detail : detail + ". " + note);
+}
+
 } // namespace detail
 
 class license_validator {
 public:
-    license_validator(licensing_options options, std::shared_ptr<fingerprint_provider> fingerprints)
+    license_validator(licensing_options options, std::shared_ptr<device_id_resolver> device_ids)
         : options_(std::move(options)),
-          fingerprints_(std::move(fingerprints)),
+          device_ids_(std::move(device_ids)),
           key_(options_.public_key)
     {
-        if (!fingerprints_) {
+        if (!device_ids_) {
             throw configuration_error("A fingerprint provider is required");
         }
     }
@@ -302,17 +425,23 @@ private:
             throw license_expired_error("License has expired");
         }
 
-        const auto expected_signature = fingerprints_->device_id();
+        const auto expected_signature = device_ids_->device_id();
         const auto actual_signature = detail::require_string(payload, "sig");
-        if (actual_signature != expected_signature) {
-            throw license_invalid_error("License does not match the current device");
+        // The literal comparison first, so an app that has not configured a
+        // migration pays nothing. Only on a mismatch does a
+        // migrating_device_id_resolver get the chance to vouch for an id this
+        // machine used to be bound to, which is the one thing that can establish
+        // continuity.
+        if (actual_signature != expected_signature
+            && !device_ids_->accepts_device_id(actual_signature)) {
+            throw detail::device_mismatch_error(expected_signature, actual_signature);
         }
 
         return result;
     }
 
     licensing_options options_;
-    std::shared_ptr<fingerprint_provider> fingerprints_;
+    std::shared_ptr<device_id_resolver> device_ids_;
     detail::rsa_public_key key_;
 };
 

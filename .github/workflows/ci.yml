@@ -10,6 +10,36 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  # include/moonbase is the single source of truth; the JUCE module carries an
+  # rsync mirror of it so it stays self-contained. rsync --delete means a
+  # forgotten sync leaves the module compiling against stale headers, which no
+  # other job would catch.
+  consistency:
+    name: consistency
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: JUCE module headers are in sync
+        run: scripts/sync-juce-module.sh --check
+
+      - name: Conformance vectors are in sync
+        run: scripts/sync-fingerprint-vectors.sh --check
+
+      - name: JUCE module version matches the project version
+        run: |
+          project="$(sed -nE 's/^[[:space:]]*VERSION ([0-9]+\.[0-9]+\.[0-9]+).*/\1/p' CMakeLists.txt | head -1)"
+          module_header=modules/moonbase_licensing/moonbase_licensing.h
+          declared="$(sed -nE 's/^[[:space:]]*version:[[:space:]]+([0-9]+\.[0-9]+\.[0-9]+).*/\1/p' "$module_header")"
+          defined="$(sed -nE 's/.*#define MOONBASE_LICENSING_VERSION "([0-9]+\.[0-9]+\.[0-9]+)".*/\1/p' "$module_header")"
+          echo "project=$project module declaration=$declared define=$defined"
+          if [[ "$declared" != "$project" || "$defined" != "$project" ]]; then
+            echo "::error::$module_header is out of sync with CMakeLists.txt VERSION ($project)."
+            echo "MOONBASE_LICENSING_VERSION also feeds the client User-Agent, so drift misreports SDK traffic."
+            exit 1
+          fi
+
   build:
     name: ${{ matrix.os }}
     runs-on: ${{ matrix.os }}

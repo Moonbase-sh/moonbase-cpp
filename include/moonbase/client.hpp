@@ -10,8 +10,8 @@
 #include <nlohmann/json.hpp>
 
 #include "moonbase/detail/url.hpp"
+#include "moonbase/device_id_resolver.hpp"
 #include "moonbase/errors.hpp"
-#include "moonbase/fingerprint.hpp"
 #include "moonbase/http.hpp"
 #include "moonbase/types.hpp"
 #include "moonbase/validator.hpp"
@@ -137,15 +137,15 @@ class license_client {
 public:
     license_client(
         licensing_options options,
-        std::shared_ptr<fingerprint_provider> fingerprints,
+        std::shared_ptr<device_id_resolver> device_ids,
         std::shared_ptr<license_validator> validator,
         std::shared_ptr<http_transport> transport)
         : options_(std::move(options)),
-          fingerprints_(std::move(fingerprints)),
+          device_ids_(std::move(device_ids)),
           validator_(std::move(validator)),
           transport_(std::move(transport))
     {
-        if (!fingerprints_) {
+        if (!device_ids_) {
             throw configuration_error("A fingerprint provider is required");
         }
         if (!validator_) {
@@ -163,8 +163,8 @@ public:
             detail::client_query(options_));
 
         const auto payload = nlohmann::json{
-            {"deviceName", fingerprints_->device_name()},
-            {"deviceSignature", fingerprints_->device_id()},
+            {"deviceName", device_ids_->device_name()},
+            {"deviceSignature", device_ids_->device_id()},
         };
 
         http_request request;
@@ -252,7 +252,7 @@ public:
 
 private:
     licensing_options options_;
-    std::shared_ptr<fingerprint_provider> fingerprints_;
+    std::shared_ptr<device_id_resolver> device_ids_;
     std::shared_ptr<license_validator> validator_;
     std::shared_ptr<http_transport> transport_;
 };

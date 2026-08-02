@@ -9,6 +9,13 @@
 #include <utility>
 
 #include "moonbase/client.hpp"
+// Before 4.0.0 this header pulled in fingerprint.hpp and default_fingerprint.hpp,
+// so a consumer including only <moonbase/licensing.hpp> could name
+// fingerprint_provider, static_fingerprint_provider and
+// default_fingerprint_provider. Those aliases are deprecated, not gone, so keep
+// providing them here until they are removed in 5.0.0: dropping the includes would
+// turn a documented deprecation warning into a hard compile error for exactly the
+// consumers the aliases exist to protect.
 #include "moonbase/default_fingerprint.hpp"
 #include "moonbase/detail/base64.hpp"
 #include "moonbase/errors.hpp"
@@ -17,6 +24,7 @@
 #ifndef MOONBASE_DISABLE_CURL_TRANSPORT
 #include "moonbase/http_curl.hpp"
 #endif
+#include "moonbase/moonbase_device_id_resolver.hpp"
 #include "moonbase/store.hpp"
 #include "moonbase/types.hpp"
 #include "moonbase/validator.hpp"
@@ -28,18 +36,18 @@ public:
     explicit licensing(
         licensing_options options,
         std::shared_ptr<license_store> store = nullptr,
-        std::shared_ptr<fingerprint_provider> fingerprints = nullptr,
+        std::shared_ptr<device_id_resolver> device_ids = nullptr,
         std::shared_ptr<http_transport> transport = nullptr)
         : options_(normalize_and_validate(std::move(options))),
           store_(std::move(store)),
-          fingerprints_(std::move(fingerprints)),
+          device_ids_(std::move(device_ids)),
           transport_(std::move(transport))
     {
         if (!store_) {
             store_ = std::make_shared<memory_license_store>();
         }
-        if (!fingerprints_) {
-            fingerprints_ = std::make_shared<default_fingerprint_provider>();
+        if (!device_ids_) {
+            device_ids_ = std::make_shared<moonbase_device_id_resolver>();
         }
         if (!transport_) {
 #ifdef MOONBASE_DISABLE_CURL_TRANSPORT
@@ -49,8 +57,8 @@ public:
             transport_ = std::make_shared<curl_http_transport>();
 #endif
         }
-        validator_ = std::make_shared<license_validator>(options_, fingerprints_);
-        client_ = std::make_shared<license_client>(options_, fingerprints_, validator_, transport_);
+        validator_ = std::make_shared<license_validator>(options_, device_ids_);
+        client_ = std::make_shared<license_client>(options_, device_ids_, validator_, transport_);
     }
 
     [[nodiscard]] activation_request request_activation() const
@@ -85,8 +93,8 @@ public:
     [[nodiscard]] std::string generate_device_token() const
     {
         const nlohmann::json payload{
-            {"id", fingerprints_->device_id()},
-            {"name", fingerprints_->device_name()},
+            {"id", device_ids_->device_id()},
+            {"name", device_ids_->device_name()},
             {"productId", options_.product_id},
             // The Moonbase API expects this to always be "JWT".
             {"format", "JWT"},
@@ -240,8 +248,33 @@ public:
     [[nodiscard]] license_validator& validator() noexcept { return *validator_; }
     [[nodiscard]] const license_validator& validator() const noexcept { return *validator_; }
 
-    [[nodiscard]] moonbase::fingerprint_provider& fingerprint() noexcept { return *fingerprints_; }
-    [[nodiscard]] const moonbase::fingerprint_provider& fingerprint() const noexcept { return *fingerprints_; }
+    [[nodiscard]] moonbase::device_id_resolver& device_resolver() noexcept { return *device_ids_; }
+    [[nodiscard]] const moonbase::device_id_resolver& device_resolver() const noexcept { return *device_ids_; }
+
+    // How this machine's device id was derived, for diagnostics. Names of the
+    // contributing identity parameters only, never their values. Empty when the
+    // resolver does not describe itself, as a custom one need not.
+    //
+    // Throws insufficient_device_identity_error when this machine has no readable
+    // identity, the same as device_resolver().device_id() would.
+    [[nodiscard]] std::optional<device_id_description> describe_device() const
+    {
+        return device_ids_->describe_device();
+    }
+
+#if !defined(MOONBASE_DISABLE_DEPRECATED_ALIASES)
+    [[deprecated("renamed to device_resolver()")]] [[nodiscard]] moonbase::device_id_resolver&
+    fingerprint() noexcept
+    {
+        return *device_ids_;
+    }
+
+    [[deprecated("renamed to device_resolver()")]] [[nodiscard]] const moonbase::device_id_resolver&
+    fingerprint() const noexcept
+    {
+        return *device_ids_;
+    }
+#endif
 
 private:
     static licensing_options normalize_and_validate(licensing_options options)
@@ -261,7 +294,7 @@ private:
 
     licensing_options options_;
     std::shared_ptr<license_store> store_;
-    std::shared_ptr<fingerprint_provider> fingerprints_;
+    std::shared_ptr<device_id_resolver> device_ids_;
     std::shared_ptr<http_transport> transport_;
     std::shared_ptr<license_validator> validator_;
     std::shared_ptr<license_client> client_;

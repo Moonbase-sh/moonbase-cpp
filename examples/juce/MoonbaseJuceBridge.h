@@ -55,12 +55,28 @@
 namespace moonbase::juce_bridge {
 
 // ---------------------------------------------------------------------------
-// Fingerprinting
+// Device identity
 // ---------------------------------------------------------------------------
 
-// Sources the device fingerprint from juce::SystemStats::getUniqueDeviceID(),
-// which JUCE itself hashes from stable hardware identifiers. Requires JUCE 7+.
-class MoonbaseJuceFingerprintProvider : public moonbase::fingerprint_provider
+// The device id this bridge used before the SDK adopted the cross-SDK
+// fingerprint spec: juce::SystemStats::getUniqueDeviceID().
+//
+// No longer the default. It is not the spec, so a license activated in a web or
+// Electron app built on @moonbase.sh/licensing never validates here, and
+// getUniqueDeviceID() is JUCE's own derivation rather than a published format,
+// so it can change between JUCE versions.
+//
+// Keep it as a *historical* resolver if this bridge already has activated users,
+// so their licenses keep validating while new activations bind the spec id:
+//
+//     MoonbaseUnlockStatus status(options, store,
+//         std::make_shared<moonbase::migrating_device_id_resolver>(
+//             std::make_shared<moonbase::moonbase_device_id_resolver>(),
+//             std::make_shared<MoonbaseJuceDeviceIdResolver>()));
+//
+// Deliberately not wired up by default: widening what your validator accepts is
+// your decision, not something a header you own should do silently.
+class MoonbaseJuceDeviceIdResolver : public moonbase::device_id_resolver
 {
 public:
     [[nodiscard]] std::string device_name() const override
@@ -185,13 +201,13 @@ class MoonbaseUnlockStatus : public juce::OnlineUnlockStatus
 public:
     explicit MoonbaseUnlockStatus(moonbase::licensing_options options,
                                   std::shared_ptr<moonbase::license_store> store = nullptr,
-                                  std::shared_ptr<moonbase::fingerprint_provider> fingerprint
-                                      = std::make_shared<MoonbaseJuceFingerprintProvider>(),
+                                  std::shared_ptr<moonbase::device_id_resolver> deviceIds
+                                      = std::make_shared<moonbase::moonbase_device_id_resolver>(),
                                   juce::String websiteName = "moonbase.sh")
         : productId_(options.product_id),
           websiteName_(std::move(websiteName)),
           licensing_(getOrCreateLicensing(
-              std::move(options), std::move(store), std::move(fingerprint)))
+              std::move(options), std::move(store), std::move(deviceIds)))
     {
         juce::RSAKey::createKeyPair(juceUnlockPublicKey_, juceUnlockPrivateKey_, 512);
     }
@@ -832,13 +848,23 @@ public:
         return {};
     }
 
-    // Returns a single-entry list with the moonbase device fingerprint, which
+    // Returns a single-entry list with the moonbase device id, which
     // is also what we encode into the synthesized keyfiles. This keeps
     // applyKeyFile()'s machine-number match step consistent with our own
     // notion of device identity.
     juce::StringArray getLocalMachineIDs() override
     {
-        return juce::StringArray(juce::String(licensing_->fingerprint().device_id()));
+        // JUCE calls this from inside applyKeyFile(), so an exception here would
+        // unwind through JUCE's own code. A machine with no readable identity
+        // reports no ids, which fails the match step rather than the process.
+        try
+        {
+            return juce::StringArray(juce::String(licensing_->device_resolver().device_id()));
+        }
+        catch (const std::exception&)
+        {
+            return {};
+        }
     }
 
 private:
@@ -859,7 +885,17 @@ private:
 
     void applyLicenseToJuceState(const moonbase::license& lic)
     {
-        const auto machineId = juce::String(licensing_->fingerprint().device_id());
+        // Same reasoning as getLocalMachineIDs(): this runs on state changes, and
+        // a machine with no readable identity must not turn that into a throw out
+        // of a JUCE callback. An empty machine id simply fails the later match.
+        juce::String machineId;
+        try
+        {
+            machineId = juce::String(licensing_->device_resolver().device_id());
+        }
+        catch (const std::exception&)
+        {
+        }
         const auto appId = juce::String(productId_);
         const auto email = juce::String(lic.issued_to.email);
         const auto userName = lic.issued_to.name.empty()
@@ -933,7 +969,7 @@ private:
     // The key combines every input that affects which backend, which signing
     // key, and which on-disk slot the instance speaks to. Two bridges that
     // happen to share a product_id but point at different tenants, public
-    // keys, store paths, or fingerprint providers each get their own SDK
+    // keys, store paths, or device id resolvers each get their own SDK
     // instance. Weak-ptr storage releases entries once their last bridge
     // dies; the vector scan is O(N) over distinct active configurations,
     // which is bounded by the number of products this process hosts.
@@ -944,7 +980,7 @@ private:
         std::string public_key;
         std::optional<std::string> account_id;
         moonbase::license_store* store_ptr;
-        moonbase::fingerprint_provider* fingerprint_ptr;
+        moonbase::device_id_resolver* device_id_resolver_ptr;
 
         bool operator==(const LicensingCacheKey& other) const noexcept
         {
@@ -953,14 +989,14 @@ private:
                 && public_key == other.public_key
                 && account_id == other.account_id
                 && store_ptr == other.store_ptr
-                && fingerprint_ptr == other.fingerprint_ptr;
+                && device_id_resolver_ptr == other.device_id_resolver_ptr;
         }
     };
 
     static std::shared_ptr<moonbase::licensing> getOrCreateLicensing(
         moonbase::licensing_options options,
         std::shared_ptr<moonbase::license_store> store,
-        std::shared_ptr<moonbase::fingerprint_provider> fingerprint)
+        std::shared_ptr<moonbase::device_id_resolver> deviceIds)
     {
         static std::mutex cacheMutex;
         static std::vector<std::pair<LicensingCacheKey,
@@ -972,7 +1008,7 @@ private:
             options.public_key,
             options.account_id,
             store.get(),
-            fingerprint.get()};
+            deviceIds.get()};
 
         std::lock_guard<std::mutex> lock(cacheMutex);
 
@@ -992,7 +1028,7 @@ private:
         }
 
         auto instance = std::make_shared<moonbase::licensing>(
-            std::move(options), std::move(store), std::move(fingerprint));
+            std::move(options), std::move(store), std::move(deviceIds));
         cache.emplace_back(key, instance);
         return instance;
     }

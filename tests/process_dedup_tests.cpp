@@ -21,7 +21,7 @@
 
 #include <nlohmann/json.hpp>
 
-#include "moonbase/fingerprint.hpp"
+#include "moonbase/device_id_resolver.hpp"
 #include "moonbase/http.hpp"
 #include "moonbase/licensing.hpp"
 #include "moonbase/store.hpp"
@@ -117,7 +117,7 @@ TEST_CASE("validate_token_online deduplicates across forked processes")
     {
         license_validator seeder(
             opts,
-            std::make_shared<static_fingerprint_provider>("Test Device", "device-id"));
+            std::make_shared<static_device_id_resolver>("Test Device", "device-id"));
         file_license_store seed(store_path);
         seed.store_local_license(seeder.validate_token(stale_token));
     }
@@ -135,7 +135,7 @@ TEST_CASE("validate_token_online deduplicates across forked processes")
             // atexit teardown (which would otherwise double-report).
             try {
                 auto fingerprint =
-                    std::make_shared<static_fingerprint_provider>("Test Device", "device-id");
+                    std::make_shared<static_device_id_resolver>("Test Device", "device-id");
                 auto transport = std::make_shared<counting_file_transport>();
                 transport->counter_path = counter_path;
                 transport->response_body = refreshed_token;

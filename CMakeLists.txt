@@ -83,6 +83,20 @@ if(MOONBASE_USE_CURL)
 else()
     target_compile_definitions(moonbase_cpp INTERFACE MOONBASE_DISABLE_CURL_TRANSPORT=1)
 endif()
+
+# The device fingerprint reads IOPlatformUUID from the IO registry. IOKit works
+# inside the App Sandbox and under a hardened runtime, where spawning `ioreg`
+# does not, which is why plugins can use the default resolver at all. INTERFACE,
+# so it flows through install(EXPORT) to consumers doing find_package(moonbase_cpp);
+# tests/consumer_smoke is what proves that export is right.
+#
+# macOS only, mirroring the TARGET_OS_OSX gate in moonbase_device_id_resolver.hpp.
+# APPLE alone is also true for iOS, tvOS and watchOS, which never compile the IOKit
+# path but would still inherit the framework through the exported interface and
+# could fail to link. CMAKE_SYSTEM_NAME is "Darwin" only for macOS.
+if(APPLE AND CMAKE_SYSTEM_NAME STREQUAL "Darwin")
+    target_link_libraries(moonbase_cpp INTERFACE "-framework IOKit" "-framework CoreFoundation")
+endif()
 if(MOONBASE_NLOHMANN_FETCHED)
     target_include_directories(moonbase_cpp
         INTERFACE
@@ -99,6 +113,23 @@ target_compile_definitions(moonbase_cpp
 if(MOONBASE_BUILD_EXAMPLES)
     add_executable(moonbase_activation_example examples/activation.cpp)
     target_link_libraries(moonbase_activation_example PRIVATE moonbase::licensing)
+endif()
+
+# Device id diagnostic: prints this machine's device id and how it was derived.
+# Support asks customers to run it, and the cross-SDK parity workflow builds it to
+# compare against @moonbase.sh/licensing.
+#
+# Kept separate from MOONBASE_BUILD_EXAMPLES so the parity workflow can build it
+# without the rest, but still defaulted off for subprojects: a consumer using
+# FetchContent or add_subdirectory should not silently acquire an application
+# target, which is the whole point of the MOONBASE_BUILD_* opt-outs.
+option(MOONBASE_BUILD_DEVICE_ID_TOOL
+    "Build the moonbase_device_id diagnostic" ${MOONBASE_IS_TOP_LEVEL})
+
+if(MOONBASE_BUILD_DEVICE_ID_TOOL)
+    # Needs no HTTP transport, so it still links with MOONBASE_USE_CURL=OFF.
+    add_executable(moonbase_device_id examples/device_id.cpp)
+    target_link_libraries(moonbase_device_id PRIVATE moonbase::licensing)
 endif()
 
 if(MOONBASE_BUILD_JUCE_EXAMPLE)
@@ -158,6 +189,9 @@ if(MOONBASE_BUILD_TESTS)
     add_executable(moonbase_tests
         tests/main.cpp
         tests/client_tests.cpp
+        tests/device_id_resolver_tests.cpp
+        tests/fingerprint_reader_tests.cpp
+        tests/fingerprint_spec_tests.cpp
         tests/fingerprint_tests.cpp
         tests/header_smoke_tests.cpp
         tests/inventory_tests.cpp
@@ -168,6 +202,13 @@ if(MOONBASE_BUILD_TESTS)
         tests/version_tests.cpp
         tests/live_tests.cpp)
     target_link_libraries(moonbase_tests PRIVATE moonbase::licensing doctest::doctest)
+
+    # An absolute path baked in at configure time, so the conformance suite is
+    # found regardless of ctest's working directory or where a multi-config
+    # generator puts the binary. CMAKE_CURRENT_SOURCE_DIR is forward-slashed on
+    # every platform, so this needs no escaping.
+    target_compile_definitions(moonbase_tests PRIVATE
+        MOONBASE_FINGERPRINT_VECTORS_PATH="${CMAKE_CURRENT_SOURCE_DIR}/tests/vectors/fingerprint-vectors.json")
     moonbase_apply_sanitizer(moonbase_tests)
     include(doctest)
     doctest_discover_tests(moonbase_tests)

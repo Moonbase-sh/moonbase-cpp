@@ -14,11 +14,12 @@ build dependency of the SDK itself.
 ## What you get
 
 [`examples/juce/MoonbaseJuceBridge.h`](../examples/juce/MoonbaseJuceBridge.h) is a
-single header containing four pieces under the `moonbase::juce_bridge`
+single header containing three pieces under the `moonbase::juce_bridge`
 namespace:
 
-- **`MoonbaseJuceFingerprintProvider`** — implements `moonbase::fingerprint_provider`
-  on top of `juce::SystemStats::getUniqueDeviceID()` (JUCE 7+).
+- **`MoonbaseJuceDeviceIdResolver`** — implements `moonbase::device_id_resolver`
+  on top of `juce::SystemStats::getUniqueDeviceID()`. Retained only as a
+  *historical* resolver for migrating an already-shipped bridge.
 - **`applyJuceMetadata(options)`** — fills `licensing_options.metadata` (and
   `application_version`) from JUCE's system + host helpers.
 - **`MoonbaseUnlockStatus`** — subclass of `juce::OnlineUnlockStatus` that
@@ -278,21 +279,57 @@ process), and after each state change synthesizes a JUCE-format keyfile
 signed with that key and hands it to `applyKeyFile()`. That's the only
 public path into JUCE's private `status` ValueTree, so we go through it.
 
-## Fingerprinting
+## Device identity
 
-`MoonbaseJuceFingerprintProvider` delegates to
-`juce::SystemStats::getUniqueDeviceID()`, which JUCE 7+ derives from stable
-hardware identifiers and hashes for you. If you don't pass a custom provider,
-`MoonbaseUnlockStatus` defaults to it.
+`MoonbaseUnlockStatus` defaults to `moonbase::moonbase_device_id_resolver`, which
+implements the cross-SDK [device fingerprint spec](../FINGERPRINT_SPEC.md)
+(`moonbase:fingerprint:v2`). A license activated in a web or Electron app built on
+`@moonbase.sh/licensing` therefore validates in your plugin, and the other way
+round. See [Device fingerprint](../README.md#device-fingerprint) for the stability
+contract and the Linux caveats.
 
-If your codebase predates JUCE 7 or you want the SDK's native fingerprint
-(SMBIOS on Windows, `IOPlatformUUID` on macOS, board/BIOS/CPU on Linux), pass
-`std::make_shared<moonbase::default_fingerprint_provider>()` as the third
-constructor argument instead.
+It needs no JUCE at all, and spawns no subprocess on any platform: IOKit on macOS,
+world-readable files on Linux and the firmware table on Windows all work inside a
+sandboxed host.
 
-Switching providers between releases changes the device ID Moonbase sees,
-which invalidates existing activations. Pick one when you ship and stay with
-it.
+### Migrating an already-shipped bridge
+
+**This changed in 4.0.0.** Earlier versions used
+`juce::SystemStats::getUniqueDeviceID()`, so if you have already shipped, every
+existing user's license is bound to that id and will fail against the new one. Keep
+accepting it while binding the spec id on new activations:
+
+```cpp
+MoonbaseUnlockStatus status(
+    options,
+    store,
+    std::make_shared<moonbase::migrating_device_id_resolver>(
+        std::make_shared<moonbase::moonbase_device_id_resolver>(),  // binds
+        std::make_shared<MoonbaseJuceDeviceIdResolver>()));         // still accepted
+```
+
+`MoonbaseJuceDeviceIdResolver` (renamed from `MoonbaseJuceFingerprintProvider`) is
+retained in the bridge header for exactly this purpose. Because
+`getUniqueDeviceID()` is JUCE's own derivation rather than a published format, it
+only vouches for a binding if your plugin still ships the JUCE version that created
+it, so do not combine this upgrade with a JUCE major bump.
+
+Without the wrapper, users are locked out until they re-activate, which consumes a
+fresh activation seat and resets any device-scoped trial. The full set of options is
+in [Migrating from 3.x](../README.md#migrating-from-3x).
+
+Switching resolvers changes the device id Moonbase sees, so pick one when you ship
+and stay with it. The migrating wrapper exists precisely so a change of algorithm
+need not be a change of binding.
+
+### When a machine has no hardware identity
+
+`device_id()` throws `moonbase::insufficient_device_identity_error` rather than
+inventing something weak. The bridge's `getLocalMachineIDs()` and its keyfile
+synthesis both swallow that, because JUCE calls them from inside `applyKeyFile()`
+and a throw would unwind through JUCE's own code; the license simply goes unmatched.
+To accept a weaker host-name id instead, pass a resolver configured with
+`moonbase::moonbase_device_id_resolver_options::fallback = moonbase::device_id_fallback::device_name`.
 
 ## Metadata helper
 
@@ -332,7 +369,7 @@ options.metadata["app.channel"] = "beta"; // your own keys still go through
 The helper deliberately omits `SystemStats::getFullUserName()`,
 `getLogonName()`, and `getComputerName()` — PII that doesn't belong in
 activation metadata. The computer name is already covered by
-`fingerprint_provider::device_name()`.
+`device_id_resolver::device_name()`.
 
 If your toolchain has `juce_audio_processors` linked but the auto-detect
 doesn't pick it up, define `MOONBASE_JUCE_HAS_AUDIO_PROCESSORS=1` before

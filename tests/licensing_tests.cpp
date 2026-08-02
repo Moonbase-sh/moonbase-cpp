@@ -10,7 +10,7 @@
 
 #include <nlohmann/json.hpp>
 
-#include "moonbase/fingerprint.hpp"
+#include "moonbase/device_id_resolver.hpp"
 #include "moonbase/licensing.hpp"
 
 #include "test_helpers.hpp"
@@ -21,8 +21,8 @@ namespace {
 
 struct facade_fixture {
     moonbase::tests::generated_key key = moonbase::tests::generate_key();
-    std::shared_ptr<static_fingerprint_provider> fingerprints =
-        std::make_shared<static_fingerprint_provider>("Test Device", "device-id");
+    std::shared_ptr<static_device_id_resolver> fingerprints =
+        std::make_shared<static_device_id_resolver>("Test Device", "device-id");
     std::shared_ptr<moonbase::tests::recording_transport> transport =
         std::make_shared<moonbase::tests::recording_transport>();
     licensing instance;
@@ -398,7 +398,7 @@ public:
 TEST_CASE("revoke_activation succeeds even if local store cleanup fails")
 {
     auto fingerprints =
-        std::make_shared<static_fingerprint_provider>("Test Device", "device-id");
+        std::make_shared<static_device_id_resolver>("Test Device", "device-id");
     auto transport = std::make_shared<moonbase::tests::recording_transport>();
     auto store = std::make_shared<throwing_license_store>();
 
@@ -482,7 +482,7 @@ TEST_CASE("validate_token_online deduplicates concurrent in-process callers")
     // Set up a fresh facade with a thread-safe counting transport instead of
     // recording_transport (which is not safe under concurrent send()).
     auto fingerprints =
-        std::make_shared<static_fingerprint_provider>("Test Device", "device-id");
+        std::make_shared<static_device_id_resolver>("Test Device", "device-id");
     auto transport = std::make_shared<counting_transport>();
 
     moonbase::tests::generated_key key = moonbase::tests::generate_key();
@@ -542,7 +542,7 @@ TEST_CASE("validate_token_online deduplicates concurrent in-process callers")
 TEST_CASE("validate_token_online acquires the store update lock once per online check")
 {
     auto fingerprints =
-        std::make_shared<static_fingerprint_provider>("Test Device", "device-id");
+        std::make_shared<static_device_id_resolver>("Test Device", "device-id");
     auto transport = std::make_shared<moonbase::tests::recording_transport>();
     auto store = std::make_shared<tracking_store>();
 
@@ -699,7 +699,7 @@ TEST_CASE("revoke_activation acquires the store update lock around its cleanup")
     // resurrecting the license the user just revoked. The lock makes the
     // load+delete atomic with respect to any concurrent persist.
     auto fingerprints =
-        std::make_shared<static_fingerprint_provider>("Test Device", "device-id");
+        std::make_shared<static_device_id_resolver>("Test Device", "device-id");
     auto transport = std::make_shared<moonbase::tests::recording_transport>();
     auto store = std::make_shared<tracking_store>();
 

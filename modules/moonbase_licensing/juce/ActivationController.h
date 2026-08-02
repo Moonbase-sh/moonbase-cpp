@@ -185,6 +185,16 @@ public:
     [[nodiscard]] juce::String statusMessage() const { return statusMessage_; }
     [[nodiscard]] juce::String offlineError() const { return offlineError_; }
     [[nodiscard]] juce::String deviceLabel() const { return deviceLabel_; }
+
+    // How this machine's device id was derived: the id itself, the fingerprint
+    // spec version, the platform tag and the *names* of the identity parameters
+    // that contributed. Safe to log or put behind a "Copy diagnostics" button;
+    // parameter values are hardware serial numbers and are never exposed.
+    //
+    // Empty when the controller is misconfigured, when a custom resolver does not
+    // describe itself, or when this machine has no readable identity.
+    [[nodiscard]] std::optional<moonbase::device_id_description> describeDevice() const;
+
     [[nodiscard]] const ActivationConfig& config() const noexcept { return config_; }
     [[nodiscard]] const UpdateInfo& updateInfo() const noexcept { return updateInfo_; }
     [[nodiscard]] bool isBusy() const noexcept { return busy_; }

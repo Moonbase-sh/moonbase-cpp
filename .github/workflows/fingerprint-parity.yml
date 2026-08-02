@@ -1,0 +1,160 @@
+name: Fingerprint parity
+
+# Prove on real hardware, on every OS, that this SDK computes the same device id
+# as @moonbase.sh/licensing.
+#
+# The conformance vectors already prove the algorithm agrees given identical
+# inputs. They cannot prove the platform *readers* agree, because those are the
+# half that touches the machine: which SMBIOS structure the firmware returns,
+# whether IOKit sees what ioreg sees, which machine-id source wins. An entire
+# platform's reader can be wrong while every vector passes, and the symptom would
+# be a customer whose license works in a web app and not in a plugin.
+#
+# Path-filtered, because it only has something to say when the fingerprint moves,
+# and it installs a toolchain plus an npm package on three runners to say it.
+# Trigger it by hand from the Actions tab after a @moonbase.sh/licensing release,
+# which can break parity without anything here changing.
+
+on:
+  pull_request:
+    paths:
+      - 'include/moonbase/fingerprint_spec.hpp'
+      - 'include/moonbase/moonbase_device_id_resolver.hpp'
+      - 'include/moonbase/device_id_resolver.hpp'
+      - 'include/moonbase/detail/unicode/**'
+      - 'tests/vectors/fingerprint-vectors.json'
+      - 'examples/device_id.cpp'
+      - '.github/workflows/fingerprint-parity.yml'
+      - '.github/scripts/check-fingerprint-parity.mjs'
+  push:
+    branches: [main]
+    paths:
+      - 'include/moonbase/fingerprint_spec.hpp'
+      - 'include/moonbase/moonbase_device_id_resolver.hpp'
+      - 'include/moonbase/device_id_resolver.hpp'
+      - 'include/moonbase/detail/unicode/**'
+      - 'tests/vectors/fingerprint-vectors.json'
+      - 'examples/device_id.cpp'
+      - '.github/workflows/fingerprint-parity.yml'
+      - '.github/scripts/check-fingerprint-parity.mjs'
+  workflow_dispatch:
+
+concurrency:
+  group: fingerprint-parity-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  parity:
+    name: ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      # Only OpenSSL is needed: the probe links no HTTP transport, and
+      # nlohmann/json is fetched by CMake when the system copy is absent.
+      - name: Install OpenSSL (Ubuntu)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libssl-dev
+
+      - name: Install OpenSSL (macOS)
+        if: runner.os == 'macOS'
+        run: brew install openssl@3
+
+      - name: Install OpenSSL (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: choco install openssl --no-progress -y
+
+      - name: Configure (Ubuntu)
+        if: runner.os == 'Linux'
+        run: |
+          cmake -S . -B build -DCMAKE_BUILD_TYPE=Release \
+            -DMOONBASE_USE_CURL=OFF -DMOONBASE_BUILD_TESTS=OFF -DMOONBASE_BUILD_EXAMPLES=OFF \
+            -DMOONBASE_BUILD_DEVICE_ID_TOOL=ON
+
+      - name: Configure (macOS)
+        if: runner.os == 'macOS'
+        run: |
+          cmake -S . -B build -DCMAKE_BUILD_TYPE=Release \
+            -DMOONBASE_USE_CURL=OFF -DMOONBASE_BUILD_TESTS=OFF -DMOONBASE_BUILD_EXAMPLES=OFF \
+            -DMOONBASE_BUILD_DEVICE_ID_TOOL=ON \
+            -DOPENSSL_ROOT_DIR="$(brew --prefix openssl@3)"
+
+      - name: Configure (Windows)
+        if: runner.os == 'Windows'
+        shell: bash
+        run: |
+          cmake -S . -B build -DCMAKE_BUILD_TYPE=Release \
+            -DMOONBASE_USE_CURL=OFF -DMOONBASE_BUILD_TESTS=OFF -DMOONBASE_BUILD_EXAMPLES=OFF \
+            -DMOONBASE_BUILD_DEVICE_ID_TOOL=ON \
+            -DOPENSSL_ROOT_DIR="C:/Program Files/OpenSSL"
+
+      - name: Build the device id probe
+        run: cmake --build build --config Release --target moonbase_device_id
+
+      # Installed beside the checker rather than at the repo root: a bare ESM
+      # import resolves from the importing file's directory, and the root
+      # package.json is what semantic-release runs `npm ci` against.
+      #
+      # Pinned to the major implementing fingerprint spec v2. A new major there
+      # means a new spec version, which this SDK should adopt deliberately rather
+      # than discover as a red parity run.
+      - name: Install the reference SDK
+        shell: bash
+        run: |
+          npm install --no-audit --no-fund --prefix .github/scripts '@moonbase.sh/licensing@^3'
+          node -p "'reference: @moonbase.sh/licensing@' + require('./.github/scripts/node_modules/@moonbase.sh/licensing/package.json').version"
+
+      # The package ships the conformance suite, so the published copy is worth
+      # comparing against. Advisory, not fatal: this SDK may legitimately implement
+      # a spec revision that has not been published yet, and did so for the
+      # scoped-identity extension, where the vectors went from 51 to 64 cases.
+      #
+      # A difference here is only a problem if the *device ids* also disagree, and
+      # the next step is what decides that. Once the reference package ships the
+      # newer vectors, re-run scripts/sync-fingerprint-vectors.sh and this goes
+      # quiet again.
+      - name: Compare vendored vectors with the published ones
+        shell: bash
+        run: |
+          if ! scripts/sync-fingerprint-vectors.sh --check --vectors-only \
+                 --from .github/scripts/node_modules/@moonbase.sh/licensing/fingerprint-vectors.json
+          then
+            echo "::warning::Vendored vectors differ from the published package. Expected while this SDK leads the spec; the device id comparison below is the real check."
+          fi
+
+      - name: Capture this SDK's device id
+        shell: bash
+        run: |
+          if [ -x build/Release/moonbase_device_id.exe ]; then
+            build/Release/moonbase_device_id.exe > native-device-id.json
+          elif [ -x build/Release/moonbase_device_id ]; then
+            build/Release/moonbase_device_id > native-device-id.json
+          else
+            build/moonbase_device_id > native-device-id.json
+          fi
+          cat native-device-id.json
+
+      - name: Compare against the reference SDK
+        shell: bash
+        run: node .github/scripts/check-fingerprint-parity.mjs native-device-id.json
+
+      - name: Upload the comparison inputs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: device-id-${{ matrix.os }}
+          path: native-device-id.json
+          if-no-files-found: ignore

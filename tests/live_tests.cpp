@@ -47,7 +47,7 @@ TEST_CASE("live API activation flow")
     options.online_validation_min_interval = std::chrono::seconds(0);
 
     const auto unique_id = "moonbase-cpp-test-" + std::to_string(moonbase::tests::now_seconds());
-    auto fingerprints = std::make_shared<static_fingerprint_provider>("Moonbase C++ Test", unique_id);
+    auto fingerprints = std::make_shared<static_device_id_resolver>("Moonbase C++ Test", unique_id);
     auto transport = std::make_shared<curl_http_transport>();
     licensing sdk(options, nullptr, fingerprints, transport);
 

@@ -2,7 +2,6 @@
 // moonbase_licensing module translation unit.
 
 #include "ActivationController.h"
-#include "juce_fingerprint_provider.h"
 #include "juce_http_transport.h"
 
 namespace moonbase::juce_integration {
@@ -20,6 +19,17 @@ juce::String describeError(const std::exception& ex)
     if (const auto* api = dynamic_cast<const moonbase::api_error*>(&ex))
         if (! api->detail().empty())
             message << " (" << api->detail() << ")";
+
+    // Every activation and offline-token path funnels through here, and this one
+    // is not a Moonbase failure at all: the machine has no stable hardware
+    // identifier to hash, so there is nothing to activate against. Left bare it
+    // reads like a bug in the plugin, so point at the two real options.
+    if (dynamic_cast<const moonbase::insufficient_device_identity_error*>(&ex) != nullptr)
+        message << ". This machine has no stable hardware identifier to bind a license to."
+                   " On a virtual machine or a container, check that it has a system UUID or a"
+                   " machine-id; otherwise set ActivationConfig::allowDeviceNameFallback to accept"
+                   " a weaker id based on the computer name.";
+
     return message;
 }
 } // namespace
@@ -43,7 +53,19 @@ ActivationController::ActivationController(ActivationConfig config)
 
     auto store = std::make_shared<moonbase::file_license_store>(
         std::filesystem::path(file.getFullPathName().toStdString()));
-    auto fingerprint = std::make_shared<juce_fingerprint_provider>();
+#if JUCE_ANDROID
+    // The one thing the core SDK cannot obtain by itself: an application Context.
+    // JUCE has one, so hand it over and the core's plain-JNI reader does the rest.
+    // Idempotent, so calling it per controller is fine.
+    if (auto* env = juce::getEnv())
+    {
+        JavaVM* vm = nullptr;
+        if (env->GetJavaVM(&vm) == 0)
+            moonbase::android::set_jni_environment(vm, juce::getAppContext().get());
+    }
+#endif
+
+    auto deviceIds = config_.resolvedDeviceIdResolver();
     auto transport = std::make_shared<juce_http_transport>();
     // A second transport for the inventory (update) calls, so an update download
     // URL fetch and a license validation can't block on each other's stream.
@@ -52,7 +74,7 @@ ActivationController::ActivationController(ActivationConfig config)
     try
     {
         licensing_ = std::make_shared<moonbase::licensing>(
-            config_.toLicensingOptions(), std::move(store), fingerprint, transport);
+            config_.toLicensingOptions(), std::move(store), deviceIds, transport);
     }
     catch (const std::exception& ex)
     {
@@ -70,9 +92,22 @@ ActivationController::ActivationController(ActivationConfig config)
         transport->cancel();
         inventoryTransport->cancel();
     };
-    setDeviceLabel(config_.deviceName.isNotEmpty()
-                       ? config_.deviceName
-                       : juce::String(fingerprint->device_name()));
+    // A custom resolver's device_name() is arbitrary consumer code, and this
+    // constructor runs inside a plugin editor's constructor, where an escaping
+    // exception takes the host down with it. An empty label is fine:
+    // setDeviceLabel renders that as "This device".
+    juce::String resolvedDeviceName = config_.deviceName;
+    if (resolvedDeviceName.isEmpty())
+    {
+        try
+        {
+            resolvedDeviceName = juce::String(deviceIds->device_name());
+        }
+        catch (const std::exception&)
+        {
+        }
+    }
+    setDeviceLabel(std::move(resolvedDeviceName));
     state_.emplace(stateFilePath());
 }
 
@@ -86,6 +121,23 @@ ActivationController::ActivationController(ActivationConfig config,
     jassert(licensing_ != nullptr);
     setDeviceLabel(std::move(deviceName));
     state_.emplace(stateFilePath());
+}
+
+std::optional<moonbase::device_id_description> ActivationController::describeDevice() const
+{
+    if (licensing_ == nullptr)
+        return std::nullopt;
+
+    try
+    {
+        return licensing_->device_resolver().describe_device();
+    }
+    catch (const std::exception&)
+    {
+        // A machine with no identity has nothing to describe, and a diagnostics
+        // getter is the last place that should throw.
+        return std::nullopt;
+    }
 }
 
 ActivationController::~ActivationController()
@@ -162,10 +214,29 @@ void ActivationController::start()
                 {
                     peek = licensing->validate_token_local_allow_expired(stored->token);
                 }
+                catch (const moonbase::license_device_mismatch_error& ex)
+                {
+                    // The token is genuine but bound to a different device id.
+                    // Its message already distinguishes a stale binding (an older
+                    // fingerprint version, which a migrating_device_id_resolver
+                    // could accept) from a genuinely foreign machine, so quoting
+                    // it beats asserting either.
+                    diag = juce::String("Stored token is not bound to this device: ") + ex.what();
+                }
+                catch (const moonbase::insufficient_device_identity_error& ex)
+                {
+                    // Nothing was wrong with the token: this machine could not
+                    // identify itself, so no comparison was possible. Saying "not
+                    // valid for this device" here would send support down entirely
+                    // the wrong path.
+                    diag = juce::String("Could not identify this device, so the stored license could not be "
+                                        "checked: ")
+                        + ex.what();
+                }
                 catch (const std::exception& ex)
                 {
-                    // Tampered / foreign / unparseable -> locked, but left on disk.
-                    diag = juce::String("Stored token rejected (not valid for this device): ") + ex.what();
+                    // Tampered / unparseable -> locked, but left on disk.
+                    diag = juce::String("Stored token rejected: ") + ex.what();
                 }
 
                 if (peek && peek->method == moonbase::activation_method::offline)
