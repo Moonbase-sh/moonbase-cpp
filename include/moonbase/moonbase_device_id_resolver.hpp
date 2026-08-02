@@ -261,13 +261,27 @@ public:
     }
 
 private:
+    // Both memos are a mutex plus a flag rather than std::once_flag, and that is
+    // deliberate: description() lets insufficient_device_identity_error escape so
+    // an unreadable machine retries instead of caching the failure, and
+    // std::call_once is a bad place to throw from. libstdc++ implements it on
+    // pthread_once, and ThreadSanitizer's pthread_once interceptor does not model
+    // the reset that the exception path performs, so the *second* call deadlocks.
+    // The plain mutex gives the same semantics with none of that: the flag is only
+    // set after the value is stored, so a throw leaves it false and the next
+    // caller tries again.
+    //
+    // Returning a reference is safe because neither value is ever mutated once its
+    // flag is set, and the lock establishes the happens-before edge for the reader.
+
     [[nodiscard]] const device_identity& identity() const
     {
         // Read at most once. Both halves of an activation request ask for it, the
         // name and then the id, and the validator asks for the id on every single
         // token check. Reading per call would also let the name and the id come
         // from two different reads of the machine.
-        std::call_once(identity_once_, [this] {
+        const std::lock_guard<std::mutex> lock(identity_mutex_);
+        if (!identity_read_) {
             try {
                 identity_ = options_.reader ? options_.reader() : read_host_identity();
             } catch (...) {
@@ -276,17 +290,19 @@ private:
                 // out of device_name().
                 identity_ = device_identity{};
             }
-        });
+            identity_read_ = true;
+        }
         return identity_;
     }
 
     [[nodiscard]] const device_id_description& description() const
     {
-        // call_once treats an exceptional return as "not done", so a machine that
-        // is momentarily unreadable retries on the next call instead of caching
-        // the failure. That is deliberate: a sticky failure would outlive the
-        // condition that caused it.
-        std::call_once(description_once_, [this] {
+        // A machine that is momentarily unreadable retries on the next call rather
+        // than caching the failure: describe() throws, described_ stays false, and
+        // the guard releases the lock on the way out. A sticky failure would
+        // outlive the condition that caused it.
+        const std::lock_guard<std::mutex> lock(description_mutex_);
+        if (!described_) {
             const auto& read = identity();
             try {
                 description_ = describe(read.params, fingerprint_spec::device_id_source::identity);
@@ -297,7 +313,8 @@ private:
                 description_ = describe(
                     {{"deviceName", read.device_name}}, fingerprint_spec::device_id_source::device_name);
             }
-        });
+            described_ = true;
+        }
         return description_;
     }
 
@@ -546,9 +563,11 @@ private:
 
     moonbase_device_id_resolver_options options_;
 
-    mutable std::once_flag identity_once_;
+    mutable std::mutex identity_mutex_;
+    mutable bool identity_read_ = false;
     mutable device_identity identity_;
-    mutable std::once_flag description_once_;
+    mutable std::mutex description_mutex_;
+    mutable bool described_ = false;
     mutable device_id_description description_;
 };
 

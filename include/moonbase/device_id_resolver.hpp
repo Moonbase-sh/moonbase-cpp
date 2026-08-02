@@ -175,19 +175,29 @@ public:
             return false;
         }
 
-        std::call_once(previous_ids_once_, [this] {
-            previous_ids_.reserve(previous_.size());
-            for (const auto& resolver : previous_) {
-                if (!resolver) {
-                    continue;
+        // A mutex and a flag rather than std::once_flag, matching
+        // moonbase_device_id_resolver: the allocations here can throw, and an
+        // exception escaping std::call_once deadlocks under ThreadSanitizer,
+        // whose pthread_once interceptor does not model the reset that path
+        // performs. The flag is set only after the work completes, so a throw
+        // simply means the next caller retries.
+        {
+            const std::lock_guard<std::mutex> lock(previous_ids_mutex_);
+            if (!previous_ids_computed_) {
+                previous_ids_.reserve(previous_.size());
+                for (const auto& resolver : previous_) {
+                    if (!resolver) {
+                        continue;
+                    }
+                    try {
+                        previous_ids_.push_back(resolver->device_id());
+                    } catch (...) {
+                        // Cannot vouch for the license on this machine; carry on.
+                    }
                 }
-                try {
-                    previous_ids_.push_back(resolver->device_id());
-                } catch (...) {
-                    // Cannot vouch for the license on this machine; carry on.
-                }
+                previous_ids_computed_ = true;
             }
-        });
+        }
 
         return std::any_of(
             previous_ids_.begin(), previous_ids_.end(), [&device_id](const std::string& previous) {
@@ -205,7 +215,8 @@ private:
     std::shared_ptr<device_id_resolver> current_;
     std::vector<std::shared_ptr<device_id_resolver>> previous_;
 
-    mutable std::once_flag previous_ids_once_;
+    mutable std::mutex previous_ids_mutex_;
+    mutable bool previous_ids_computed_ = false;
     mutable std::vector<std::string> previous_ids_;
 };
 
