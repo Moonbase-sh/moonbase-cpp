@@ -39,6 +39,25 @@
 #include <unistd.h>
 #endif
 
+#if defined(__APPLE__)
+#include <TargetConditionals.h>
+#if TARGET_OS_IPHONE && !TARGET_OS_MACCATALYST
+// identifierForVendor lives in UIKit, but reaching it needs no Objective-C source
+// and no framework wrapper: the Objective-C runtime's C API is callable straight
+// from C++, which keeps this SDK usable without JUCE or any other framework.
+#define MOONBASE_FINGERPRINT_USE_UIKIT 1
+#include <objc/message.h>
+#include <objc/runtime.h>
+#endif
+#endif
+
+#if defined(__ANDROID__)
+// Plain JNI, part of the NDK rather than any framework. The one thing a native
+// library cannot obtain by itself is the application Context, so the host hands
+// that in once; see moonbase::android::set_jni_environment below.
+#include <jni.h>
+#endif
+
 #if defined(__APPLE__) && !defined(MOONBASE_FINGERPRINT_NO_IOKIT)
 #include <TargetConditionals.h>
 // Mac Catalyst included: it runs on macOS, can read IOKit, and takes the `mac`
@@ -60,6 +79,58 @@
 #include "moonbase/fingerprint_spec.hpp"
 
 namespace moonbase {
+
+#if defined(__ANDROID__)
+namespace android {
+
+/// The JNI handles the Android device id reader needs.
+///
+/// Everything else in this SDK reads the machine on its own. Android is the one
+/// exception, and not for want of trying: Settings.Secure.getString needs a
+/// ContentResolver, which needs an application Context, and there is no supported
+/// way for a native library to obtain one by itself. So the host hands it in once
+/// and the SDK does the rest, rather than this SDK depending on a framework.
+struct jni_handles {
+    JavaVM* vm = nullptr;
+    jobject context = nullptr;
+};
+
+namespace detail {
+
+inline jni_handles& mutable_jni_environment()
+{
+    static jni_handles handles;
+    return handles;
+}
+
+[[nodiscard]] inline jni_handles jni_environment()
+{
+    return mutable_jni_environment();
+}
+
+} // namespace detail
+
+/// Supply the JNI handles, once, during startup. Typically from JNI_OnLoad:
+///
+///     jint JNI_OnLoad(JavaVM* vm, void*) {
+///         moonbase::android::set_jni_environment(vm, applicationContext);
+///         return JNI_VERSION_1_6;
+///     }
+///
+/// The JUCE module does this for you. Until it is called, Android resolves to
+/// insufficient_device_identity_error rather than to a constant, which is the
+/// honest answer for a machine the SDK cannot identify.
+///
+/// `context` must outlive the SDK, so pass a global reference or the Application
+/// object rather than an Activity.
+inline void set_jni_environment(JavaVM* vm, jobject context)
+{
+    detail::mutable_jni_environment() = jni_handles{vm, context};
+}
+
+} // namespace android
+#endif
+
 
 /// What a single read of the machine produced.
 struct device_identity {
@@ -137,7 +208,9 @@ public:
 #elif defined(_WIN32)
         identity.params = fingerprint_spec::parse_smbios_params(read_windows_smbios_table());
 #elif defined(__ANDROID__)
-        // No identity parameters are defined for Android.
+        identity.params.emplace_back("androidId", read_android_id());
+#elif defined(MOONBASE_FINGERPRINT_USE_UIKIT)
+        identity.params.emplace_back("identifierForVendor", read_identifier_for_vendor());
 #elif defined(__linux__)
         // All five sources are world-readable files, so the result does not
         // depend on privilege, on any installed CLI, or on the locale.
@@ -293,6 +366,135 @@ private:
 
         // Spec: all hyphens removed and uppercased.
         return fingerprint_spec::normalize_platform_uuid(uuid);
+    }
+#endif
+
+#if defined(MOONBASE_FINGERPRINT_USE_UIKIT)
+    /// identifierForVendor, uppercased with hyphens removed like ioPlatformUuid.
+    ///
+    /// Reached through the Objective-C runtime's C API rather than Objective-C
+    /// source, so this header stays plain C++ and this SDK needs no framework to
+    /// fingerprint an iOS device. Empty when iOS declines to provide one, which it
+    /// does until the device is first unlocked after boot; absence is transient and
+    /// surfaces as insufficient identity rather than as a constant.
+    [[nodiscard]] static std::string read_identifier_for_vendor()
+    {
+        using send_id = id (*)(id, SEL);
+        using send_cstr = const char* (*)(id, SEL);
+        const auto msg_id = reinterpret_cast<send_id>(objc_msgSend);
+        const auto msg_cstr = reinterpret_cast<send_cstr>(objc_msgSend);
+
+        // UIDevice everywhere except watchOS, which exposes the same property on
+        // WKInterfaceDevice.
+        Class device_class = objc_getClass("UIDevice");
+        if (device_class == nullptr) {
+            device_class = objc_getClass("WKInterfaceDevice");
+        }
+        if (device_class == nullptr) {
+            return {};
+        }
+
+        id device = msg_id(reinterpret_cast<id>(device_class), sel_registerName("currentDevice"));
+        if (device == nullptr) {
+            return {};
+        }
+
+        id uuid = msg_id(device, sel_registerName("identifierForVendor"));
+        if (uuid == nullptr) {
+            return {};
+        }
+
+        id text = msg_id(uuid, sel_registerName("UUIDString"));
+        if (text == nullptr) {
+            return {};
+        }
+
+        const char* utf8 = msg_cstr(text, sel_registerName("UTF8String"));
+        if (utf8 == nullptr) {
+            return {};
+        }
+
+        return fingerprint_spec::normalize_platform_uuid(utf8);
+    }
+#endif
+
+#if defined(__ANDROID__)
+    /// Settings.Secure.getString(contentResolver, ANDROID_ID), lowercased.
+    ///
+    /// Plain JNI, so this needs no framework either. Deliberately not the static
+    /// field Settings.Secure.ANDROID_ID: that is the key name "android_id",
+    /// identical on every device, and hashing it would give a whole install base
+    /// one device id. JUCE's SystemStats::getUniqueDeviceID() has exactly that
+    /// defect. The spec's ^[0-9a-f]{1,16}$ rule makes the mistake mechanically
+    /// impossible here regardless.
+    ///
+    /// Empty until the host supplies JNI handles (see
+    /// moonbase::android::set_jni_environment), and empty when Android returns
+    /// null, which it can before the user is set up.
+    [[nodiscard]] static std::string read_android_id()
+    {
+        const auto jni = android::detail::jni_environment();
+        if (jni.vm == nullptr || jni.context == nullptr) {
+            return {};
+        }
+
+        JNIEnv* env = nullptr;
+        if (jni.vm->GetEnv(reinterpret_cast<void**>(&env), JNI_VERSION_1_6) != JNI_OK
+            || env == nullptr) {
+            return {};
+        }
+
+        const auto fail = [env] {
+            if (env->ExceptionCheck()) {
+                env->ExceptionClear();
+            }
+            return std::string{};
+        };
+
+        jclass secure = env->FindClass("android/provider/Settings$Secure");
+        if (secure == nullptr) {
+            return fail();
+        }
+
+        const auto get_string = env->GetStaticMethodID(
+            secure,
+            "getString",
+            "(Landroid/content/ContentResolver;Ljava/lang/String;)Ljava/lang/String;");
+        if (get_string == nullptr) {
+            return fail();
+        }
+
+        const auto get_resolver = env->GetMethodID(
+            env->GetObjectClass(jni.context), "getContentResolver", "()Landroid/content/ContentResolver;");
+        if (get_resolver == nullptr) {
+            return fail();
+        }
+
+        jobject resolver = env->CallObjectMethod(jni.context, get_resolver);
+        if (resolver == nullptr) {
+            return fail();
+        }
+
+        jstring key = env->NewStringUTF("android_id");
+        auto value = static_cast<jstring>(
+            env->CallStaticObjectMethod(secure, get_string, resolver, key));
+        if (env->ExceptionCheck() || value == nullptr) {
+            return fail();
+        }
+
+        const char* utf8 = env->GetStringUTFChars(value, nullptr);
+        std::string out = utf8 != nullptr ? utf8 : "";
+        if (utf8 != nullptr) {
+            env->ReleaseStringUTFChars(value, utf8);
+        }
+
+        // Lowercased per the spec; the ^[0-9a-f]{1,16}$ rule is case-sensitive.
+        for (auto& character : out) {
+            character = (character >= 'A' && character <= 'Z')
+                ? static_cast<char>(character - 'A' + 'a')
+                : character;
+        }
+        return out;
     }
 #endif
 

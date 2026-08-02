@@ -1098,6 +1098,11 @@ TEST_CASE("the module default is the cross-SDK spec resolver, except on iOS")
         CHECK(described->param_names
             == std::vector<std::string>{
                 ActivationConfig::isAndroid ? "androidId" : "identifierForVendor"});
+
+        // And it came from the core resolver, not a JUCE-specific one: the SDK
+        // reads every platform natively, which is what lets the bridge and any
+        // non-JUCE consumer get the same id.
+        CHECK(described->version == moonbase::fingerprint_spec::version);
         return;
     }
 

@@ -73,8 +73,6 @@
 // Native integration + built-in UI.
 #include "juce/juce_http_transport.h"
 #include "juce/legacy_juce_device_id_resolver.h"
-#include "juce/android_device_id_resolver.h"
-#include "juce/ios_device_id_resolver.h"
 #include "juce/JuceMetadata.h"
 #include "juce/LicenseGate.h"
 #include "juce/ActivationConfig.h"

@@ -8,8 +8,7 @@
 // historical resolver:
 //
 //     config.deviceIdResolver = std::make_shared<moonbase::migrating_device_id_resolver>(
-//         ActivationConfig::defaultDeviceIdResolver(),   // NOT moonbase_device_id_resolver:
-//                                                        // that throws on iOS and Android
+//         ActivationConfig::defaultDeviceIdResolver(),
 //         std::make_shared<moonbase::juce_integration::legacy_juce_device_id_resolver>());
 //
 // Two reasons it is not the default any more. It is not the spec, so a license

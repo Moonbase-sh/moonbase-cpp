@@ -14,16 +14,9 @@ build dependency of the SDK itself.
 ## What you get
 
 [`examples/juce/MoonbaseJuceBridge.h`](../examples/juce/MoonbaseJuceBridge.h) is a
-single header containing five pieces under the `moonbase::juce_bridge`
+single header containing three pieces under the `moonbase::juce_bridge`
 namespace:
 
-- **`makeDefaultDeviceIdResolver()`** — the resolver you get when you pass none.
-  Cross-SDK hardware identity on desktop (including Mac Catalyst), and a scoped
-  identity on iOS and Android, where the plain spec resolver has nothing to read
-  and would throw. Wrap *this* when migrating, not
-  `moonbase_device_id_resolver` directly.
-- **`MoonbaseJuceScopedDeviceIdResolver`** — the mobile half of that, building a
-  `mbd2s_` scoped id from `identifierForVendor` or `ANDROID_ID`.
 - **`MoonbaseJuceDeviceIdResolver`** — implements `moonbase::device_id_resolver`
   on top of `juce::SystemStats::getUniqueDeviceID()`. Retained only as a
   *historical* resolver for migrating an already-shipped bridge.
@@ -311,12 +304,8 @@ MoonbaseUnlockStatus status(
     options,
     store,
     std::make_shared<moonbase::migrating_device_id_resolver>(
-        // The platform default, NOT moonbase_device_id_resolver directly: on iOS
-        // and Android that has no identity to read and throws, and a migrating
-        // resolver asks its current resolver for an id before consulting any
-        // historical one, so hard-coding it locks mobile users out entirely.
-        makeDefaultDeviceIdResolver(),                       // binds
-        std::make_shared<MoonbaseJuceDeviceIdResolver>()));  // still accepted
+        std::make_shared<moonbase::moonbase_device_id_resolver>(),  // binds
+        std::make_shared<MoonbaseJuceDeviceIdResolver>()));         // still accepted
 ```
 
 `MoonbaseJuceDeviceIdResolver` (renamed from `MoonbaseJuceFingerprintProvider`) is

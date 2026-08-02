@@ -71,8 +71,7 @@ namespace moonbase::juce_bridge {
 //
 //     MoonbaseUnlockStatus status(options, store,
 //         std::make_shared<moonbase::migrating_device_id_resolver>(
-//             makeDefaultDeviceIdResolver(),   // NOT moonbase_device_id_resolver:
-//                                              // that throws on iOS and Android
+//             std::make_shared<moonbase::moonbase_device_id_resolver>(),
 //             std::make_shared<MoonbaseJuceDeviceIdResolver>()));
 //
 // Deliberately not wired up by default: widening what your validator accepts is
@@ -90,128 +89,6 @@ public:
         return juce::SystemStats::getUniqueDeviceID().toStdString();
     }
 };
-
-// Scoped device identity for iOS and Android, per the spec's "Scoped identity"
-// section. Neither platform exposes a device identifier that unrelated
-// applications can read, so the id is stable only within the platform's own scope
-// and is stamped `mbd2s_` to say so.
-//
-// This duplicates modules/moonbase_licensing/juce/{ios,android}_device_id_resolver.h
-// on purpose: the bridge is copy-paste reference code and must not depend on the
-// JUCE module. Keep the two in step if you change either.
-class MoonbaseJuceScopedDeviceIdResolver : public moonbase::device_id_resolver
-{
-public:
-    [[nodiscard]] std::string device_name() const override
-    {
-        // Decoration only. It never enters the material, because
-        // build_fingerprint_material refuses the host-name fallback on these
-        // platforms, where the name is "localhost" or a model name.
-        return juce::SystemStats::getDeviceDescription().toStdString();
-    }
-
-    [[nodiscard]] std::string device_id() const override { return describe().device_id; }
-
-    [[nodiscard]] std::optional<moonbase::device_id_description> describe_device() const override
-    {
-        return describe();
-    }
-
-private:
-    /// The platform's scoped identifier, or empty when it is momentarily absent.
-    [[nodiscard]] static moonbase::fingerprint_spec::parameter readScopedIdentity()
-    {
-       #if JUCE_IOS
-        // juce::SystemStats wraps [[UIDevice currentDevice] identifierForVendor]
-        // on iOS. Normalized like ioPlatformUuid: hyphens stripped, uppercased.
-        return {"identifierForVendor",
-                moonbase::fingerprint_spec::normalize_platform_uuid(
-                    juce::SystemStats::getUniqueDeviceID().toStdString())};
-       #elif JUCE_ANDROID
-        // Deliberately NOT juce::SystemStats::getUniqueDeviceID(): it reads the
-        // *static field* Settings.Secure.ANDROID_ID, which is the key name
-        // "android_id" rather than the device's value, so every JUCE Android app
-        // reports the same id. The spec's ^[0-9a-f]{1,16}$ rule would reject that
-        // anyway, but reading it correctly is the point.
-        return {"androidId", readAndroidId()};
-       #else
-        return {"androidId", {}};
-       #endif
-    }
-
-   #if JUCE_ANDROID
-    [[nodiscard]] static std::string readAndroidId()
-    {
-        auto* env = juce::getEnv();
-        if (env == nullptr)
-            return {};
-
-        juce::LocalRef<jclass> secure((jclass) env->FindClass("android/provider/Settings$Secure"));
-        if (secure.get() == nullptr) { env->ExceptionClear(); return {}; }
-
-        const auto getString = env->GetStaticMethodID(
-            secure.get(), "getString",
-            "(Landroid/content/ContentResolver;Ljava/lang/String;)Ljava/lang/String;");
-        if (getString == nullptr) { env->ExceptionClear(); return {}; }
-
-        auto context = juce::getAppContext();
-        if (context.get() == nullptr)
-            return {};
-
-        juce::LocalRef<jobject> resolver(env->CallObjectMethod(
-            context.get(),
-            env->GetMethodID(env->GetObjectClass(context.get()),
-                             "getContentResolver", "()Landroid/content/ContentResolver;")));
-        if (resolver.get() == nullptr) { env->ExceptionClear(); return {}; }
-
-        juce::LocalRef<jstring> key(env->NewStringUTF("android_id"));
-        juce::LocalRef<jstring> value((jstring) env->CallStaticObjectMethod(
-            secure.get(), getString, resolver.get(), key.get()));
-
-        if (env->ExceptionCheck()) { env->ExceptionClear(); return {}; }
-        if (value.get() == nullptr)
-            return {};
-
-        return juce::juceString(env, value.get()).toLowerCase().toStdString();
-    }
-   #endif
-
-    [[nodiscard]] moonbase::device_id_description describe() const
-    {
-        namespace fp = moonbase::fingerprint_spec;
-
-        const fp::parameter_list params{readScopedIdentity()};
-        const auto platform = std::string(fp::platform_tag());
-
-        moonbase::device_id_description described;
-        described.device_id = fp::fingerprint_device_id(
-            fp::build_fingerprint_material(platform, params), fp::device_id_source::scoped);
-        described.version = fp::version;
-        described.platform = platform;
-        described.source = fp::device_id_source::scoped;
-        for (const auto& param : fp::canonicalize_params(params))
-            described.param_names.push_back(param.first);
-        return described;
-    }
-};
-
-// The resolver this platform gets when you do not pass one.
-//
-// Desktop, including Mac Catalyst, uses the cross-SDK hardware fingerprint. iOS
-// and Android have no identifier unrelated apps can read, so they get a scoped id
-// instead; the plain spec resolver would simply throw there.
-//
-// Wrap *this* rather than a hard-coded moonbase_device_id_resolver when migrating,
-// or mobile users are locked out: a migrating resolver asks its current resolver
-// for an id before consulting any historical one.
-[[nodiscard]] inline std::shared_ptr<moonbase::device_id_resolver> makeDefaultDeviceIdResolver()
-{
-   #if JUCE_IOS || JUCE_ANDROID
-    return std::make_shared<MoonbaseJuceScopedDeviceIdResolver>();
-   #else
-    return std::make_shared<moonbase::moonbase_device_id_resolver>();
-   #endif
-}
 
 // ---------------------------------------------------------------------------
 // Metadata helper
@@ -325,7 +202,7 @@ public:
     explicit MoonbaseUnlockStatus(moonbase::licensing_options options,
                                   std::shared_ptr<moonbase::license_store> store = nullptr,
                                   std::shared_ptr<moonbase::device_id_resolver> deviceIds
-                                      = makeDefaultDeviceIdResolver(),
+                                      = std::make_shared<moonbase::moonbase_device_id_resolver>(),
                                   juce::String websiteName = "moonbase.sh")
         : productId_(options.product_id),
           websiteName_(std::move(websiteName)),

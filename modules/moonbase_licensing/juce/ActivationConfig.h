@@ -21,10 +21,8 @@
 #include <juce_gui_basics/juce_gui_basics.h>
 
 #include "JuceMetadata.h"
-// Both are named by resolvedDeviceIdResolver(). Included here rather than relied
-// on from the module umbrella so this header stays usable on its own.
-#include "android_device_id_resolver.h"
-#include "ios_device_id_resolver.h"
+// Named by resolvedDeviceIdResolver(). Included here rather than relied on from
+// the module umbrella so this header stays usable on its own.
 #include "legacy_juce_device_id_resolver.h"
 
 // Normally defined by the module umbrella header; fall back so this header is
@@ -306,12 +304,14 @@ struct ActivationConfig
 
     /// The resolver this platform gets when `deviceIdResolver` is left unset.
     ///
-    /// Static and public because a migrating configuration must wrap *this*, not a
-    /// hard-coded `moonbase_device_id_resolver`. On iOS and Android the spec
-    /// resolver has no identity parameters to read and throws, and a migrating
-    /// wrapper asks its current resolver for an id before consulting any historical
-    /// one, so hard-coding it there locks mobile users out of both validation and
-    /// new activation:
+    /// Always moonbase::moonbase_device_id_resolver: the core SDK reads every
+    /// platform natively, including identifierForVendor on iOS and ANDROID_ID on
+    /// Android, so there is nothing JUCE-specific to substitute. On the scoped
+    /// platforms it produces an `mbd2s_` id; everywhere else the cross-SDK
+    /// hardware id.
+    ///
+    /// Static and public because a migrating configuration must wrap *this*, so it
+    /// keeps whatever the platform default is instead of hard-coding one:
     ///
     /// \code
     /// config.deviceIdResolver = std::make_shared<moonbase::migrating_device_id_resolver>(
@@ -321,39 +321,9 @@ struct ActivationConfig
     [[nodiscard]] static std::shared_ptr<moonbase::device_id_resolver> defaultDeviceIdResolver(
         bool allowHostNameFallback = false)
     {
-        // A constexpr flag with an ordinary `if`, rather than an #if around the
-        // returns: in a non-template function both branches are still compiled, so
-        // the mobile paths cannot rot unnoticed on a desktop-only CI matrix.
-        if (isAndroid)
-        {
-            // Android's only device identifier is scoped to the app signing key, so
-            // the id is scoped and stamped mbd2s_. Deliberately not
-            // juce::SystemStats::getUniqueDeviceID(): it hashes the string constant
-            // "android_id" rather than the device's value, so every JUCE Android app
-            // reports the same id. See android_device_id_resolver.h.
-            //
-            // allowHostNameFallback is ignored, as it is on iOS: the label is
-            // Build.MODEL on most devices, so hashing it would give a whole product
-            // line one id. build_fingerprint_material refuses it outright.
-            return std::make_shared<android_device_id_resolver>();
-        }
-
-        if (isMobileApple)
-        {
-            // iOS gets a *scoped* spec identity, stamped mbd2s_.
-            //
-            // iOS exposes no device identifier that unrelated applications can
-            // read: no hardware serial since iOS 7, and identifierForVendor is
-            // scoped to the App Store vendor. Cross-SDK parity is therefore
-            // impossible by construction, and the stamp says so rather than
-            // pretending otherwise.
-            //
-            // Note this excludes Mac Catalyst, which runs on macOS, can read IOKit,
-            // and so takes the cross-SDK hardware identity below.
-            return std::make_shared<ios_device_id_resolver>();
-        }
-
         moonbase::moonbase_device_id_resolver_options options;
+        // Ignored on iOS and Android: build_fingerprint_material refuses the
+        // host-name fallback there, where the name is the same on every device.
         options.fallback = allowHostNameFallback
             ? moonbase::device_id_fallback::device_name
             : moonbase::device_id_fallback::none;

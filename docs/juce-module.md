@@ -212,7 +212,9 @@ JUCE major bump. Full options in
 ### iOS and Android use a scoped identity
 
 On iOS and Android the module emits a **scoped** spec id, stamped `mbd2s_`, built
-from `identifierForVendor` and `ANDROID_ID` respectively.
+from `identifierForVendor` and `ANDROID_ID` respectively. Both readers live in the
+core SDK, not in this module: the fingerprint is framework-independent by design,
+so a non-JUCE app computes the same id.
 
 Neither platform exposes a device identifier that unrelated applications can read.
 iOS has had no accessible hardware serial since iOS 7, and `identifierForVendor` is

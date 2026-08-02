@@ -24,7 +24,8 @@ Add the module, fill in three fields, show one component.
   file is read, so it works inside a sandboxed host and gives the same id whether or
   not the process is elevated. iOS and Android have no identifier unrelated apps can
   read, so they get a *scoped* spec id (`mbd2s_`) that is stable within the
-  platform's own scope but not cross-SDK; see
+  platform's own scope but not cross-SDK. Every reader lives in the core SDK, which
+  needs no framework, so a non-JUCE app on the same device computes the same id; see
   [`docs/juce-module.md`](../../docs/juce-module.md#ios-and-android-use-a-scoped-identity).
   **Changed in 4.0.0**: see [Upgrading from 3.x](#upgrading-from-3x) if you have
   already shipped.

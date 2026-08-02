@@ -53,6 +53,18 @@ ActivationController::ActivationController(ActivationConfig config)
 
     auto store = std::make_shared<moonbase::file_license_store>(
         std::filesystem::path(file.getFullPathName().toStdString()));
+#if JUCE_ANDROID
+    // The one thing the core SDK cannot obtain by itself: an application Context.
+    // JUCE has one, so hand it over and the core's plain-JNI reader does the rest.
+    // Idempotent, so calling it per controller is fine.
+    if (auto* env = juce::getEnv())
+    {
+        JavaVM* vm = nullptr;
+        if (env->GetJavaVM(&vm) == 0)
+            moonbase::android::set_jni_environment(vm, juce::getAppContext().get());
+    }
+#endif
+
     auto deviceIds = config_.resolvedDeviceIdResolver();
     auto transport = std::make_shared<juce_http_transport>();
     // A second transport for the inventory (update) calls, so an update download
