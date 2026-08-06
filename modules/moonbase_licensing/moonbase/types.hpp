@@ -111,6 +111,10 @@ struct activation_request {
     std::string id;
     std::string request_url;
     std::string browser_url;
+    // The activation method this request was started with. Set client-side from
+    // the argument to request_activation: the client API returns only id/request/
+    // browser, so it is never read off the response.
+    activation_method method = activation_method::online;
 };
 
 struct licensing_options {
@@ -243,6 +247,7 @@ inline void to_json(nlohmann::json& json, const activation_request& value)
         {"id", value.id},
         {"request", value.request_url},
         {"browser", value.browser_url},
+        {"activationMethod", to_string(value.method)},
     };
 }
 
@@ -251,6 +256,12 @@ inline void from_json(const nlohmann::json& json, activation_request& value)
     json.at("id").get_to(value.id);
     json.at("request").get_to(value.request_url);
     json.at("browser").get_to(value.browser_url);
+    // Optional on purpose: this parses the API response, which carries only
+    // id/request/browser. request_activation stamps the requested method
+    // afterwards. The key is only present when round-tripping our own to_json.
+    value.method = (json.contains("activationMethod") && json.at("activationMethod").is_string())
+        ? activation_method_from_string(json.at("activationMethod").get<std::string>())
+        : activation_method::online;
 }
 
 } // namespace moonbase

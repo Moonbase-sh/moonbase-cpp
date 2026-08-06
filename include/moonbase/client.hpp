@@ -156,11 +156,14 @@ public:
         }
     }
 
-    [[nodiscard]] activation_request request_activation() const
+    [[nodiscard]] activation_request request_activation(
+        activation_method method = activation_method::online) const
     {
-        const auto url = detail::append_query(
-            detail::request_path(options_),
-            detail::client_query(options_));
+        // Only the request endpoint accepts "method"; client_query is shared
+        // with /validate and /revoke, which do not, so add it here.
+        auto query = detail::client_query(options_);
+        query["method"] = to_string(method);
+        const auto url = detail::append_query(detail::request_path(options_), query);
 
         const auto payload = nlohmann::json{
             {"deviceName", device_ids_->device_name()},
@@ -181,7 +184,11 @@ public:
         }
 
         try {
-            return nlohmann::json::parse(response.body).get<activation_request>();
+            auto result = nlohmann::json::parse(response.body).get<activation_request>();
+            // The response carries only id/request/browser, so record what we
+            // asked for rather than leaving the default.
+            result.method = method;
+            return result;
         } catch (const std::exception& ex) {
             throw api_error(
                 static_cast<int>(response.status_code),

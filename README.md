@@ -91,6 +91,21 @@ while (!license) {
 licensing.store().store_local_license(*license);
 ```
 
+`request_activation` takes an optional `moonbase::activation_method`. Pass
+`activation_method::offline` to have the same browser flow mint an *offline*
+license instead:
+
+```cpp
+auto request = licensing.request_activation(moonbase::activation_method::offline);
+```
+
+The URL, the polling and the storage step are unchanged, but the resulting token
+carries `method: Offline`, so it is validated locally for good
+(`validate_token_online` short-circuits it) and
+[cannot be revoked](#revoking-an-activation). The product must have offline
+activations enabled in Moonbase, otherwise the call throws
+`license_invalid_error` reading "Product does not allow offline activations".
+
 On startup, validate the stored token. `validate_token_online` runs the local
 checks (signature, device fingerprint, expiry) and then re-validates against the
 Moonbase API when needed:
@@ -141,6 +156,18 @@ same way they do for `validate_token_online`, but with no grace-period
 fallback — revoke is a one-shot operation.
 
 ## Offline Activation
+
+There are two routes to an offline license, and which one fits depends on
+whether the machine has network *at activation time*:
+
+- **It does:** run the normal browser activation and ask for an offline license
+  with [`request_activation(activation_method::offline)`](#basic-usage).
+  Nothing else about the flow changes.
+- **It does not:** use the file-based exchange below, which involves no network
+  on the device at all.
+
+Either way the resulting token is permanent and unrevokable; it stays valid until
+the machine's device fingerprint changes.
 
 For machines without internet access, Moonbase supports a file-based flow: the
 app emits a **device token** ("machine file"), the user exchanges it for a

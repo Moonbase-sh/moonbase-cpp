@@ -163,6 +163,59 @@ TEST_CASE("validate_token_online never contacts the API for offline-activated to
     CHECK(fixture.transport->requests.empty());
 }
 
+TEST_CASE("request_activation defaults to an online license")
+{
+    facade_fixture fixture;
+    fixture.transport->responses.push_back(http_response{
+        200,
+        {},
+        R"({"id":"request-123","request":"https://demo.moonbase.sh/api/client/activations/request-123","browser":"https://demo.moonbase.sh/activate?token=request-123"})"});
+
+    const auto request = fixture.instance.request_activation();
+
+    CHECK(request.method == activation_method::online);
+    REQUIRE(fixture.transport->requests.size() == 1);
+    CHECK(fixture.transport->requests.front().url.find("method=Online") != std::string::npos);
+}
+
+TEST_CASE("a browser activation requested as offline yields an offline license")
+{
+    facade_fixture fixture;
+    fixture.transport->responses.push_back(http_response{
+        200,
+        {},
+        R"({"id":"request-123","request":"https://demo.moonbase.sh/api/client/activations/request-123","browser":"https://demo.moonbase.sh/activate?token=request-123"})"});
+
+    const auto request = fixture.instance.request_activation(activation_method::offline);
+
+    CHECK(request.method == activation_method::offline);
+    REQUIRE(fixture.transport->requests.size() == 1);
+    CHECK(fixture.transport->requests.front().url.find("method=Offline") != std::string::npos);
+
+    // The backend mints a token carrying method: Offline once the user finishes
+    // in the browser. Polling is identical to the online flow.
+    auto claims = moonbase::tests::default_claims();
+    claims["method"] = "Offline";
+    claims["validated"] = moonbase::tests::now_seconds() - (24 * 60 * 60 * 365); // ancient
+    fixture.transport->responses.push_back(
+        http_response{200, {}, fixture.make_token(claims)});
+
+    const auto activated = fixture.instance.get_requested_activation(request);
+
+    REQUIRE(activated.has_value());
+    CHECK(activated->method == activation_method::offline);
+    CHECK(fixture.transport->requests.size() == 2);
+
+    // From here it behaves like any other offline license: validated locally
+    // however stale it is, and never revocable.
+    CHECK(fixture.instance.validate_token_online(activated->token).method ==
+          activation_method::offline);
+    CHECK_THROWS_AS(
+        fixture.instance.revoke_activation(activated->token),
+        operation_not_supported_error);
+    CHECK(fixture.transport->requests.size() == 2); // neither call hit the API
+}
+
 TEST_CASE("generate_device_token emits a base64 JSON descriptor of the device and product")
 {
     facade_fixture fixture;

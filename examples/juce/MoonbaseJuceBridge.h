@@ -646,11 +646,30 @@ public:
     // Begins a new browser activation. Returns the URL to hand to
     // juce::URL::launchInDefaultBrowser. Throws moonbase::api_error on
     // network/server failure.
-    juce::URL beginActivation()
+    //
+    // Pass moonbase::activation_method::offline to have the browser flow mint an
+    // offline license instead: same URL, same polling, but the resulting token
+    // never revalidates against the API and cannot be revoked. Requires the
+    // product to have offline activations enabled, otherwise this throws
+    // moonbase::license_invalid_error. Unlike deviceTokenContents() /
+    // activateOffline(), this route needs network on the device at activation
+    // time.
+    juce::URL beginActivation(
+        moonbase::activation_method method = moonbase::activation_method::online)
     {
         const juce::ScopedLock lock(stateLock_);
-        pendingRequest_ = licensing_->request_activation();
+        pendingRequest_ = licensing_->request_activation(method);
         return juce::URL(juce::String(pendingRequest_->browser_url));
+    }
+
+    // The method the in-flight browser activation was started with, or nullopt
+    // when none is pending. Lets a UI label the wait ("Activating offline...").
+    [[nodiscard]] std::optional<moonbase::activation_method> pendingActivationMethod() const
+    {
+        const juce::ScopedLock lock(stateLock_);
+        if (!pendingRequest_)
+            return std::nullopt;
+        return pendingRequest_->method;
     }
 
     // Non-blocking poll. Returns true the first call after the user finishes

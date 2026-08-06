@@ -164,6 +164,32 @@ void timerCallback() override
 `pollPendingActivation()` is non-blocking. The poll cadence is up to you;
 once a second is plenty for a UI-driven flow.
 
+`beginActivation()` takes an optional `moonbase::activation_method`. Pass
+`activation_method::offline` to have the same browser flow mint an offline
+license instead:
+
+```cpp
+const auto url = unlockStatus.beginActivation(moonbase::activation_method::offline);
+```
+
+Only the query the bridge sends changes; the URL you launch, the polling and the
+resulting unlock are identical. The token it produces carries
+`method: Offline`, so it is never re-validated online and can't be revoked. The
+product must have offline activations enabled in Moonbase, otherwise
+`beginActivation` throws `moonbase::license_invalid_error`. Use
+`pendingActivationMethod()` to label the wait while the poll is in flight:
+
+```cpp
+const auto pending = unlockStatus.pendingActivationMethod();
+statusLabel.setText(pending == moonbase::activation_method::offline
+                        ? "Activating offline..."
+                        : "Waiting for activation...",
+                    juce::dontSendNotification);
+```
+
+Unlike `deviceTokenContents()` / `activateOffline()` below, this route needs
+network on the device at activation time; it just doesn't need any afterwards.
+
 ## Deactivating
 
 Two paths, depending on whether you want to free the seat server-side:
@@ -202,9 +228,12 @@ unlockStatus.revokeActivationAsync(
 
 ## Offline activation
 
-For machines without internet access, the bridge wraps Moonbase's file-based
-flow. Emit a device token ("machine file"), have the user exchange it for a
-license token, then load the token back in:
+For machines that have network at activation time but not afterwards, prefer
+[`beginActivation(activation_method::offline)`](#activation-flow) above.
+
+For machines with no internet access at all, the bridge wraps Moonbase's
+file-based flow. Emit a device token ("machine file"), have the user exchange it
+for a license token, then load the token back in:
 
 ```cpp
 // Step 1: write the machine file for the user to upload.
