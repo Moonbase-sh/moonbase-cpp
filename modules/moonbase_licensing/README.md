@@ -5,6 +5,12 @@ drop-in [JUCE module](https://github.com/juce-framework/JUCE/blob/master/docs/JU
 Add the module, fill in three fields, show one component.
 
 <p align="center">
+  <img src="../../assets/moonbase-juce-welcome.png" width="66%"
+       alt="Welcome screen: the product logo and name, an 'Activate Solstice' heading, the line 'Unlock the full plugin through your Helio Audio account.', an 'Activate online' button, a 'No internet? Activate offline' link, and a 'Licensing secured by moonbase' footer.">
+</p>
+<p align="center"><em>Where activation starts: one button for the browser flow, an offline fallback, and your branding.</em></p>
+
+<p align="center">
   <img src="../../assets/moonbase-juce-trial.png" width="49%"
        alt="Trial screen: a free-trial panel with days remaining, a progress bar, and an Unlock full version button.">
   <img src="../../assets/moonbase-juce-license.png" width="49%"
