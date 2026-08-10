@@ -78,6 +78,76 @@ int drawBrand(Graphics& g, const ActivationLookAndFeel& lnf, const juce::Drawabl
     return row.getHeight();
 }
 
+// Shared geometry for the small header pills ("TRIAL · N DAYS LEFT", "TRIAL
+// EXPIRED", "Active", "Update available"). One set of pads so they read as one
+// family, and one measure path that takes the label exactly as it will be drawn
+// (case included), so the padding can't be eaten by the glyphs.
+namespace pill {
+
+constexpr float sidePad = 12.0f; // left/right breathing room
+constexpr float gap = 7.0f;      // leading dot or icon -> label
+constexpr float dotD = 6.0f;
+constexpr float iconSz = 14.0f;
+
+// Where the label starts. Single source of truth for width() and labelArea(),
+// so the measured width and the drawn label can't disagree.
+[[nodiscard]] inline float labelOffset(float ornamentW)
+{
+    return sidePad + (ornamentW > 0.0f ? ornamentW + gap : 0.0f);
+}
+
+// `drawnLabel` must be the final string (already uppercased if it will be drawn
+// that way). `ornamentW` is 0 for a text-only pill.
+[[nodiscard]] inline float width(const juce::Font& f, const juce::String& drawnLabel,
+                                 float ornamentW = 0.0f)
+{
+    return labelOffset(ornamentW) + juce::GlyphArrangement::getStringWidth(f, drawnLabel) + sidePad;
+}
+
+// Right-anchored in `slot`, clear of `rightInset` (the close button).
+[[nodiscard]] inline Rectangle<float> rightAlignedIn(Rectangle<int> slot, int rightInset,
+                                                     float w, float h, int centreY)
+{
+    return Rectangle<float>(0, 0, w, h).withCentre(
+        { (float) (slot.getRight() - rightInset) - w * 0.5f, (float) centreY });
+}
+
+// Fill plus an optional 1px inset border. The radius is always height/2, which
+// is what every pill already used (22 -> 11, 24 -> 12).
+inline void background(Graphics& g, Rectangle<float> pb, Colour fill, Colour border = Colour())
+{
+    const float radius = pb.getHeight() * 0.5f;
+    g.setColour(fill);
+    g.fillRoundedRectangle(pb, radius);
+    if (! border.isTransparent())
+    {
+        g.setColour(border);
+        g.drawRoundedRectangle(pb.reduced(0.5f), radius, 1.0f);
+    }
+}
+
+// Leading status dot, at sidePad and vertically centred.
+inline void dot(Graphics& g, Rectangle<float> pb, Colour c)
+{
+    g.setColour(c);
+    g.fillEllipse(pb.getX() + sidePad, pb.getCentreY() - dotD * 0.5f, dotD, dotD);
+}
+
+// Square area for a leading icon, at sidePad and vertically centred.
+[[nodiscard]] inline Rectangle<float> iconArea(Rectangle<float> pb)
+{
+    return { pb.getX() + sidePad, pb.getCentreY() - iconSz * 0.5f, iconSz, iconSz };
+}
+
+// Label rect after a leading ornament of width `ornamentW` (0 = none). Draw into
+// it with Justification::centredLeft.
+[[nodiscard]] inline Rectangle<float> labelArea(Rectangle<float> pb, float ornamentW)
+{
+    return pb.withTrimmedLeft(labelOffset(ornamentW));
+}
+
+} // namespace pill
+
 } // namespace
 
 //==============================================================================
@@ -286,30 +356,21 @@ public:
 
     [[nodiscard]] int preferredWidth() const
     {
-        const float tw = juce::GlyphArrangement::getStringWidth(lnf.heading(11.0f), getButtonText());
-        return (int) std::ceil(leftPad + iconSz + gap + tw + rightPad);
+        return (int) std::ceil(pill::width(lnf.heading(11.0f), getButtonText(), pill::iconSz));
     }
 
     void paintButton(Graphics& g, bool over, bool /*down*/) override
     {
         auto r = getLocalBounds().toFloat();
-        const float radius = r.getHeight() * 0.5f;
-        g.setColour(lnf.accent.withAlpha(over ? 0.26f : 0.16f));
-        g.fillRoundedRectangle(r, radius);
-        g.setColour(lnf.accent.withAlpha(0.45f));
-        g.drawRoundedRectangle(r.reduced(0.5f), radius, 1.0f);
+        pill::background(g, r, lnf.accent.withAlpha(over ? 0.26f : 0.16f), lnf.accent.withAlpha(0.45f));
         if (auto ic = icons::fromStroke(icons::downloadTray, lnf.accent, 1.9f))
-            ic->drawWithin(g, { r.getX() + leftPad, r.getCentreY() - iconSz * 0.5f, iconSz, iconSz },
-                           juce::RectanglePlacement::centred, 1.0f);
+            ic->drawWithin(g, pill::iconArea(r), juce::RectanglePlacement::centred, 1.0f);
         g.setColour(lnf.palette.textPrimary);
         g.setFont(lnf.heading(11.0f));
-        g.drawText(getButtonText(),
-                   r.withTrimmedLeft(leftPad + iconSz + gap).withTrimmedRight(rightPad * 0.5f),
-                   Justification::centredLeft);
+        g.drawText(getButtonText(), pill::labelArea(r, pill::iconSz), Justification::centredLeft);
     }
 
 private:
-    static constexpr float leftPad = 10.0f, iconSz = 13.0f, gap = 6.0f, rightPad = 12.0f;
     ActivationLookAndFeel& lnf;
 };
 
@@ -1142,22 +1203,27 @@ public:
     {
         const auto layout = computeLayout();
 
+        // Uppercase before measuring: the pill is drawn in caps, which are wider
+        // than mixed case, so measuring the mixed-case string would eat the pads.
+        const int days = controller.trialDaysRemaining();
+        const auto pillText = (u8("Trial") + kMidDot + juce::String(days)
+                               + (days == 1 ? " day left" : " days left")).toUpperCase();
+        auto pf = lnf.heading(10.5f);
+        const float pw = pill::width(pf, pillText);
+
+        // Reserve the pill's real width (plus the close-button inset and a gap) so
+        // the brand lockup can never run into it.
         auto headerRow = layout.header;
-        auto pill = headerRow.removeFromRight(150);
+        headerRow.removeFromRight((int) std::ceil(pw) + headerRightInset + 12);
         drawBrand(g, lnf, controller.config().logo.get(), headerRow, controller.config().resolvedProductName(),
                   controller.config().resolvedManufacturerName(), 34.0f, 15.0f);
 
-        const int days = controller.trialDaysRemaining();
-        auto pillText = u8("Trial") + kMidDot + juce::String(days) + (days == 1 ? " day left" : " days left");
-        auto pf = lnf.heading(10.5f);
-        const float pw = juce::GlyphArrangement::getStringWidth(pf, pillText) + 22.0f;
-        auto pb = Rectangle<float>(0, 0, pw, 22).withCentre(
-            { (float) (pill.getRight() - headerRightInset) - pw * 0.5f, (float) layout.header.getCentreY() });
-        g.setColour(lnf.palette.trial);
-        g.fillRoundedRectangle(pb, 11.0f);
+        const auto pb = pill::rightAlignedIn(layout.header, headerRightInset, pw, 22.0f,
+                                             layout.header.getCentreY());
+        pill::background(g, pb, lnf.palette.trial);
         g.setColour(Colour(0xff131519));
         g.setFont(pf);
-        g.drawText(pillText.toUpperCase(), pb, Justification::centred);
+        g.drawText(pillText, pb, Justification::centred);
 
         g.setColour(lnf.palette.textPrimary);
         g.setFont(lnf.heading(24.0f));
@@ -1379,21 +1445,12 @@ private:
     {
         const juce::String label = juce::String("Trial expired").toUpperCase();
         auto pf = lnf.heading(10.5f);
-        const float tw = juce::GlyphArrangement::getStringWidth(pf, label);
-        const float leftPad = 11.0f, dotD = 6.0f, gap = 7.0f, rightPad = 12.0f;
-        const float pw = leftPad + dotD + gap + tw + rightPad;
-        auto pb = Rectangle<float>(0, 0, pw, 22.0f).withCentre(
-            { (float) (slot.getRight() - headerRightInset) - pw * 0.5f, (float) centreY });
-        g.setColour(Colour(0x1edc5050));
-        g.fillRoundedRectangle(pb, 11.0f);
-        g.setColour(Colour(0x52dc5050));
-        g.drawRoundedRectangle(pb, 11.0f, 1.0f);
-        g.setColour(lnf.palette.error);
-        g.fillEllipse(pb.getX() + leftPad, pb.getCentreY() - dotD * 0.5f, dotD, dotD);
+        const auto pb = pill::rightAlignedIn(slot, headerRightInset,
+                                             pill::width(pf, label, pill::dotD), 22.0f, centreY);
+        pill::background(g, pb, Colour(0x1edc5050), Colour(0x52dc5050));
+        pill::dot(g, pb, lnf.palette.error);
         g.setFont(pf);
-        g.drawText(label,
-                   Rectangle<float>(pb.getX() + leftPad + dotD + gap, pb.getY(), tw + 2.0f, pb.getHeight()),
-                   Justification::centredLeft);
+        g.drawText(label, pill::labelArea(pb, pill::dotD), Justification::centredLeft);
     }
 
     std::unique_ptr<StyledButton> unlock;
@@ -1623,9 +1680,7 @@ private:
 
     [[nodiscard]] float activePillWidth() const
     {
-        // Mirrors drawActivePill: leftPad + dot + gap + text + rightPad.
-        const float tw = juce::GlyphArrangement::getStringWidth(lnf.heading(11.0f), "Active");
-        return 11.0f + 6.0f + 7.0f + tw + 12.0f;
+        return pill::width(lnf.heading(11.0f), "Active", pill::dotD);
     }
 
     // Bounds of the "Active" pill in this view's coordinates (single source of
@@ -1678,18 +1733,11 @@ private:
     {
         const juce::String label = "Active";
         auto font = lnf.heading(11.0f);
-        const float tw = juce::GlyphArrangement::getStringWidth(font, label);
-        const float leftPad = 11.0f, dotD = 6.0f, gap = 7.0f;
         const auto pb = activePillBounds().toFloat();
-        g.setColour(lnf.palette.successFill);
-        g.fillRoundedRectangle(pb, 12.0f);
-        g.setColour(lnf.palette.successBorder);
-        g.drawRoundedRectangle(pb, 12.0f, 1.0f);
-        g.setColour(lnf.palette.success);
-        g.fillEllipse(pb.getX() + leftPad, pb.getCentreY() - dotD * 0.5f, dotD, dotD);
+        pill::background(g, pb, lnf.palette.successFill, lnf.palette.successBorder);
+        pill::dot(g, pb, lnf.palette.success);
         g.setFont(font);
-        g.drawText(label, Rectangle<float>(pb.getX() + leftPad + dotD + gap, pb.getY(), tw + 2.0f, pb.getHeight()),
-                   Justification::centredLeft);
+        g.drawText(label, pill::labelArea(pb, pill::dotD), Justification::centredLeft);
     }
 
     static juce::String expiryText(const moonbase::license& lic)
@@ -1982,23 +2030,16 @@ private:
     {
         const juce::String text = "Update available";
         auto pf = lnf.heading(11.5f);
-        const float iconSz = 14.0f, lpad = 11.0f, gap = 7.0f, rpad = 12.0f;
-        const float tw = juce::GlyphArrangement::getStringWidth(pf, text);
-        const float pw = lpad + iconSz + gap + tw + rpad;
-        auto pb = Rectangle<float>(0, 0, pw, 24.0f)
-                      .withCentre({ (float) slot.getX() + pw * 0.5f, (float) slot.getCentreY() });
-        g.setColour(lnf.accent.withAlpha(0.16f));
-        g.fillRoundedRectangle(pb, 12.0f);
-        g.setColour(lnf.accent.withAlpha(0.40f));
-        g.drawRoundedRectangle(pb, 12.0f, 1.0f);
+        // Left-anchored in its slot, unlike the header pills.
+        const float pw = pill::width(pf, text, pill::iconSz);
+        const auto pb = Rectangle<float>(0, 0, pw, 24.0f)
+                            .withCentre({ (float) slot.getX() + pw * 0.5f, (float) slot.getCentreY() });
+        pill::background(g, pb, lnf.accent.withAlpha(0.16f), lnf.accent.withAlpha(0.40f));
         if (auto ic = icons::fromStroke(icons::downloadTray, lnf.accent, 1.9f))
-            ic->drawWithin(g, { pb.getX() + lpad, pb.getCentreY() - iconSz * 0.5f, iconSz, iconSz },
-                           juce::RectanglePlacement::centred, 1.0f);
+            ic->drawWithin(g, pill::iconArea(pb), juce::RectanglePlacement::centred, 1.0f);
         g.setColour(lnf.palette.textPrimary);
         g.setFont(pf);
-        g.drawText(text, Rectangle<float>(pb.getX() + lpad + iconSz + gap, pb.getY(), tw + 2.0f,
-                                          pb.getHeight()),
-                   Justification::centredLeft);
+        g.drawText(text, pill::labelArea(pb, pill::iconSz), Justification::centredLeft);
     }
 
     void drawStatusRow(Graphics& g, Rectangle<int> row, const ActivationController::UpdateInfo& info) const
