@@ -1,3 +1,10 @@
+## [4.0.1](https://github.com/Moonbase-sh/moonbase-cpp/compare/v4.0.0...v4.0.1) (2026-08-10)
+
+
+### Bug Fixes
+
+* **juce:** give the trial pill honest side padding ([#22](https://github.com/Moonbase-sh/moonbase-cpp/issues/22)) ([a39e872](https://github.com/Moonbase-sh/moonbase-cpp/commit/a39e872fb9d40c6799c331a6cd0769cbf92dba65))
+
 # [4.0.0](https://github.com/Moonbase-sh/moonbase-cpp/compare/v3.3.0...v4.0.0) (2026-08-02)
 
 
