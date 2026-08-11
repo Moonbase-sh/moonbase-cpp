@@ -61,9 +61,24 @@ public:
         client_ = std::make_shared<license_client>(options_, device_ids_, validator_, transport_);
     }
 
-    [[nodiscard]] activation_request request_activation() const
+    // Starts a browser activation. Poll the returned request with
+    // get_requested_activation until it yields a license.
+    //
+    // method (optional): pass activation_method::offline to ask the backend for
+    // an offline license. The browser flow itself is identical, but the token it
+    // mints carries method: Offline, so it is validated locally for good
+    // (validate_token_online short-circuits it) and cannot be revoked. The
+    // product must have offline activations enabled, otherwise the call throws
+    // license_invalid_error reading "Product does not allow offline activations".
+    //
+    // This is the second route to an offline license, alongside the file-based
+    // generate_device_token / read_offline_license exchange. Use this one when
+    // the machine has network at activation time but not afterwards; use the
+    // file exchange when it has no network at all.
+    [[nodiscard]] activation_request request_activation(
+        activation_method method = activation_method::online) const
     {
-        return client_->request_activation();
+        return client_->request_activation(method);
     }
 
     [[nodiscard]] std::optional<license> get_requested_activation(

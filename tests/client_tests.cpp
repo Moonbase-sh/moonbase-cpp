@@ -77,6 +77,7 @@ TEST_CASE("request_activation posts device information and parses response")
     CHECK(request.method == "POST");
     CHECK(request.url.find("https://demo.moonbase.sh/api/client/activations/demo-app/request?") == 0);
     CHECK(request.url.find("format=JWT") != std::string::npos);
+    CHECK(request.url.find("method=Online") != std::string::npos);
     CHECK(request.url.find("platform=Mac") != std::string::npos);
     CHECK(request.url.find("appVersion=1.2.3") != std::string::npos);
     CHECK(request.url.find("meta%5Bchannel%5D=test") != std::string::npos);
@@ -90,6 +91,54 @@ TEST_CASE("request_activation posts device information and parses response")
     const auto body = nlohmann::json::parse(request.body);
     CHECK(body.at("deviceName") == "Test Device");
     CHECK(body.at("deviceSignature") == "device-id");
+
+    CHECK(response.method == activation_method::online);
+}
+
+TEST_CASE("request_activation asks for an offline license")
+{
+    client_fixture fixture({
+        http_response{
+            200,
+            {},
+            R"({"id":"request-123","request":"https://demo.moonbase.sh/api/client/activations/request-123?format=JWT","browser":"https://demo.moonbase.sh/activate?token=request-123"})"},
+    });
+
+    const auto response = fixture.client.request_activation(activation_method::offline);
+
+    // The response carries no method, so the client records what it asked for.
+    CHECK(response.method == activation_method::offline);
+    CHECK(response.id == "request-123");
+
+    REQUIRE(fixture.transport->requests.size() == 1);
+    const auto& request = fixture.transport->requests.front();
+    CHECK(request.url.find("method=Offline") != std::string::npos);
+    CHECK(request.url.find("method=Online") == std::string::npos);
+
+    // Everything other than the method is unchanged from the online request.
+    CHECK(request.method == "POST");
+    CHECK(request.url.find("https://demo.moonbase.sh/api/client/activations/demo-app/request?") == 0);
+    CHECK(request.url.find("format=JWT") != std::string::npos);
+    CHECK(request.headers.at("Content-Type") == "application/json");
+
+    const auto body = nlohmann::json::parse(request.body);
+    CHECK(body.at("deviceName") == "Test Device");
+    CHECK(body.at("deviceSignature") == "device-id");
+}
+
+TEST_CASE("request_activation reports a product that disallows offline activations")
+{
+    client_fixture fixture({
+        http_response{
+            400,
+            {},
+            R"({"title":"Not allowed","detail":"Product does not allow offline activations"})"},
+    });
+
+    CHECK_THROWS_WITH_AS(
+        (void)fixture.client.request_activation(activation_method::offline),
+        "Product does not allow offline activations",
+        license_invalid_error);
 }
 
 TEST_CASE("request_activation throws for API errors")
@@ -161,6 +210,8 @@ TEST_CASE("validate_token_online posts the JWT and parses the refreshed response
     CHECK(request.method == "POST");
     CHECK(request.url.find("https://demo.moonbase.sh/api/client/licenses/demo-app/validate?") == 0);
     CHECK(request.url.find("format=JWT") != std::string::npos);
+    // "method" is only accepted on the request endpoint.
+    CHECK(request.url.find("method=") == std::string::npos);
     CHECK(request.url.find("platform=Mac") != std::string::npos);
     CHECK(request.url.find("appVersion=1.2.3") != std::string::npos);
     CHECK(request.url.find("meta%5Bchannel%5D=test") != std::string::npos);
@@ -213,6 +264,8 @@ TEST_CASE("revoke_activation posts the JWT to the revoke endpoint")
     CHECK(request.method == "POST");
     CHECK(request.url.find("https://demo.moonbase.sh/api/client/licenses/demo-app/revoke?") == 0);
     CHECK(request.url.find("format=JWT") != std::string::npos);
+    // "method" is only accepted on the request endpoint.
+    CHECK(request.url.find("method=") == std::string::npos);
     CHECK(request.url.find("platform=Mac") != std::string::npos);
     CHECK(request.url.find("appVersion=1.2.3") != std::string::npos);
     CHECK(request.url.find("meta%5Bchannel%5D=test") != std::string::npos);
