@@ -1,3 +1,10 @@
+# [4.1.0](https://github.com/Moonbase-sh/moonbase-cpp/compare/v4.0.1...v4.1.0) (2026-08-11)
+
+
+### Features
+
+* request an offline license from the browser activation flow ([#20](https://github.com/Moonbase-sh/moonbase-cpp/issues/20)) ([391468a](https://github.com/Moonbase-sh/moonbase-cpp/commit/391468aa0eaa83bc8900ca01781d8f83888c1f25))
+
 ## [4.0.1](https://github.com/Moonbase-sh/moonbase-cpp/compare/v4.0.0...v4.0.1) (2026-08-10)
 
 
