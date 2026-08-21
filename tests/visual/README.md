@@ -42,8 +42,30 @@ PNG per state:
 | `12-update-downloading` | Update installer downloading (progress bar) |
 | `13-update-error` | Update details failed to load (error) |
 | `14-update-gated` | Update the license can't download (Unlock CTA) |
+| `15-theme-ember-welcome` | Welcome, "Ember" theme (warm near-black, amber, monospaced) |
+| `16-theme-ember-activating` | Browser activation, Ember (spinner arc + track) |
+| `17-theme-ember-trial` | Trial, Ember (pill, progress gradient, feature list) |
+| `18-theme-daylight-success` | Just activated, "Daylight" theme (light) |
+| `19-theme-daylight-details` | License details, Daylight (cards, seat pips) |
+| `20-theme-daylight-offline` | Offline flow, Daylight (drop zone, links) |
+| `21-theme-forest-expired` | Trial ended, "Understory" theme (deep green, danger tokens) |
+| `22-theme-forest-update` | Update ready, Understory (notes card + scrollbar) |
 
 Add a state by adding a `writeSnapshot(...)` call.
+
+## Themes
+
+`15` onwards render the same UI through `config.palette` + `config.fonts`, the
+module's re-skin seam. They are the regression net for the colour tokens: a
+colour still hardcoded in `ActivationComponent.cpp` shows up here as stock
+blue-grey chrome, a cyan glow or a white wash on a panel that has none. The
+three themes (`emberTheme()`, `daylightTheme()`, `forestTheme()` in
+`snapshot_main.cpp`) are deliberately unalike, and between them the eight screens
+touch every token in `ActivationPalette`.
+
+Ember also exercises the typeface seam. It routes all three font roles through
+`fonts.makeFont` to the platform's monospaced face rather than bundling a
+typeface, so the render stays reproducible on any machine.
 
 ## Run locally
 

@@ -203,7 +203,7 @@ public:
             if (down) col = col.darker(0.05f);
             g.setColour(col);
             g.fillRoundedRectangle(r, radius);
-            textColour = juce::Colours::white;
+            textColour = lnf.palette.onAccent;
         }
         else if (style == Style::danger)
         {
@@ -405,7 +405,7 @@ public:
         auto r = getLocalBounds().toFloat().reduced(1.0f);
         const bool has = fileName.isNotEmpty();
 
-        g.setColour(dragOver ? lnf.palette.ghostHover : Colour(0x06ffffff));
+        g.setColour(dragOver ? lnf.palette.ghostHover : lnf.palette.cardFill);
         g.fillRoundedRectangle(r, 10.0f);
 
         const auto borderCol = dragOver ? lnf.accent
@@ -792,14 +792,14 @@ private:
         auto ring = sb.reduced(thickness * 0.5f + 1.0f);
         juce::Path track;
         track.addEllipse(ring);
-        g.setColour(Colour(0x26ffffff));
+        g.setColour(lnf.palette.spinnerTrack);
         g.strokePath(track, juce::PathStrokeType(thickness));
 
         juce::Path arc;
         const float start = spinPhase * kTwoPi;
         arc.addCentredArc(ring.getCentreX(), ring.getCentreY(), ring.getWidth() * 0.5f,
                           ring.getHeight() * 0.5f, 0.0f, start, start + kPi * 0.6f, true);
-        g.setColour(Colour(0xff82cef1));
+        g.setColour(lnf.palette.glow);
         g.strokePath(arc, juce::PathStrokeType(thickness, juce::PathStrokeType::curved,
                                                juce::PathStrokeType::rounded));
     }
@@ -811,7 +811,7 @@ private:
         const float tw = juce::GlyphArrangement::getStringWidth(chipFont, chipText);
         auto chip = Rectangle<float>(0, 0, juce::jmin((float) getWidth(), tw + 52.0f), 32.0f)
                         .withCentre({ (float) getWidth() * 0.5f, (float) row.getCentreY() });
-        g.setColour(Colour(0x0affffff));
+        g.setColour(lnf.palette.ghostFill);
         g.fillRoundedRectangle(chip, 16.0f);
         g.setColour(lnf.palette.ghostBorder);
         g.drawRoundedRectangle(chip, 16.0f, 1.0f);
@@ -894,7 +894,7 @@ public:
         // Mini card (anchored above the buttons).
         auto card = cardRow.withSizeKeepingCentre(juce::jmin(380, getWidth()),
                                                   juce::jmin(86, cardRow.getHeight()));
-        g.setColour(Colour(0x06ffffff));
+        g.setColour(lnf.palette.cardFill);
         g.fillRoundedRectangle(card.toFloat(), 12.0f);
         g.setColour(lnf.palette.panelBorder);
         g.drawRoundedRectangle(card.toFloat(), 12.0f, 1.0f);
@@ -958,7 +958,7 @@ public:
 
         saveMachine = std::make_unique<StyledButton>(
             l, StyledButton::Style::ghost, u8("Save machine file\xe2\x80\xa6"),
-            icons::fromStroke(icons::fileDown, Colour(0xff82cef1), 1.6f));
+            icons::fromStroke(icons::fileDown, l.palette.glow, 1.6f));
         saveMachine->onClick = [this] { chooseMachineFileLocation(); };
         addAndMakeVisible(*saveMachine);
 
@@ -1073,7 +1073,7 @@ private:
         auto badge = row.removeFromLeft(20).withSizeKeepingCentre(20, 20).toFloat();
         g.setColour(lnf.accent);
         g.fillEllipse(badge);
-        g.setColour(juce::Colours::white);
+        g.setColour(lnf.palette.onAccent);
         g.setFont(lnf.heading(11.0f));
         g.drawText(juce::String(number), badge, Justification::centred);
         row.removeFromLeft(10);
@@ -1176,7 +1176,7 @@ public:
     TrialView(ActivationController& c, ActivationLookAndFeel& l) : ScreenView(c, l)
     {
         unlock = std::make_unique<StyledButton>(l, StyledButton::Style::accent, "Unlock full version",
-                                                icons::fromStroke(icons::lock, juce::Colours::white, 1.8f));
+                                                icons::fromStroke(icons::lock, l.palette.onAccent, 1.8f));
         unlock->onClick = [this] { controller.beginOnlineActivation(); };
         addAndMakeVisible(*unlock);
 
@@ -1192,8 +1192,8 @@ public:
         // only shows when the list overflows (default autohide keeps it out of the
         // way for a list that fits, which renders as a plain checklist).
         auto& scrollbar = featuresViewport.getVerticalScrollBar();
-        scrollbar.setColour(juce::ScrollBar::thumbColourId, Colour(0x80ffffff));
-        scrollbar.setColour(juce::ScrollBar::trackColourId, Colour(0x1affffff));
+        scrollbar.setColour(juce::ScrollBar::thumbColourId, l.palette.scrollThumb);
+        scrollbar.setColour(juce::ScrollBar::trackColourId, l.palette.scrollTrack);
         addAndMakeVisible(featuresViewport);
     }
 
@@ -1221,7 +1221,7 @@ public:
         const auto pb = pill::rightAlignedIn(layout.header, headerRightInset, pw, 22.0f,
                                              layout.header.getCentreY());
         pill::background(g, pb, lnf.palette.trial);
-        g.setColour(Colour(0xff131519));
+        g.setColour(lnf.palette.onTrial);
         g.setFont(pf);
         g.drawText(pillText, pb, Justification::centred);
 
@@ -1235,13 +1235,13 @@ public:
                          layout.subtitle.getWidth(), layout.subtitle.getHeight(), Justification::topLeft, 4, 1.0f);
 
         const auto bar = layout.bar;
-        g.setColour(Colour(0x12ffffff));
+        g.setColour(lnf.palette.trackFill);
         g.fillRoundedRectangle(bar.toFloat(), 3.0f);
         const int total = controller.config().trialLengthDays;
         const float frac = total > 0 ? juce::jlimit(0.0f, 1.0f, (float) days / (float) total) : 0.0f;
         auto fill = bar.toFloat().withWidth((float) bar.getWidth() * frac);
         g.setGradientFill(juce::ColourGradient(lnf.palette.trial, fill.getX(), 0,
-                                               Colour(0xfff5c542), fill.getRight(), 0, false));
+                                               lnf.palette.trialBright, fill.getRight(), 0, false));
         g.fillRoundedRectangle(fill, 3.0f);
 
         // When the list is longer than the band, frame it as a bounded, scrollable
@@ -1251,7 +1251,7 @@ public:
         const auto fa = layout.features;
         if (featureList != nullptr && featureList->contentHeight() > fa.getHeight())
         {
-            g.setColour(Colour(0x06ffffff));
+            g.setColour(lnf.palette.cardFill);
             g.fillRoundedRectangle(fa.toFloat(), 10.0f);
             g.setColour(lnf.palette.panelBorder);
             g.drawRoundedRectangle(fa.toFloat().reduced(0.5f), 10.0f, 1.0f);
@@ -1330,7 +1330,7 @@ public:
     ExpiredView(ActivationController& c, ActivationLookAndFeel& l) : ScreenView(c, l)
     {
         unlock = std::make_unique<StyledButton>(l, StyledButton::Style::accent, "Unlock full version",
-                                                icons::fromStroke(icons::lock, juce::Colours::white, 1.8f));
+                                                icons::fromStroke(icons::lock, l.palette.onAccent, 1.8f));
         unlock->onClick = [this] { controller.beginOnlineActivation(); };
         addAndMakeVisible(*unlock);
 
@@ -1382,18 +1382,18 @@ public:
         // Full, red progress bar (the trial bar at 100%).
         r.removeFromTop(14);
         auto bar = r.removeFromTop(6);
-        g.setColour(Colour(0x12ffffff));
+        g.setColour(lnf.palette.trackFill);
         g.fillRoundedRectangle(bar.toFloat(), 3.0f);
-        g.setGradientFill(juce::ColourGradient(Colour(0xffb9444c), (float) bar.getX(), 0.0f,
-                                               Colour(0xffdc5050), (float) bar.getRight(), 0.0f, false));
+        g.setGradientFill(juce::ColourGradient(lnf.palette.errorDeep, (float) bar.getX(), 0.0f,
+                                               lnf.palette.errorStrong, (float) bar.getRight(), 0.0f, false));
         g.fillRoundedRectangle(bar.toFloat(), 3.0f);
 
         // Red "audio is bypassed" callout.
         r.removeFromTop(22);
         auto callout = r.removeFromTop(juce::jmin(66, r.getHeight()));
-        g.setColour(Colour(0x12dc5050));
+        g.setColour(lnf.palette.errorStrong.withAlpha(0x12 / 255.0f));
         g.fillRoundedRectangle(callout.toFloat(), 10.0f);
-        g.setColour(Colour(0x38dc5050));
+        g.setColour(lnf.palette.errorStrong.withAlpha(0x38 / 255.0f));
         g.drawRoundedRectangle(callout.toFloat(), 10.0f, 1.0f);
         auto inner = callout.reduced(15, 12);
         auto iconArea = inner.removeFromLeft(18).withSizeKeepingCentre(18, 18).toFloat();
@@ -1447,7 +1447,8 @@ private:
         auto pf = lnf.heading(10.5f);
         const auto pb = pill::rightAlignedIn(slot, headerRightInset,
                                              pill::width(pf, label, pill::dotD), 22.0f, centreY);
-        pill::background(g, pb, Colour(0x1edc5050), Colour(0x52dc5050));
+        pill::background(g, pb, lnf.palette.errorStrong.withAlpha(0x1e / 255.0f),
+                         lnf.palette.errorStrong.withAlpha(0x52 / 255.0f));
         pill::dot(g, pb, lnf.palette.error);
         g.setFont(pf);
         g.drawText(label, pill::labelArea(pb, pill::dotD), Justification::centredLeft);
@@ -1550,7 +1551,7 @@ public:
 
         // Info card fills the remaining middle, capped at its natural height.
         auto card = r.removeFromTop(juce::jmin(5 * 38, r.getHeight()));
-        g.setColour(Colour(0x06ffffff));
+        g.setColour(lnf.palette.cardFill);
         g.fillRoundedRectangle(card.toFloat(), 12.0f);
         g.setColour(lnf.palette.panelBorder);
         g.drawRoundedRectangle(card.toFloat(), 12.0f, 1.0f);
@@ -1626,7 +1627,7 @@ private:
 
     void drawSeatBox(Graphics& g, Rectangle<int> box)
     {
-        g.setColour(Colour(0x06ffffff));
+        g.setColour(lnf.palette.cardFill);
         g.fillRoundedRectangle(box.toFloat(), 12.0f);
         g.setColour(lnf.palette.panelBorder);
         g.drawRoundedRectangle(box.toFloat(), 12.0f, 1.0f);
@@ -1663,14 +1664,14 @@ private:
             float x = r.getX();
             for (int i = 0; i < total; ++i)
             {
-                g.setColour(i < used ? lnf.accent : Colour(0x1affffff));
+                g.setColour(i < used ? lnf.accent : lnf.palette.seatEmpty);
                 g.fillRoundedRectangle(x, r.getY(), segW, r.getHeight(), r.getHeight() * 0.5f);
                 x += segW + gap;
             }
         }
         else
         {
-            g.setColour(Colour(0x1affffff));
+            g.setColour(lnf.palette.seatEmpty);
             g.fillRoundedRectangle(r, r.getHeight() * 0.5f);
             const float frac = juce::jlimit(0.0f, 1.0f, (float) used / (float) total);
             g.setColour(lnf.accent);
@@ -1822,7 +1823,7 @@ public:
             {
                 auto bar = Rectangle<int>(0, i * skeletonStep,
                                           (int) ((float) getWidth() * widths[i]), 11);
-                g.setColour(Colour(0x10ffffff));
+                g.setColour(lnf.palette.skeleton);
                 g.fillRoundedRectangle(bar.toFloat(), 5.5f);
             }
             return;
@@ -1854,7 +1855,7 @@ public:
     {
         download = std::make_unique<StyledButton>(l, StyledButton::Style::accent, "Download",
                                                   icons::fromStroke(icons::downloadTray,
-                                                                    juce::Colours::white, 1.8f));
+                                                                    l.palette.onAccent, 1.8f));
         download->onClick = [this]
         {
             if (controller.updateInfo().phase == Phase::Done)
@@ -1867,7 +1868,7 @@ public:
         // Shown instead of Download when this license can't fetch the installer
         // (e.g. a trial when the product restricts downloads to owners).
         unlock = std::make_unique<StyledButton>(l, StyledButton::Style::accent, "Unlock full version",
-                                                icons::fromStroke(icons::lock, juce::Colours::white, 1.8f));
+                                                icons::fromStroke(icons::lock, l.palette.onAccent, 1.8f));
         unlock->onClick = [this] { controller.beginOnlineActivation(); };
         addChildComponent(*unlock);
 
@@ -1890,8 +1891,8 @@ public:
         notesViewport.setScrollBarsShown(true, false);
         notesViewport.setScrollBarThickness(11);
         auto& scrollbar = notesViewport.getVerticalScrollBar();
-        scrollbar.setColour(juce::ScrollBar::thumbColourId, Colour(0x80ffffff));
-        scrollbar.setColour(juce::ScrollBar::trackColourId, Colour(0x1affffff));
+        scrollbar.setColour(juce::ScrollBar::thumbColourId, l.palette.scrollThumb);
+        scrollbar.setColour(juce::ScrollBar::trackColourId, l.palette.scrollTrack);
         addAndMakeVisible(notesViewport);
     }
 
@@ -1951,7 +1952,7 @@ public:
         g.drawFittedText(headingText, l.heading, Justification::topLeft, 1);
 
         // "What's new" card frame + label (the notes viewport sits inside it).
-        g.setColour(Colour(0x06ffffff));
+        g.setColour(lnf.palette.cardFill);
         g.fillRoundedRectangle(l.card.toFloat(), 12.0f);
         g.setColour(lnf.palette.panelBorder);
         g.drawRoundedRectangle(l.card.toFloat().reduced(0.5f), 12.0f, 1.0f);
@@ -2049,7 +2050,7 @@ private:
             auto pct = row.removeFromRight(44);
             row.removeFromRight(10);
             auto bar = row.withSizeKeepingCentre(row.getWidth(), 6);
-            g.setColour(Colour(0x12ffffff));
+            g.setColour(lnf.palette.trackFill);
             g.fillRoundedRectangle(bar.toFloat(), 3.0f);
             auto fill = bar.toFloat().withWidth((float) bar.getWidth()
                                                 * (float) juce::jlimit(0.0, 1.0, info.progress));
@@ -2098,7 +2099,8 @@ struct ActivationComponent::Impl : public juce::ChangeListener,
         : owner(o),
           ownedController(std::make_unique<ActivationController>(std::move(cfg))),
           controller(*ownedController),
-          lnf(controller.config().accent)
+          lnf(controller.config().accent, controller.config().palette,
+              controller.config().fonts)
     {
         init(/*ownsController=*/true);
     }
@@ -2108,7 +2110,8 @@ struct ActivationComponent::Impl : public juce::ChangeListener,
         : owner(o),
           ownedController(nullptr),
           controller(existing),
-          lnf(controller.config().accent)
+          lnf(controller.config().accent, controller.config().palette,
+              controller.config().fonts)
     {
         init(/*ownsController=*/false);
     }
@@ -2532,7 +2535,7 @@ struct ActivationComponent::Impl : public juce::ChangeListener,
         {
             // Modal over a host (e.g. a plugin editor): dim what's behind so the
             // app shows through instead of an opaque takeover.
-            g.fillAll(juce::Colours::black.withAlpha(0.58f));
+            g.fillAll(lnf.palette.overlayDim);
         }
         else
         {
@@ -2553,7 +2556,7 @@ struct ActivationComponent::Impl : public juce::ChangeListener,
             g.addTransform(juce::AffineTransform::scale(s, s, panel.getCentreX(), panel.getCentreY()));
 
         // soft outer shadow
-        g.setColour(juce::Colours::black.withAlpha(0.45f));
+        g.setColour(lnf.palette.panelShadow);
         g.fillRoundedRectangle(panel.translated(0, 14).expanded(2.0f), 18.0f);
 
         juce::ColourGradient pg(lnf.palette.panelTop, panel.getX(), panel.getY(),
@@ -2570,7 +2573,7 @@ struct ActivationComponent::Impl : public juce::ChangeListener,
                                          panel.getWidth() * 0.64f, 2.0f);
         juce::ColourGradient gg(lnf.accent.withAlpha(0.0f), glowLine.getX(), 0,
                                 lnf.accent.withAlpha(0.0f), glowLine.getRight(), 0, false);
-        gg.addColour(0.5, Colour(0xff82cef1).withAlpha(breathe));
+        gg.addColour(0.5, lnf.palette.glow.withAlpha(breathe));
         g.setGradientFill(gg);
         g.fillRoundedRectangle(glowLine, 1.0f);
         // The "secured by moonbase" footer is the MoonbaseBadge child component.

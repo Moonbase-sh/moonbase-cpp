@@ -1,77 +1,60 @@
 #pragma once
 
 // Palette, fonts and icon helpers for the built-in activation UI, ported from
-// the "Solstice Activation" design. The accent colour comes from
-// ActivationConfig; everything else is a themeable token here. Subclass or
-// mutate the palette to re-skin the whole flow.
+// the "Solstice Activation" design. The accent colour, the palette and the
+// typefaces all come from ActivationConfig; this class is the resolved view of
+// them that the screens paint through.
 
 #include <memory>
+#include <utility>
 
 #include <juce_graphics/juce_graphics.h>
 #include <juce_gui_basics/juce_gui_basics.h>
 
+#include "../ActivationTheme.h"
+
 namespace moonbase::juce_integration {
-
-struct ActivationPalette
-{
-    // Backdrop + plugin window.
-    juce::Colour backgroundTop    { 0xff0e1626 };
-    juce::Colour backgroundMid    { 0xff070a11 };
-    juce::Colour backgroundBottom { 0xff04060b };
-    juce::Colour panelTop         { 0xff0d121c };
-    juce::Colour panelMid         { 0xff080b13 };
-    juce::Colour panelBottom      { 0xff06090f };
-    juce::Colour panelBorder      { 0x14ffffff };
-    juce::Colour hairline         { 0x1affffff };
-
-    // Text.
-    juce::Colour textPrimary   { 0xfff5f8fb };
-    juce::Colour textBody      { 0xffcdd8e6 };
-    juce::Colour textBright    { 0xff9fb3cc };
-    juce::Colour textSecondary { 0xff768aa4 };
-    juce::Colour textMuted     { 0xff5a6b82 };
-
-    // Controls.
-    juce::Colour ghostFill   { 0x0affffff };
-    juce::Colour ghostBorder { 0x21ffffff };
-    juce::Colour ghostHover  { 0x14ffffff };
-    juce::Colour link        { 0xff6aa8ff };
-
-    // Status.
-    juce::Colour success       { 0xff34d27b };
-    juce::Colour successFill   { 0x2416a34a };
-    juce::Colour successBorder { 0x5916a34a };
-    juce::Colour trial         { 0xffeab308 };
-    juce::Colour error         { 0xfff08a8a };
-    juce::Colour dangerFill    { 0x14dc5050 };
-    juce::Colour dangerBorder  { 0x4cdc5050 };
-};
 
 class ActivationLookAndFeel : public juce::LookAndFeel_V4
 {
 public:
-    explicit ActivationLookAndFeel(juce::Colour accentColour = juce::Colour(0xff186cdc))
-        : accent(accentColour)
+    explicit ActivationLookAndFeel(juce::Colour accentColour = juce::Colour(0xff186cdc),
+                                   ActivationPalette paletteIn = {},
+                                   ActivationFonts fontsIn = {})
+        : accent(accentColour), palette(std::move(paletteIn)), fonts(std::move(fontsIn))
     {
         setColour(juce::ResizableWindow::backgroundColourId, palette.backgroundBottom);
     }
 
     juce::Colour accent;
     ActivationPalette palette;
+    ActivationFonts fonts;
 
     // Fonts: Inter ~ default sans, Space Mono ~ default monospaced. Bundle real
-    // typefaces with juce_add_binary_data and swap these if you want exact
-    // fidelity.
+    // typefaces with juce_add_binary_data and set config.fonts for exact
+    // fidelity; each role falls back to the platform default when left unset.
     [[nodiscard]] juce::Font heading(float height) const
     {
+        if (fonts.makeFont)
+            return fonts.makeFont(ActivationFonts::Role::heading, height);
+        if (fonts.heading != nullptr)
+            return juce::Font(juce::FontOptions().withTypeface(fonts.heading).withHeight(height));
         return juce::Font(juce::FontOptions().withHeight(height).withStyle("Bold"));
     }
     [[nodiscard]] juce::Font body(float height) const
     {
+        if (fonts.makeFont)
+            return fonts.makeFont(ActivationFonts::Role::body, height);
+        if (fonts.body != nullptr)
+            return juce::Font(juce::FontOptions().withTypeface(fonts.body).withHeight(height));
         return juce::Font(juce::FontOptions().withHeight(height));
     }
     [[nodiscard]] juce::Font mono(float height) const
     {
+        if (fonts.makeFont)
+            return fonts.makeFont(ActivationFonts::Role::mono, height);
+        if (fonts.mono != nullptr)
+            return juce::Font(juce::FontOptions().withTypeface(fonts.mono).withHeight(height));
         return juce::Font(juce::FontOptions(juce::Font::getDefaultMonospacedFontName(), height,
                                             juce::Font::plain));
     }

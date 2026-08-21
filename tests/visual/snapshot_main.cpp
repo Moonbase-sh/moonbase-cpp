@@ -63,6 +63,195 @@ ERUn++6CVMPvZo67jVbTY+GCXYfW4gGVZQIDAQAB
     return config;
 }
 
+//==============================================================================
+// Themes.
+//
+// config.palette + config.fonts are the module's re-skin seam, so these render
+// the same screens through deliberately unlike themes: a warm near-black with a
+// monospaced face, a light one, and a deep green one. They are the regression
+// net for the colour tokens. Anything still hardcoded in the UI shows up here as
+// stock blue-grey chrome, a cyan glow or a white wash on a panel that has none.
+
+// Warm near-black, amber accent, everything set in the monospaced face. This is
+// the theme from issue #23: a plugin whose own UI is warm and monospaced.
+ActivationConfig emberTheme()
+{
+    auto config = demoConfig();
+    config.productName = "Ember";
+    config.manufacturerName = "Foundry Audio";
+    config.accent = juce::Colour(0xffe4a03c);
+
+    auto& p = config.palette;
+    p.backgroundTop = juce::Colour(0xff2a1c12);
+    p.backgroundMid = juce::Colour(0xff150d08);
+    p.backgroundBottom = juce::Colour(0xff0c0704);
+    p.panelTop = juce::Colour(0xff1e1610);
+    p.panelMid = juce::Colour(0xff150f0a);
+    p.panelBottom = juce::Colour(0xff100b07);
+    p.panelBorder = juce::Colour(0x18ffe9c9);
+    p.hairline = juce::Colour(0x1affe9c9);
+    p.panelShadow = juce::Colour(0x73140a02);
+    p.overlayDim = juce::Colour(0x94140a02);
+
+    p.cardFill = juce::Colour(0x08ffe9c9);
+    p.trackFill = juce::Colour(0x14ffe9c9);
+    p.skeleton = juce::Colour(0x12ffe9c9);
+    p.scrollThumb = juce::Colour(0x80ffe9c9);
+    p.scrollTrack = juce::Colour(0x1affe9c9);
+
+    p.textPrimary = juce::Colour(0xfff7ecdc);
+    p.textBody = juce::Colour(0xffe3d2ba);
+    p.textBright = juce::Colour(0xffc8ae8d);
+    p.textSecondary = juce::Colour(0xffa08a6e);
+    p.textMuted = juce::Colour(0xff7a6752);
+
+    p.ghostFill = juce::Colour(0x0affe9c9);
+    p.ghostBorder = juce::Colour(0x24ffe9c9);
+    p.ghostHover = juce::Colour(0x16ffe9c9);
+    p.link = juce::Colour(0xffe4a03c);
+    p.seatEmpty = juce::Colour(0x1affe9c9);
+    p.onAccent = juce::Colour(0xff2a1a08);
+
+    p.glow = juce::Colour(0xffffcf8a);
+    p.spinnerTrack = juce::Colour(0x26ffe9c9);
+
+    p.success = juce::Colour(0xff8fc46a);
+    p.successFill = juce::Colour(0x248fc46a);
+    p.successBorder = juce::Colour(0x598fc46a);
+    p.trial = juce::Colour(0xffe4a03c);
+    p.trialBright = juce::Colour(0xfff7cf82);
+    p.onTrial = juce::Colour(0xff2a1a08);
+    p.error = juce::Colour(0xffe8967a);
+    p.errorStrong = juce::Colour(0xffd2603c);
+    p.errorDeep = juce::Colour(0xffa8482c);
+    p.dangerFill = juce::Colour(0x14d2603c);
+    p.dangerBorder = juce::Colour(0x4cd2603c);
+
+    // The typeface seam. A real plugin points these at bundled faces via
+    // juce::Typeface::createSystemTypefaceFor; the snapshot uses the platform's
+    // monospaced font so the render stays reproducible on any machine.
+    config.fonts.makeFont = [](ActivationFonts::Role role, float height)
+    {
+        return juce::Font(juce::FontOptions(juce::Font::getDefaultMonospacedFontName(), height,
+                                            role == ActivationFonts::Role::heading ? juce::Font::bold
+                                                                                   : juce::Font::plain));
+    };
+    return config;
+}
+
+// A light theme: the inversion every dark-on-light token has to survive.
+ActivationConfig daylightTheme()
+{
+    auto config = demoConfig();
+    config.productName = "Daylight";
+    config.manufacturerName = "Northward Studio";
+    config.accent = juce::Colour(0xff1b5fd0);
+
+    auto& p = config.palette;
+    p.backgroundTop = juce::Colour(0xfff4f6fa);
+    p.backgroundMid = juce::Colour(0xffe9edf4);
+    p.backgroundBottom = juce::Colour(0xffdfe4ec);
+    p.panelTop = juce::Colour(0xffffffff);
+    p.panelMid = juce::Colour(0xfffbfcfe);
+    p.panelBottom = juce::Colour(0xfff4f7fb);
+    p.panelBorder = juce::Colour(0x1e000f28);
+    p.hairline = juce::Colour(0x14000f28);
+    p.panelShadow = juce::Colour(0x2a0a1730);
+    p.overlayDim = juce::Colour(0x5c0a1730);
+
+    p.cardFill = juce::Colour(0x08000f28);
+    p.trackFill = juce::Colour(0x14000f28);
+    p.skeleton = juce::Colour(0x12000f28);
+    p.scrollThumb = juce::Colour(0x66000f28);
+    p.scrollTrack = juce::Colour(0x14000f28);
+
+    p.textPrimary = juce::Colour(0xff11182a);
+    p.textBody = juce::Colour(0xff2c3648);
+    p.textBright = juce::Colour(0xff42506a);
+    p.textSecondary = juce::Colour(0xff5c6b86);
+    p.textMuted = juce::Colour(0xff8593a8);
+
+    p.ghostFill = juce::Colour(0x08000f28);
+    p.ghostBorder = juce::Colour(0x24000f28);
+    p.ghostHover = juce::Colour(0x12000f28);
+    p.link = juce::Colour(0xff1b5fd0);
+    p.seatEmpty = juce::Colour(0x1a000f28);
+    p.onAccent = juce::Colour(0xffffffff);
+
+    p.glow = juce::Colour(0xff5aa0f0);
+    p.spinnerTrack = juce::Colour(0x1e000f28);
+
+    p.success = juce::Colour(0xff127a45);
+    p.successFill = juce::Colour(0x1e127a45);
+    p.successBorder = juce::Colour(0x59127a45);
+    p.trial = juce::Colour(0xffb07908);
+    p.trialBright = juce::Colour(0xffd9a33a);
+    p.onTrial = juce::Colour(0xfffdf6e6);
+    p.error = juce::Colour(0xffb03030);
+    p.errorStrong = juce::Colour(0xffc23a3a);
+    p.errorDeep = juce::Colour(0xff8f2626);
+    p.dangerFill = juce::Colour(0x14c23a3a);
+    p.dangerBorder = juce::Colour(0x4cc23a3a);
+    return config;
+}
+
+// Deep green with a lime accent: a hue nowhere near the built-in blue, so a
+// leftover accent-adjacent literal stands out immediately.
+ActivationConfig forestTheme()
+{
+    auto config = demoConfig();
+    config.productName = "Understory";
+    config.manufacturerName = "Fernwood Audio";
+    config.accent = juce::Colour(0xff5ed17c);
+
+    auto& p = config.palette;
+    p.backgroundTop = juce::Colour(0xff0e2018);
+    p.backgroundMid = juce::Colour(0xff08130e);
+    p.backgroundBottom = juce::Colour(0xff050c08);
+    p.panelTop = juce::Colour(0xff0c1a13);
+    p.panelMid = juce::Colour(0xff08120d);
+    p.panelBottom = juce::Colour(0xff060e0a);
+    p.panelBorder = juce::Colour(0x18d8ffe8);
+    p.hairline = juce::Colour(0x1ad8ffe8);
+    p.panelShadow = juce::Colour(0x73010703);
+    p.overlayDim = juce::Colour(0x94010703);
+
+    p.cardFill = juce::Colour(0x08d8ffe8);
+    p.trackFill = juce::Colour(0x14d8ffe8);
+    p.skeleton = juce::Colour(0x12d8ffe8);
+    p.scrollThumb = juce::Colour(0x80d8ffe8);
+    p.scrollTrack = juce::Colour(0x1ad8ffe8);
+
+    p.textPrimary = juce::Colour(0xffeafff2);
+    p.textBody = juce::Colour(0xffc4dfd0);
+    p.textBright = juce::Colour(0xff9dc4ae);
+    p.textSecondary = juce::Colour(0xff76a189);
+    p.textMuted = juce::Colour(0xff58806a);
+
+    p.ghostFill = juce::Colour(0x0ad8ffe8);
+    p.ghostBorder = juce::Colour(0x24d8ffe8);
+    p.ghostHover = juce::Colour(0x16d8ffe8);
+    p.link = juce::Colour(0xff7ee08a);
+    p.seatEmpty = juce::Colour(0x1ad8ffe8);
+    p.onAccent = juce::Colour(0xff062012);
+
+    p.glow = juce::Colour(0xffa8f5b8);
+    p.spinnerTrack = juce::Colour(0x26d8ffe8);
+
+    p.success = juce::Colour(0xff5ed17c);
+    p.successFill = juce::Colour(0x245ed17c);
+    p.successBorder = juce::Colour(0x595ed17c);
+    p.trial = juce::Colour(0xffd9c04a);
+    p.trialBright = juce::Colour(0xfff2e08a);
+    p.onTrial = juce::Colour(0xff10190a);
+    p.error = juce::Colour(0xffe8a08a);
+    p.errorStrong = juce::Colour(0xffd85a4a);
+    p.errorDeep = juce::Colour(0xffa8402e);
+    p.dangerFill = juce::Colour(0x14d85a4a);
+    p.dangerBorder = juce::Colour(0x4cd85a4a);
+    return config;
+}
+
 // A fixed wall-clock anchor for every rendered date and trial countdown, so the
 // snapshots are identical run to run regardless of the real date. Paired with
 // ActivationController::setPreviewClock so trialDaysRemaining() measures against
@@ -367,6 +556,69 @@ int main(int argc, char* argv[])
                       { c.setPreviewUpdate(UpdatePhase::Ready, makeUpdateTrialLicense(), notes, 0.0,
                                            {}, /*canDownload*/ false); },
                       cfg);
+    }
+
+    //== Themed renders =======================================================
+    // The re-skin seam (config.palette + config.fonts), rendered through three
+    // unlike themes across the screens that between them touch every token: the
+    // spinner and glow, the trial pill and its progress gradient, cards and seat
+    // pips, the drop zone, the success card, the danger washes, and the update
+    // screen's skeleton + scrollbar.
+    {
+        writeSnapshot(outDir, "15-theme-ember-welcome",
+                      [](ActivationController& c) { c.setPreviewState(Screen::Welcome); },
+                      emberTheme());
+
+        writeSnapshot(outDir, "16-theme-ember-activating",
+                      [](ActivationController& c) { c.setPreviewState(Screen::BrowserWait); },
+                      emberTheme());
+
+        writeSnapshot(outDir, "17-theme-ember-trial",
+                      [](ActivationController& c)
+                      { c.setPreviewState(Screen::Trial, makeLicense(true)); },
+                      emberTheme());
+
+        writeSnapshot(outDir, "18-theme-daylight-success",
+                      [](ActivationController& c)
+                      { c.setPreviewState(Screen::Success, makeLicense(false)); },
+                      daylightTheme());
+
+        writeSnapshot(outDir, "19-theme-daylight-details",
+                      [](ActivationController& c)
+                      { c.setPreviewState(Screen::Details, makeLicense(false)); },
+                      daylightTheme());
+
+        writeSnapshot(outDir, "20-theme-daylight-offline",
+                      [](ActivationController& c) { c.setPreviewState(Screen::Offline); },
+                      daylightTheme());
+
+        writeSnapshot(outDir, "21-theme-forest-expired",
+                      [](ActivationController& c)
+                      { c.setPreviewState(Screen::Expired, makeExpiredTrial()); },
+                      forestTheme());
+
+        auto updateCfg = forestTheme();
+        updateCfg.applicationVersion = "2.3.1"; // older than the license's released version
+        // Long enough to overflow the card, so the themed scrollbar renders too.
+        const juce::String themedNotes =
+            "Version 2.4.0\n"
+            "\n"
+            "New oversampling modes up to 16x for cleaner high-gain tones.\n"
+            "8 new factory presets from the Laniakea sound pack.\n"
+            "Reworked the modulation matrix with per-slot depth control.\n"
+            "Fixes Apple Silicon AU validation under Logic 11.\n"
+            "Fixes a rare crash when loading presets saved in the 1.x series.\n"
+            "Lower CPU usage in the analyzer view.\n"
+            "Retina-correct metering on mixed-DPI multi-monitor setups.\n"
+            "New A/B compare with copy-from-B and snapshot slots.\n"
+            "MIDI learn now supports relative encoders.\n"
+            "Improved oversampling latency reporting to the host.\n"
+            "Various accessibility and keyboard-navigation improvements.";
+
+        writeSnapshot(outDir, "22-theme-forest-update",
+                      [themedNotes](ActivationController& c)
+                      { c.setPreviewUpdate(UpdatePhase::Ready, makeUpdateLicense(), themedNotes); },
+                      updateCfg);
     }
 
     juce::Logger::outputDebugString("UI snapshots written to " + outDir.getFullPathName());

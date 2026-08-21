@@ -2,7 +2,8 @@
 
 // Everything needed to wire up + brand an activation flow. The connection
 // fields configure the Moonbase SDK; the branding fields drive the built-in UI
-// (the Solstice design's product name, accent, trial copy, co-brand badge).
+// (the Solstice design's product name, accent, palette, typefaces, trial copy,
+// co-brand badge).
 
 #include <chrono>
 #include <functional>
@@ -20,6 +21,7 @@
 #include <juce_graphics/juce_graphics.h>
 #include <juce_gui_basics/juce_gui_basics.h>
 
+#include "ActivationTheme.h"
 #include "JuceMetadata.h"
 // Named by resolvedDeviceIdResolver(). Included here rather than relied on from
 // the module umbrella so this header stays usable on its own.
@@ -84,6 +86,18 @@ struct ActivationConfig
     juce::String productName;       // defaults to JucePlugin_Name (see resolvedProductName())
     juce::String manufacturerName;  // defaults to JucePlugin_Manufacturer; shown under the product name
     juce::Colour accent = juce::Colour(0xff186cdc);        // Moonbase blue
+
+    // Every other colour in the UI, one token per role, and optional typefaces
+    // for its three font roles (heading / body / mono). Both default to the
+    // built-in design, so override only what you want to change:
+    //
+    //   config.palette.backgroundTop = juce::Colour(0xff1a1512);
+    //   config.fonts.body = juce::Typeface::createSystemTypefaceFor(...);
+    //
+    // See ActivationTheme.h for the full token list. Read once, when the
+    // ActivationComponent is constructed.
+    ActivationPalette palette;
+    ActivationFonts fonts;
 
     // Where the customer exchanges their machine file for a license file during
     // offline activation. Defaults to "{endpoint}/activate" when left unset.

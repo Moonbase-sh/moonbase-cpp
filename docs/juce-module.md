@@ -159,9 +159,38 @@ gating decisions (read it on the message thread).
 Everything in `ActivationConfig` after the connection fields is brand/UI: product +
 manufacturer name, `accent` colour, the Moonbase co-brand badge (`showMoonbaseBadge`), the
 `trialLengthDays` + `trialFeatures` list (shown on the Trial / Expired screens),
-`enableOffline`, and the `activationUrl`. For deeper re-skinning, mutate `ActivationLookAndFeel::palette`
-(every colour is a token) or bundle real Inter / Space Mono typefaces and point the
-`heading` / `body` / `mono` font helpers at them.
+`enableOffline`, and the `activationUrl`.
+
+For a deeper re-skin, `config.palette` holds every other colour in the UI as its own
+token, and `config.fonts` takes your typefaces for the three font roles:
+
+```cpp
+config.accent = juce::Colour(0xffe4a03c);
+
+config.palette.backgroundTop = juce::Colour(0xff2a1c12);   // see ActivationTheme.h
+config.palette.panelTop      = juce::Colour(0xff1e1610);   // for the full token list
+config.palette.textPrimary   = juce::Colour(0xfff7ecdc);
+config.palette.onAccent      = juce::Colour(0xff2a1a08);   // text drawn on the accent
+
+// Bundle faces with juce_add_binary_data and hand them over per role. Do this
+// rather than setting a default LookAndFeel: inside a DAW that one is shared
+// with the host and every other plugin in the process.
+config.fonts.heading = juce::Typeface::createSystemTypefaceFor(
+    BinaryData::InterBold_ttf, BinaryData::InterBold_ttfSize);
+config.fonts.body = juce::Typeface::createSystemTypefaceFor(
+    BinaryData::InterRegular_ttf, BinaryData::InterRegular_ttfSize);
+config.fonts.mono = juce::Typeface::createSystemTypefaceFor(
+    BinaryData::SpaceMono_ttf, BinaryData::SpaceMono_ttfSize);
+```
+
+Set both before you construct the `ActivationComponent` (or pass the config to
+`ActivationDialog::show`, which also frames its window in `palette.backgroundBottom`).
+The component reads the theme once, when it builds its LookAndFeel and pre-renders its
+icons, so a palette changed afterwards would only reach half the screen.
+
+Leave any token alone and it keeps the built-in design's value, so a single line is a
+valid theme. `config.fonts.makeFont` is the escape hatch when one typeface per role is
+not enough: set it and it decides every font the UI asks for, by role and height.
 
 ## Device identity
 
