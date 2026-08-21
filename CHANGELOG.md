@@ -1,3 +1,10 @@
+# [4.2.0](https://github.com/Moonbase-sh/moonbase-cpp/compare/v4.1.0...v4.2.0) (2026-08-21)
+
+
+### Features
+
+* **juce:** theme the activation UI from ActivationConfig ([#25](https://github.com/Moonbase-sh/moonbase-cpp/issues/25)) ([a477131](https://github.com/Moonbase-sh/moonbase-cpp/commit/a477131e602556923d280dce056d85d8afbfe31d)), closes [#23](https://github.com/Moonbase-sh/moonbase-cpp/issues/23)
+
 # [4.1.0](https://github.com/Moonbase-sh/moonbase-cpp/compare/v4.0.1...v4.1.0) (2026-08-11)
 
 

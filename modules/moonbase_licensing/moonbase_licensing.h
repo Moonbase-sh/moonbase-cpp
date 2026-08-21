@@ -9,7 +9,7 @@
 
   ID:                 moonbase_licensing
   vendor:             Moonbase
-  version:            4.1.0
+  version:            4.2.0
   name:               Moonbase Licensing
   description:        Moonbase license activation for JUCE apps and plugins, with a built-in activation UI. Talks to the Moonbase API natively — no juce::OnlineUnlockStatus. Zero third-party dependencies: JUCE WebInputStream transport, bundled nlohmann/json, and OS-native RS256 verification (Security.framework / CNG / libcrypto).
   website:            https://moonbase.sh
@@ -51,7 +51,7 @@
 // compares them against CMakeLists.txt VERSION, because drift here silently
 // misreports SDK traffic to the API.
 #ifndef MOONBASE_LICENSING_VERSION
- #define MOONBASE_LICENSING_VERSION "4.1.0"
+ #define MOONBASE_LICENSING_VERSION "4.2.0"
 #endif
 #ifndef MOONBASE_CPP_VERSION
  #define MOONBASE_CPP_VERSION MOONBASE_LICENSING_VERSION
