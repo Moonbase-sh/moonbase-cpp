@@ -8,8 +8,10 @@ class ActivationDialogWindow : public juce::DocumentWindow
 {
 public:
     ActivationDialogWindow(ActivationConfig config, std::function<void(bool)> onClosedIn)
+        // Read the theme before the config is moved into the component below, so
+        // a re-skinned flow does not sit in a stock near-black window frame.
         : juce::DocumentWindow("Activate " + config.resolvedProductName(),
-                               juce::Colour(0xff04060b), juce::DocumentWindow::closeButton),
+                               config.palette.backgroundBottom, juce::DocumentWindow::closeButton),
           onClosed(std::move(onClosedIn))
     {
         auto* comp = new ActivationComponent(std::move(config));

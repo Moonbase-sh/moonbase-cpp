@@ -430,7 +430,7 @@ available and unchanged.
 | | Native module | `OnlineUnlockStatus` bridge |
 | --- | --- | --- |
 | **Form** | Drop-in JUCE module | Copy-paste reference header |
-| **Built-in UI** | Yes (polished, animated, themeable) | No (you build it) |
+| **Built-in UI** | Yes (polished, animated, themeable: `config.palette` + `config.fonts`) | No (you build it) |
 | **JUCE integration** | Native Moonbase API | `juce::OnlineUnlockStatus` wrapper |
 | **JUCE version** | 8.0.4+ | 7+ |
 | **Device fingerprint** | Spec v2 (`mbd2_`), cross-SDK; scoped `mbd2s_` on mobile | Spec v2 (`mbd2_`), cross-SDK; scoped `mbd2s_` on mobile |

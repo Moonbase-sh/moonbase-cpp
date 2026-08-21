@@ -16,6 +16,8 @@
 #include <moonbase_licensing/moonbase_licensing.h>
 
 #include <functional>
+#include <utility>
+#include <vector>
 
 #include "test_helpers.hpp"
 
@@ -1232,6 +1234,84 @@ TEST_CASE("describeDevice reports provenance, and nothing for an opaque resolver
         ActivationController other(custom.config);
         CHECK(!other.describeDevice().has_value());
     }
+}
+
+//==============================================================================
+// Theming: ActivationConfig carries the palette + typefaces the UI paints
+// through, so a re-skin is in place before the component builds its icons.
+
+TEST_CASE("the look and feel resolves the palette it is given")
+{
+    ActivationPalette custom;
+    custom.backgroundTop = juce::Colour(0xff1a1512);
+    custom.cardFill = juce::Colour(0x0affe8d0);
+    custom.onAccent = juce::Colour(0xff2b1d10);
+
+    ActivationLookAndFeel lnf(juce::Colour(0xffe4a03c), custom);
+
+    CHECK(lnf.accent == juce::Colour(0xffe4a03c));
+    CHECK(lnf.palette.backgroundTop == custom.backgroundTop);
+    CHECK(lnf.palette.cardFill == custom.cardFill);
+    CHECK(lnf.palette.onAccent == custom.onAccent);
+    // Untouched tokens keep the design's defaults.
+    CHECK(lnf.palette.textPrimary == ActivationPalette{}.textPrimary);
+    // The window background tracks the palette, not the built-in near-black.
+    CHECK(lnf.findColour(juce::ResizableWindow::backgroundColourId)
+          == custom.backgroundBottom);
+}
+
+TEST_CASE("a config with no theme keeps the built-in design")
+{
+    ActivationConfig config;
+    ActivationLookAndFeel lnf(config.accent, config.palette, config.fonts);
+
+    CHECK(lnf.palette.backgroundTop == ActivationPalette{}.backgroundTop);
+    CHECK(lnf.heading(14.0f).getHeight() == doctest::Approx(14.0f));
+    CHECK(lnf.heading(14.0f).isBold());
+    CHECK(!lnf.body(14.0f).isBold());
+}
+
+TEST_CASE("fonts.makeFont takes over every font the UI asks for")
+{
+    using Role = ActivationFonts::Role;
+
+    std::vector<std::pair<Role, float>> asked;
+    ActivationFonts fonts;
+    fonts.makeFont = [&asked](Role role, float height)
+    {
+        asked.emplace_back(role, height);
+        return juce::Font(juce::FontOptions().withHeight(height).withStyle("Italic"));
+    };
+
+    ActivationLookAndFeel lnf(juce::Colour(0xff186cdc), {}, fonts);
+
+    CHECK(lnf.heading(20.0f).isItalic());
+    CHECK(lnf.body(13.0f).isItalic());
+    CHECK(lnf.mono(11.0f).isItalic());
+
+    REQUIRE(asked.size() == 3);
+    CHECK(asked[0] == std::make_pair(Role::heading, 20.0f));
+    CHECK(asked[1] == std::make_pair(Role::body, 13.0f));
+    CHECK(asked[2] == std::make_pair(Role::mono, 11.0f));
+}
+
+TEST_CASE("a role typeface is used for that role only")
+{
+    // A tiny valid TTF is more machinery than this needs: a system typeface is
+    // enough to prove the plumbing, since the fallback path never sets one.
+    auto face = juce::Font(juce::FontOptions().withHeight(12.0f)).getTypefacePtr();
+    if (face == nullptr)
+        return; // no resolvable system font on this box; the fallbacks are covered above
+
+    ActivationFonts fonts;
+    fonts.mono = face;
+
+    ActivationLookAndFeel lnf(juce::Colour(0xff186cdc), {}, fonts);
+
+    CHECK(lnf.mono(12.5f).getTypefacePtr() == face);
+    CHECK(lnf.mono(12.5f).getHeight() == doctest::Approx(12.5f));
+    // The other roles are untouched, so they still resolve at paint time.
+    CHECK(lnf.heading(12.5f).isBold());
 }
 
 //==============================================================================

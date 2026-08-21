@@ -75,6 +75,7 @@
 #include "juce/legacy_juce_device_id_resolver.h"
 #include "juce/JuceMetadata.h"
 #include "juce/LicenseGate.h"
+#include "juce/ActivationTheme.h"
 #include "juce/ActivationConfig.h"
 #include "juce/ActivationController.h"
 #include "juce/ui/ActivationLookAndFeel.h"
