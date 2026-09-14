@@ -15,6 +15,8 @@
 
 #include <juce_core/juce_core.h>
 
+#include "JuceCompat.h"
+
 namespace moonbase::juce_integration {
 
 class LicenseGate
@@ -37,9 +39,9 @@ public:
     {
         const float target = licensed ? 1.0f : 0.0f;
 
-        if (juce::exactlyEqual(gain_, target))
+        if (compat::exactlyEqual(gain_, target))
         {
-            if (juce::exactlyEqual(target, 0.0f))
+            if (compat::exactlyEqual(target, 0.0f))
                 for (int ch = 0; ch < numChannels; ++ch)
                     juce::zeromem(channels[ch], sizeof(float) * (size_t) numSamples);
             return; // target == 1: pass through untouched

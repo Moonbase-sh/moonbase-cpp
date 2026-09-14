@@ -11,6 +11,8 @@
 #include <memory>
 #include <vector>
 
+namespace compat = moonbase::juce_integration::compat;
+
 using moonbase::juce_integration::ActivationComponent;
 using moonbase::juce_integration::ActivationConfig;
 using Screen = moonbase::juce_integration::ActivationController::Screen;
@@ -67,7 +69,7 @@ public:
             auto label = std::make_unique<juce::Label>(juce::String(), knobNames[i]);
             label->setJustificationType(juce::Justification::centred);
             label->setColour(juce::Label::textColourId, juce::Colour(0xff90a0b8));
-            label->setFont(juce::FontOptions(12.5f));
+            label->setFont(compat::font(12.5f));
             addAndMakeVisible(*label);
 
             knobs.push_back(std::move(knob));
@@ -112,10 +114,10 @@ public:
         // top bar
         auto header = getLocalBounds().removeFromTop(96).reduced(28, 0);
         g.setColour(juce::Colour(0xfff5f8fb));
-        g.setFont(juce::FontOptions(30.0f, juce::Font::bold));
+        g.setFont(compat::font(30.0f, true));
         g.drawText("SOLSTICE", header.removeFromTop(64), juce::Justification::bottomLeft);
         g.setColour(juce::Colour(0xff768aa4));
-        g.setFont(juce::FontOptions(13.0f));
+        g.setFont(compat::font(13.0f));
         g.drawText("Saturator  by  Helio Audio", header, juce::Justification::topLeft);
 
         g.setColour(juce::Colour(0x12ffffff));

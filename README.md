@@ -491,17 +491,18 @@ available and unchanged.
 | **Form** | Drop-in JUCE module | Copy-paste reference header |
 | **Built-in UI** | Yes (polished, animated, themeable: `config.palette` + `config.fonts`) | No (you build it) |
 | **JUCE integration** | Native Moonbase API | `juce::OnlineUnlockStatus` wrapper |
-| **JUCE version** | 8.0.4+ | 7+ |
+| **JUCE version** | 6.1.3+ | 7+ |
 | **Device fingerprint** | Spec v2 (`mbd2_`), cross-SDK; scoped `mbd2s_` on mobile | Spec v2 (`mbd2_`), cross-SDK; scoped `mbd2s_` on mobile |
 | **Third-party deps** | None (JUCE `WebInputStream` HTTP, bundled `nlohmann/json`, OS-native RS256) | Inherits the core SDK's CURL + OpenSSL |
 | **Entry point** | `ActivationComponent` / `ActivationDialog` | `MoonbaseUnlockStatus` |
-| **Best for** | New plugins wanting a ready-made UI | Apps already on `OnlineUnlockStatus`, or JUCE 7 |
+| **Best for** | New plugins wanting a ready-made UI | Apps already on `OnlineUnlockStatus` |
 | **Docs** | [`docs/juce-module.md`](docs/juce-module.md) | [`docs/juce.md`](docs/juce.md) |
 
 ### Native module: `moonbase_licensing`
 
-A drop-in JUCE 8 module that adds Moonbase activation, plus a built-in
-themeable activation UI, to any app or plugin. It talks to the Moonbase
+A drop-in JUCE module that adds Moonbase activation, plus a built-in
+themeable activation UI, to any app or plugin. Builds on JUCE 6.1.3 and up,
+so it also works inside a HISE project. It talks to the Moonbase
 licensing API natively (it does not use `juce::OnlineUnlockStatus`) and has no
 third-party dependencies: HTTP goes through `juce::WebInputStream`, JSON is a
 bundled `nlohmann/json`, and RS256 verification uses the OS-native crypto

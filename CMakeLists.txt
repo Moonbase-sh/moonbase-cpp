@@ -160,6 +160,14 @@ if(MOONBASE_BUILD_JUCE_NATIVE_EXAMPLE OR MOONBASE_BUILD_UI_SNAPSHOTS OR MOONBASE
 
     if(NOT TARGET moonbase_licensing)
         juce_add_module(${CMAKE_CURRENT_SOURCE_DIR}/modules/moonbase_licensing)
+
+        # juce_animation is JUCE 8.0.4+, so the module cannot name it in its
+        # `dependencies:` line without breaking JUCE 6 and 7. Link it here when
+        # this JUCE has it: the module then uses juce::Animator, and falls back
+        # to its own equivalent implementation when it does not.
+        if(TARGET juce::juce_animation)
+            target_link_libraries(moonbase_licensing INTERFACE juce::juce_animation)
+        endif()
     endif()
 endif()
 

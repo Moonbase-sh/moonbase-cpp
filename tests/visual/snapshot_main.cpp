@@ -132,9 +132,8 @@ ActivationConfig emberTheme()
     // monospaced font so the render stays reproducible on any machine.
     config.fonts.makeFont = [](ActivationFonts::Role role, float height)
     {
-        return juce::Font(juce::FontOptions(juce::Font::getDefaultMonospacedFontName(), height,
-                                            role == ActivationFonts::Role::heading ? juce::Font::bold
-                                                                                   : juce::Font::plain));
+        return compat::font(juce::Font::getDefaultMonospacedFontName(), height,
+                            role == ActivationFonts::Role::heading);
     };
     return config;
 }
@@ -387,32 +386,37 @@ int main(int argc, char* argv[])
         }
     }
 
-    // Opt-in check that the JUCE 8 animator actually advances when ticked (the
-    // same Animator the spinner uses, driven the way the VBlank updater drives it).
+    // Opt-in check that the animation shim keeps advancing when ticked, set up
+    // exactly like the panel glow: infinite, linear, wrapped into [0,1) by the
+    // caller. Two seconds of a one-second loop has to yield values from both
+    // cycles, which is what catches an easing that flattens past 1.0. Runs on
+    // whichever backend the build picked: juce_animation when present, the
+    // module's own implementation otherwise.
     if (argc > 1 && juce::String(argv[1]) == "--anim-check")
     {
-        juce::AnimatorUpdater updater;
+        anim::Updater updater;
         float last = -1.0f;
         int changes = 0;
-        auto anim = juce::ValueAnimatorBuilder{}
-                        .withDurationMs(1000.0)
-                        .runningInfinitely()
-                        .withValueChangedCallback([&](float v)
-                                                  {
-                                                      const float wrapped = (float) std::fmod(v, 1.0);
-                                                      if (std::abs(wrapped - last) > 0.0001f)
-                                                          ++changes;
-                                                      last = wrapped;
-                                                  })
-                        .build();
-        updater.addAnimator(anim);
-        anim.start();
+        auto animation = anim::AnimationBuilder{}
+                             .withDurationMs(1000.0)
+                             .runningInfinitely()
+                             .withEasing(anim::easings::createLinear())
+                             .withValueChangedCallback([&](float v)
+                                                       {
+                                                           const float wrapped = (float) std::fmod(v, 1.0);
+                                                           if (std::abs(wrapped - last) > 0.0001f)
+                                                               ++changes;
+                                                           last = wrapped;
+                                                       })
+                             .build();
+        updater.addAnimation(animation);
+        animation.start();
         for (int i = 0; i <= 20; ++i)
             updater.update(static_cast<double>(i) * 100.0); // simulate 2s of vblanks
 
         std::cout << "anim-check: distinct values over 2s = " << changes
-                  << " (expect many, i.e. it animates)\n";
-        return changes > 5 ? 0 : 1;
+                  << " (expect ~20, i.e. it keeps looping)\n";
+        return changes > 15 ? 0 : 1;
     }
 
     if (auto* w = std::getenv("MB_SNAPSHOT_W")) gSnapW = juce::String(w).getIntValue();

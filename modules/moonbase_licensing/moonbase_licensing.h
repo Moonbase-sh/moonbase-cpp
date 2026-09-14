@@ -11,12 +11,12 @@
   vendor:             Moonbase
   version:            4.2.0
   name:               Moonbase Licensing
-  description:        Moonbase license activation for JUCE apps and plugins, with a built-in activation UI. Talks to the Moonbase API natively — no juce::OnlineUnlockStatus. Zero third-party dependencies: JUCE WebInputStream transport, bundled nlohmann/json, and OS-native RS256 verification (Security.framework / CNG / libcrypto).
+  description:        Moonbase license activation for JUCE apps and plugins, with a built-in activation UI. Talks to the Moonbase API natively, with no juce::OnlineUnlockStatus. Zero third-party dependencies: JUCE WebInputStream transport, bundled nlohmann/json, and OS-native RS256 verification (Security.framework / CNG / libcrypto). Builds on JUCE 6.1.3 and up; uses juce_animation when the project has it.
   website:            https://moonbase.sh
   license:            MIT
   minimumCppStandard: 17
 
-  dependencies:       juce_core juce_events juce_data_structures juce_graphics juce_gui_basics juce_animation
+  dependencies:       juce_core juce_events juce_data_structures juce_graphics juce_gui_basics
   OSXFrameworks:      Security IOKit
   iOSFrameworks:      Security
   windowsLibs:        bcrypt
@@ -63,7 +63,14 @@
 #include <juce_data_structures/juce_data_structures.h>
 #include <juce_graphics/juce_graphics.h>
 #include <juce_gui_basics/juce_gui_basics.h>
-#include <juce_animation/juce_animation.h>
+
+// Version shims, plus MOONBASE_JUCE_HAS_ANIMATION. Must come before anything
+// that measures text or builds a juce::Font.
+#include "juce/JuceCompat.h"
+
+#if MOONBASE_JUCE_HAS_ANIMATION
+  #include <juce_animation/juce_animation.h>
+#endif
 
 // The Moonbase C++ SDK (header-only). Resolved from this module's own copy via
 // the `.` searchpath; nlohmann/json from the `vendor` searchpath.
@@ -79,5 +86,6 @@
 #include "juce/ActivationConfig.h"
 #include "juce/ActivationController.h"
 #include "juce/ui/ActivationLookAndFeel.h"
+#include "juce/ui/ValueAnimation.h"
 #include "juce/ui/ActivationComponent.h"
 #include "juce/ui/ActivationDialog.h"
