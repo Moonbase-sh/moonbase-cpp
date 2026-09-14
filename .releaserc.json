@@ -22,6 +22,7 @@
           "CHANGELOG.md",
           "CMakeLists.txt",
           "README.md",
+          "docs/core-sdk.md",
           "modules/moonbase_licensing/moonbase_licensing.h"
         ],
         "message": "chore(release): ${nextRelease.version} [skip ci]\n\n${nextRelease.notes}"

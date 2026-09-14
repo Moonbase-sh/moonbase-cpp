@@ -135,8 +135,7 @@ struct ActivationConfig
     // Set it to a moonbase::migrating_device_id_resolver when upgrading a plugin
     // that already has activated users: the device id changed in 4.0.0, so
     // without one every existing install must re-activate, which consumes a fresh
-    // activation seat and resets any device-scoped trial. See "Migrating from
-    // 3.x" in the README.
+    // activation seat and resets any device-scoped trial. See docs/migration-3x.md.
     std::shared_ptr<moonbase::device_id_resolver> deviceIdResolver;
 
     // Accept a deliberately weaker device id (a hash of the host name, stamped
