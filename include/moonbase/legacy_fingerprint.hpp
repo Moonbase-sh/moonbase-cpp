@@ -53,7 +53,7 @@ namespace moonbase {
 //
 // Use it only as a historical resolver inside a migrating_device_id_resolver, so
 // existing licenses keep validating while new activations bind the spec id. See
-// "Migrating from 3.x" in the README.
+// docs/migration-3x.md.
 class legacy_cpp_device_id_resolver : public device_id_resolver {
 public:
     using identity_parameter = std::pair<std::string, std::string>;

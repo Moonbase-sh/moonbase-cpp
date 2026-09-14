@@ -1,633 +1,178 @@
 # Moonbase C++ Activation SDK
 
-Header-only C++17 SDK for Moonbase license activation. It supports activation requests, polling for fulfilled activations, local RS256 JWT validation, cross-SDK device fingerprinting (spec v2), and overridable license storage.
+License activation for desktop apps and audio plugins, in C++.
 
-## Requirements
+[![CI](https://img.shields.io/github/actions/workflow/status/Moonbase-sh/moonbase-cpp/ci.yml?branch=main&label=CI&style=flat-square)](https://github.com/Moonbase-sh/moonbase-cpp/actions/workflows/ci.yml)
+[![JUCE module](https://img.shields.io/github/actions/workflow/status/Moonbase-sh/moonbase-cpp/juce.yml?branch=main&label=JUCE%20module&style=flat-square)](https://github.com/Moonbase-sh/moonbase-cpp/actions/workflows/juce.yml)
+[![Release](https://img.shields.io/github/v/release/Moonbase-sh/moonbase-cpp?sort=semver&display_name=tag&label=release&style=flat-square)](https://github.com/Moonbase-sh/moonbase-cpp/releases/latest)
+[![C++17](https://img.shields.io/badge/C%2B%2B-17-00599C?style=flat-square)](https://en.cppreference.com/w/cpp/17)
+[![Header-only](https://img.shields.io/badge/header--only-yes-success?style=flat-square)](docs/core-sdk.md)
+[![Platforms](https://img.shields.io/badge/platforms-macOS%20%7C%20Windows%20%7C%20Linux%20%7C%20iOS%20%7C%20Android-lightgrey?style=flat-square)](#pick-your-path)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue?style=flat-square)](LICENSE)
 
-- CMake 3.20 or newer
-- A C++17 compiler
-- Windows, macOS, or Linux (the default device id resolver has native implementations for each)
-- `CURL::libcurl` and OpenSSL (`OpenSSL::SSL`, `OpenSSL::Crypto`) — must be findable on the system (e.g. via your distro, Homebrew, or vcpkg)
-- `nlohmann_json` 3.11+ — used if `find_package(nlohmann_json)` succeeds; otherwise it is fetched automatically at build time from the upstream release tarball
+Ship a paid plugin or app and you need the same four things: let a customer unlock it,
+keep it unlocked offline, tie the seat to a machine, and hand the seat back when they
+move. This repo is those four things for C++, as a header-only core library and a
+drop-in JUCE module that adds a finished activation UI on top of it.
 
-The installed package config calls `find_dependency()` for CURL, OpenSSL, and nlohmann_json, so a consuming project does not need to repeat those `find_package` calls itself — but the libraries must be available when `find_package(moonbase_cpp)` is invoked.
+<p align="center">
+  <img src="assets/moonbase-juce-welcome.png" width="66%"
+       alt="Welcome screen: the product logo and name, an 'Activate Solstice' heading, the line 'Unlock the full plugin through your Helio Audio account.', an 'Activate online' button, a 'No internet? Activate offline' link, and a 'Licensing secured by moonbase' footer.">
+</p>
+<p align="center"><em>The JUCE module's activation UI, themed for a fictional plugin. Your logo, your colours, your copy.</em></p>
 
-## Installation
+## What's in this repo
 
-### Install from source
+| | What it is | Where |
+| --- | --- | --- |
+| **Core SDK** | Header-only C++17 library: activation, polling, local RS256 validation, offline licenses, revocation, pluggable storage and HTTP. No framework. | [`include/moonbase/`](include/moonbase/) |
+| **`moonbase_licensing`** | Drop-in JUCE module. The core SDK plus a themeable activation UI, in-app updates, and zero third-party dependencies. | [`modules/moonbase_licensing/`](modules/moonbase_licensing/) |
+| **`OnlineUnlockStatus` bridge** | Copy-paste reference header that drives `juce::OnlineUnlockStatus` from Moonbase. You supply the UI. | [`examples/juce/`](examples/juce/) |
+| **Fingerprint spec** | The normative, language-neutral device id algorithm every Moonbase SDK implements, with conformance vectors. | [`FINGERPRINT_SPEC.md`](FINGERPRINT_SPEC.md) |
 
-Clone the repository (or download a release tarball at `https://github.com/Moonbase-sh/moonbase-cpp/archive/refs/tags/v<version>.tar.gz`), then configure, build, and install:
+## Pick your path
 
-```bash
-cmake -B build -DMOONBASE_BUILD_TESTS=OFF -DMOONBASE_BUILD_EXAMPLES=OFF
-cmake --build build
-cmake --install build --prefix /your/prefix
-```
+| | Core SDK | `moonbase_licensing` module | `OnlineUnlockStatus` bridge |
+| --- | --- | --- | --- |
+| **Form** | Header-only library | Drop-in JUCE module | Copy-paste reference header |
+| **Built-in UI** | No | Yes, themeable and animated | No, you build it |
+| **Requires** | CMake 3.20, C++17 | JUCE 6.1.3+, C++17 | JUCE 7+, plus the core SDK |
+| **Third-party deps** | CURL, OpenSSL, nlohmann_json | None | Inherits the core SDK's |
+| **Best for** | Non-JUCE apps, CLI tools, your own frontend | New JUCE plugins that want a ready-made UI, including HISE projects | Projects already on `OnlineUnlockStatus` |
+| **Guide** | [`core-sdk.md`](docs/core-sdk.md) | [`juce-module.md`](docs/juce-module.md) | [`juce.md`](docs/juce.md) |
 
-### FetchContent
+All three compute the same [device id](docs/device-identity.md), so a license activated
+through one validates in the others.
 
-To pull the SDK into your own CMake build without a separate install step:
+## Quick start
+
+### Core SDK
 
 ```cmake
 include(FetchContent)
 FetchContent_Declare(moonbase_cpp
     GIT_REPOSITORY https://github.com/Moonbase-sh/moonbase-cpp.git
     GIT_TAG v4.2.0)
-set(MOONBASE_BUILD_TESTS OFF)
-set(MOONBASE_BUILD_EXAMPLES OFF)
 FetchContent_MakeAvailable(moonbase_cpp)
 
 target_link_libraries(your_app PRIVATE moonbase::licensing)
 ```
 
-`add_subdirectory()` works the same way if you vendor the source tree into your repo.
-
-## CMake
-
-```cmake
-find_package(moonbase_cpp REQUIRED)
-
-target_link_libraries(your_app PRIVATE moonbase::licensing)
-```
-
-The package exports the `moonbase::licensing` interface target, which propagates the include directory along with `CURL::libcurl`, `OpenSSL::SSL`, `OpenSSL::Crypto`, and `nlohmann_json::nlohmann_json` as transitive dependencies.
-
-The build provides three options, all useful when consuming the SDK as a subproject:
-
-| Option | Default | Purpose |
-| --- | --- | --- |
-| `MOONBASE_BUILD_TESTS` | `ON` for the top-level project, `OFF` as a subproject | Build the doctest-based unit and live tests. |
-| `MOONBASE_BUILD_EXAMPLES` | `ON` for the top-level project, `OFF` as a subproject | Build the standalone activation example under `examples/`. |
-| `MOONBASE_BUILD_JUCE_EXAMPLE` | `OFF` | Fetch JUCE and build the JUCE `OnlineUnlockStatus` bridge example (see below). |
-| `MOONBASE_BUILD_JUCE_NATIVE_EXAMPLE` | `OFF` | Fetch JUCE and build the `moonbase_licensing` native module example (see below). |
-| `MOONBASE_BUILD_DEVICE_ID_TOOL` | `ON` for the top-level project, `OFF` as a subproject | Build the `moonbase_device_id` diagnostic, which prints this machine's device id and how it was derived. |
-
-Override `MOONBASE_BUILD_TESTS` and `MOONBASE_BUILD_EXAMPLES` explicitly when you want a subproject integration to build SDK artifacts too.
-
-## Basic Usage
-
 ```cpp
 #include <moonbase/moonbase.hpp>
 
 moonbase::licensing_options options;
-options.endpoint = "https://demo.moonbase.sh";
-options.product_id = "demo-app";
-options.public_key = public_key_pem;
-options.account_id = "tenant-id"; // optional issuer check
-options.http_connect_timeout = std::chrono::seconds(10);
-options.http_request_timeout = std::chrono::seconds(30);
+options.endpoint   = "https://your-tenant.moonbase.sh";
+options.product_id = "your-product";
+options.public_key = embedded_public_key_pem;
 
 moonbase::licensing licensing(options);
-
-auto request = licensing.request_activation();
-std::cout << "Open: " << request.browser_url << "\n";
-
-std::optional<moonbase::license> license;
-while (!license) {
-    std::this_thread::sleep_for(std::chrono::seconds(1));
-    license = licensing.get_requested_activation(request);
-}
-
-licensing.store().store_local_license(*license);
+auto request = licensing.request_activation();   // send the user to request.browser_url
 ```
 
-`request_activation` takes an optional `moonbase::activation_method`. Pass
-`activation_method::offline` to have the same browser flow mint an *offline*
-license instead:
+Then poll, validate and persist: [core SDK guide](docs/core-sdk.md).
+
+### JUCE module
+
+```cmake
+juce_add_module(path/to/moonbase-cpp/modules/moonbase_licensing)
+target_link_libraries(MyPlugin PRIVATE moonbase_licensing)
+```
 
 ```cpp
-auto request = licensing.request_activation(moonbase::activation_method::offline);
+#include <moonbase_licensing/moonbase_licensing.h>
+using namespace moonbase::juce_integration;
+
+ActivationConfig config;
+config.endpoint  = "https://your-tenant.moonbase.sh";
+config.productId = "your-product";
+config.publicKey = embeddedPublicKeyPem;
+
+addAndMakeVisible(activation = std::make_unique<ActivationComponent>(config));
 ```
 
-The URL, the polling and the storage step are unchanged, but the resulting token
-carries `method: Offline`, so it is validated locally for good
-(`validate_token_online` short-circuits it) and
-[cannot be revoked](#revoking-an-activation). The product must have offline
-activations enabled in Moonbase, otherwise the call throws
-`license_invalid_error` reading "Product does not allow offline activations".
-
-On startup, validate the stored token. `validate_token_online` runs the local
-checks (signature, device fingerprint, expiry) and then re-validates against the
-Moonbase API when needed:
-
-```cpp
-if (auto local = licensing.store().load_local_license()) {
-    auto validated = licensing.validate_token_online(local->token);
-    licensing.store().store_local_license(validated); // persist refreshed token
-}
-```
-
-Two `licensing_options` knobs control how often the API is contacted and how
-much offline tolerance is allowed:
-
-- `online_validation_min_interval` (default 5 minutes) — if the local
-  `validated_at` is newer than this, the API call is skipped. Makes the method
-  cheap to call frequently (e.g. on every plugin instantiation).
-- `online_validation_grace_period` (default 7 days) — maximum age the local
-  token may reach without a successful online check. Within grace, transient
-  API failures (network down, 5xx, etc.) fall back to the local result. Beyond
-  grace, the failure is propagated.
-
-Definitive server rejections (`license_invalid_error`, `license_expired_error`)
-always propagate regardless of grace.
-
-Offline-activated tokens (`activation_method::offline`) are validated locally
-even when calling `validate_token_online` — the SDK never contacts the API for
-them. Use `validate_token_local` directly when you want the local-only check
-explicitly.
-
-## Revoking an Activation
-
-To free up the activation seat for the current device — typically wired to a
-"Deactivate" or "Sign out" button — call `revoke_activation` with the JWT:
-
-```cpp
-if (auto local = licensing.store().load_local_license()) {
-    licensing.revoke_activation(local->token); // server-side revoke + clears local store
-}
-```
-
-On success the SDK both tells the server to release the seat and deletes the
-matching license from the local store. Revoke is only meaningful for
-online-activated paid licenses; calling it for offline or trial tokens raises
-`operation_not_supported_error` without contacting the API. Server rejections
-(`license_invalid_error`) and transport failures (`api_error`) propagate the
-same way they do for `validate_token_online`, but with no grace-period
-fallback — revoke is a one-shot operation.
-
-## Offline Activation
-
-There are two routes to an offline license, and which one fits depends on
-whether the machine has network *at activation time*:
-
-- **It does:** run the normal browser activation and ask for an offline license
-  with [`request_activation(activation_method::offline)`](#basic-usage).
-  Nothing else about the flow changes.
-- **It does not:** use the file-based exchange below, which involves no network
-  on the device at all.
-
-Either way the resulting token is permanent and unrevokable; it stays valid until
-the machine's device fingerprint changes.
-
-For machines without internet access, Moonbase supports a file-based flow: the
-app emits a **device token** ("machine file"), the user exchanges it for a
-license token on the Moonbase activation page, and the app reads that token back
-in. No network is involved on the device.
-
-1. Generate the device token and write it to a file (conventionally `.dt`):
-
-   ```cpp
-   const auto device_token = licensing.generate_device_token();
-   std::ofstream("device-token.dt") << device_token;
-   ```
-
-2. The user uploads `device-token.dt` and receives a license token file (the
-   raw JWT, conventionally `license.mb`) in return. They can do this through any
-   of:
-
-   - **Moonbase's hosted portal** — `https://<your-tenant>.moonbase.sh/activate`.
-   - **The embedded storefront on your own site** — trigger the
-     [`activate_product`](https://moonbase.sh/docs/storefronts/embedded/#call-methods)
-     intent (`Moonbase.activate_product()`), which prompts for the device token
-     and hands back the license token file. The `deviceTokenFileExtension`
-     (default `.dt`) and `licenseTokenFileName` (default `license-file.mb`)
-     config options control the file types involved.
-   - **Your own custom flow** — drive the exchange yourself with the Moonbase
-     [APIs and SDKs](https://moonbase.sh/docs/licensing/offline-activations/)
-     (the `/api/customer/inventory/activate` endpoint).
-
-3. Read the downloaded token back in, validate it locally, and persist it:
-
-   ```cpp
-   std::ifstream file("license.mb");
-   const std::string token((std::istreambuf_iterator<char>(file)),
-                           std::istreambuf_iterator<char>());
-
-   auto license = licensing.read_offline_license(token); // local validation only
-   licensing.store().store_local_license(license);
-   ```
-
-`read_offline_license` runs the same local checks as `validate_token_local`
-(signature, audience, issuer, device fingerprint, expiry) and additionally
-requires the token to have been issued via offline activation, throwing
-`license_invalid_error` otherwise. On startup, validate the stored token with
-`validate_token_local` — offline tokens are never re-validated against the API
-and [cannot be revoked](#revoking-an-activation); they stay valid until the
-machine's device fingerprint changes.
-
-## Device fingerprint
-
-Every license is bound to the machine via a device id, stored in the token's `sig`
-claim and re-checked on every local validation. The default
-`moonbase_device_id_resolver` computes it from the cross-SDK
-**[device fingerprint spec](FINGERPRINT_SPEC.md)** (`moonbase:fingerprint:v2`): a
-SHA-256 of stable native hardware identifiers, stamped with the spec version.
-
-```
-mbd2_9f3c…            // 'mbd' + version + '_' + 64 lowercase hex characters
-```
-
-Sources are SMBIOS on Windows, `IOPlatformUUID` via IOKit on macOS, and
-`machine-id` plus world-readable DMI on Linux. No subprocess is spawned and no
-root-only file is read, so the id is the same elevated or not, and the resolver
-works inside an App Sandbox and a plugin host.
-
-The algorithm is language-neutral by design: any Moonbase SDK that implements the
-spec and passes the shipped
-[`fingerprint-vectors.json`](tests/vectors/fingerprint-vectors.json) computes the
-same id on a given machine, so a license activated by one validates in the others.
-Adoption is per-SDK: **this SDK conforms from 4.0.0; `@moonbase.sh/licensing`
-conforms from 3.0.0.** Check the version of whichever SDK you are pairing with
-before relying on it.
-
-The id survives a rename, a locale change, a firmware update, a vCPU resize, and
-running with or without elevated privileges. The spec's **stability contract** is
-the definitive list. Read it before shipping, along with the two Linux exceptions,
-which exist because every per-unit hardware serial is root-only there and the id is
-therefore tied to the OS installation rather than the hardware:
-
-- A Linux **OS reinstall** requires re-activation.
-- A Linux **VM cloned without clearing `/etc/machine-id`** keeps its device id, so
-  a license copied with the disk keeps validating. `machine-id(5)` requires
-  reusable images to ship that file empty; when they do, clones behave correctly.
-  The SDK cannot detect a badly-prepared image, because the value that would
-  distinguish the instances is root-only.
-
-Because the version is part of the id, a mismatch is diagnosable. `validate_token`
-throws `license_device_mismatch_error` either way, and the message says which case
-you are in:
-
-```cpp
-try {
-    licensing.validator().validate_token(token);
-} catch (const moonbase::moonbase_error& ex) {
-    if (ex.type() == moonbase::error_type::license_device_mismatch)
-        std::cerr << ex.what(); // 'not for this device', plus any version difference
-}
-```
-
-### When there is no hardware identity
-
-The resolver throws `insufficient_device_identity_error` rather than falling back
-to something weak, in two cases:
-
-- **Nothing readable.** A locked-down process, or a platform with no defined
-  parameters (Android, BSD).
-- **Only model-level values readable.** Vendor, product and board names are
-  byte-identical across every unit of a product line, so fingerprinting them would
-  let those machines validate one another's licenses. In practice: a Linux install
-  with no `machine-id`, or a machine whose SMBIOS carries an unset UUID *and* a
-  blank or filler baseboard serial, the usual shape of a cloned VM image.
-
-Opt in explicitly if a weaker id beats none. Those ids are stamped `mbd2n_` so the
-server can tell them apart:
-
-```cpp
-moonbase::moonbase_device_id_resolver_options resolver_options;
-resolver_options.fallback = moonbase::device_id_fallback::device_name;
-auto resolver = std::make_shared<moonbase::moonbase_device_id_resolver>(resolver_options);
-```
-
-### Diagnostics and parity checks
-
-`describe_device()` returns the id, spec version, platform tag and the *names* of
-the parameters that contributed. It is safe to log or attach to a support ticket,
-and returns a fresh copy each call so editing it cannot disturb the binding.
-
-```cpp
-if (const auto described = licensing.describe_device())
-    std::cout << described->device_id << " (" << described->platform << ")\n";
-```
-
-Parameter values are never exposed there, and neither are per-parameter hashes.
-They are hardware serial numbers, and an unsalted per-value digest is no safer to
-publish than the value, since low-entropy values such as host names or sequential
-serials fall to a dictionary. Which parameters contributed is the useful
-diagnostic; what they read is not.
-
-The device id itself is a one-way hash of all of them together, so it discloses no
-individual serial. It is, however, **derived identically for every
-Moonbase-powered product**. The material contains no product- or account-specific
-input, so the same machine yields the same device id everywhere, and merchants
-receive that string through the integration API and webhooks. Treat it as a stable
-cross-vendor machine identifier. That is more than `machine-id(5)` intends, which
-asks that the Linux machine id only leave the host through an
-*application-specific keyed* derivation. If that matters for your deployment,
-supply a custom `device_id_resolver` that mixes in a key of your own.
-
-The lower-level `build_fingerprint_material`, `fingerprint_digest`,
-`fingerprint_device_id` and `parse_device_id_stamp` helpers are exported from
-`<moonbase/fingerprint_spec.hpp>` so you can verify cross-SDK parity against the
-vector file. `examples/device_id.cpp` builds as the `moonbase_device_id` target and
-prints all of the above as JSON, which is what
-[the parity workflow](.github/workflows/fingerprint-parity.yml) compares against
-`@moonbase.sh/licensing` on every OS.
-
-## Security and hardening
-
-This SDK answers one question and answers it soundly: *is this license valid, for
-this product, on this machine, right now?* What it cannot do is defend the code
-that asks. Validation runs inside your binary, on a machine the user controls,
-and the result eventually becomes a branch. Keeping a token honest and keeping a
-shipped binary honest are two different problems; the SDK solves the first and
-leaves the second to you, deliberately.
-
-### What the SDK guarantees
-
-- **Only Moonbase can mint a license.** Every token is an RS256 JWT verified
-  against the public key you embed, with the algorithm pinned.
-- **A license is bound to your product.** The `aud` claim must contain your
-  `product_id`, and if you set `account_id` the issuer must match too.
-- **A license is bound to one machine, and the binding is recomputed rather than
-  read.** The `sig` claim is checked against a device id derived from the
-  machine's own hardware on every validation, never from a file, so there is no
-  stored value to edit. See [Device fingerprint](#device-fingerprint).
-- **Offline tolerance is bounded.** `online_validation_grace_period` caps how
-  long an online-activated license runs without a successful server check.
-  Transient failures fall back to the local result inside that window;
-  definitive rejections propagate immediately regardless of it.
-- **The stored file is a cache, not a credential.** The SDK re-derives every
-  field from the signed token rather than trusting what it read. Do the same:
-  branch on what the validator returned, never on fields read out of the store.
-- **The defaults fail closed.** Nothing is persisted unless you supply a store,
-  and the JUCE module's `LicenseGate` starts silent.
-
-### What it deliberately leaves to you
-
-There is no anti-debugging, obfuscation, integrity self-checking or tamper
-detection anywhere in this SDK, and there will not be. Hardening works only when
-it lives inside your binary and is specific to it: anything general enough to
-ship in an open-source header would be public, identical in every plugin using
-it, and one published bypass would apply to all of them. The SDK stops at the
-boundary where it can still keep the promises it makes.
-
-### Principles
-
-- **Ask more than once, in more than one place.** A single call site that
-  decides everything is a single thing to change.
-- **Gate what the customer pays for**, not the window or the menu item.
-- **Fail closed.** The failure you did not anticipate should be the safe one.
-- **Separate detection from response.** Nothing requires a rejection to be
-  immediate, adjacent to the check, or loud.
-- **Take the free wins.** Release builds, stripped symbols, code signing.
-- **Use the server you are already talking to.** Wire
-  [revocation](#revoking-an-activation) to a real "deactivate" affordance so seat
-  limits mean something.
-- **Price it honestly.** The goal is raising cost, not eliminating piracy, and
-  every measure is paid for by legitimate users: the studio behind a locked-down
-  network, the engineer who swapped a motherboard. Spending their goodwill to
-  inconvenience people who were never going to buy is a poor trade.
-
-For where this meets audio code, see [JUCE Plugins](#juce-plugins) and the
-`licensedFlag()` / `LicenseGate` helpers in
-[`docs/juce-module.md`](docs/juce-module.md#gating).
-
-## Migrating from 3.x
-
-Device ids computed by 3.x do not follow the spec, so **by default every device
-must re-activate once** after you upgrade. That is not free: a new device id
-consumes a fresh activation seat (the old one is not reclaimed) and resets any
-device-scoped trial. On a license with few seats, a fleet-wide upgrade can exhaust
-them immediately.
-
-Three options, in increasing order of effort:
-
-**1. Let devices re-activate (default).** Simplest, and the id is correct from then
-on. Catch `error_type::license_device_mismatch` and call `request_activation()`.
-Best when seats are generous or the install base is small.
-
-**2. Accept the old id while binding the new one (recommended for existing
-fleets).** `migrating_device_id_resolver` keeps recognising ids this device was
-previously bound to, without ever issuing one:
-
-```cpp
-auto resolver = std::make_shared<moonbase::migrating_device_id_resolver>(
-    std::make_shared<moonbase::moonbase_device_id_resolver>(),  // always what a new activation binds
-    std::make_shared<moonbase::legacy_cpp_device_id_resolver>()); // additionally accepted at validation
-
-moonbase::licensing licensing(options, store, resolver);
-```
-
-Existing licenses keep validating untouched, while anything newly activated binds
-the current fingerprint. The fleet migrates as devices naturally re-activate, with
-no flag day and no seat churn. The legacy id is computed lazily, only when the fast
-comparison fails, and then memoized, so apps on the happy path pay nothing. Drop
-the wrapper in a later release to finish the migration.
-
-**Which legacy resolver to name depends on which integration path you shipped**,
-and this is the one thing to get right:
-
-| You shipped | Historical resolver |
-| --- | --- |
-| The core SDK's default | `moonbase::legacy_cpp_device_id_resolver` (`<moonbase/legacy_fingerprint.hpp>`) |
-| The `moonbase_licensing` JUCE module | `moonbase::juce_integration::legacy_juce_device_id_resolver` |
-| The `OnlineUnlockStatus` bridge | `MoonbaseJuceDeviceIdResolver` from your copy of `MoonbaseJuceBridge.h` |
-| More than one, or you are not sure | Pass all of them |
-
-iOS and Android need migrating too. Neither has an identifier that unrelated apps
-can read, so the JUCE module emits a [scoped](FINGERPRINT_SPEC.md#scoped-identity)
-id there, stamped `mbd2s_` and derived from `identifierForVendor` or `ANDROID_ID`:
-stable for the device within the platform's own scope, and deliberately never
-correlated across scopes. That is still a different value from the raw id bound
-before 4.0.0, so name `legacy_juce_device_id_resolver` as a historical resolver on
-mobile as well.
-
-The wrapper takes any number of historical resolvers, and the only cost of an extra
-one is a single lazy hardware read on the mismatch path, so "pass both if unsure"
-is the safe advice. Note that the JUCE resolver derives its id from
-`juce::SystemStats::getUniqueDeviceID()`, which is not a published stable format,
-so it only vouches for a binding if your plugin still ships the JUCE version that
-created it.
-
-**3. Stay on the old id.** Pin `legacy_cpp_device_id_resolver` as the current
-resolver. Nothing changes, but you keep the old algorithm's defects (on Linux the
-id depended on whether the process ran elevated; on Windows the SMBIOS read never
-succeeded, so the id silently degraded to a hash of the computer name and renaming
-a PC invalidated its license) and you get no cross-SDK compatibility. Use this only
-as a short-term hold.
-
-> Options 1 and 2 both recompute every accepted id from the machine's own hardware
-> on each call. Nothing about a device binding is ever read from disk, so widening
-> what a validator accepts does not widen what an attacker can assert.
-
-## Custom storage and device resolvers
-
-```cpp
-class my_resolver final : public moonbase::device_id_resolver {
-public:
-    std::string device_name() const override { return "Studio Mac"; }
-    std::string device_id() const override { return "stable-device-id"; }
-};
-
-auto store = std::make_shared<moonbase::file_license_store>("licenses/license.mb");
-auto resolver = std::make_shared<my_resolver>();
-moonbase::licensing licensing(options, store, resolver);
-```
-
-The default store is in-memory. `file_license_store` persists a JSON representation of the validated license.
-
-A custom resolver's id is compared literally, so it does not need to follow the
-`mbd2_` stamp format, and it gives up cross-SDK compatibility by definition. If you
-include narrow SDK headers instead of `<moonbase/moonbase.hpp>`, include
-`<moonbase/moonbase_device_id_resolver.hpp>` for the default resolver and
-`<moonbase/http_curl.hpp>` for the default CURL transport.
-
-> **Renamed in 4.0.0.** `fingerprint_provider` is now `device_id_resolver`,
-> `static_fingerprint_provider` is `static_device_id_resolver`, and
-> `licensing::fingerprint()` is `licensing::device_resolver()`. The old names remain
-> as deprecated aliases and will be removed in 5.0.0; define
-> `MOONBASE_DISABLE_DEPRECATED_ALIASES` to find every remaining use now.
-
-## JUCE Plugins
-
-For JUCE-based plugins and applications there are two integration paths, both
-built on the same `moonbase::licensing` core SDK. The native
-[`moonbase_licensing`](docs/juce-module.md) module is the recommended choice for
-new projects; the [`juce::OnlineUnlockStatus` bridge](docs/juce.md) remains
-available and unchanged.
-
-| | Native module | `OnlineUnlockStatus` bridge |
-| --- | --- | --- |
-| **Form** | Drop-in JUCE module | Copy-paste reference header |
-| **Built-in UI** | Yes (polished, animated, themeable: `config.palette` + `config.fonts`) | No (you build it) |
-| **JUCE integration** | Native Moonbase API | `juce::OnlineUnlockStatus` wrapper |
-| **JUCE version** | 6.1.3+ | 7+ |
-| **Device fingerprint** | Spec v2 (`mbd2_`), cross-SDK; scoped `mbd2s_` on mobile | Spec v2 (`mbd2_`), cross-SDK; scoped `mbd2s_` on mobile |
-| **Third-party deps** | None (JUCE `WebInputStream` HTTP, bundled `nlohmann/json`, OS-native RS256) | Inherits the core SDK's CURL + OpenSSL |
-| **Entry point** | `ActivationComponent` / `ActivationDialog` | `MoonbaseUnlockStatus` |
-| **Best for** | New plugins wanting a ready-made UI | Apps already on `OnlineUnlockStatus` |
-| **Docs** | [`docs/juce-module.md`](docs/juce-module.md) | [`docs/juce.md`](docs/juce.md) |
-
-### Native module: `moonbase_licensing`
-
-A drop-in JUCE module that adds Moonbase activation, plus a built-in
-themeable activation UI, to any app or plugin. Builds on JUCE 6.1.3 and up,
-so it also works inside a HISE project. It talks to the Moonbase
-licensing API natively (it does not use `juce::OnlineUnlockStatus`) and has no
-third-party dependencies: HTTP goes through `juce::WebInputStream`, JSON is a
-bundled `nlohmann/json`, and RS256 verification uses the OS-native crypto
-(Security.framework, CNG/bcrypt, libcrypto). The module lives at
-[`modules/moonbase_licensing/`](modules/moonbase_licensing/); add it with
-`juce_add_module()` (or via Projucer), fill in three config fields, and show one
-`ActivationComponent`. See [`docs/juce-module.md`](docs/juce-module.md) for the
-full guide.
-
-<p align="center">
-  <img src="assets/moonbase-juce-license.png" width="600"
-       alt="The moonbase_licensing activation UI showing license details: licensed-to name, email, plan, activation type, expiry, seat count, and a Deactivate this device button.">
-</p>
-
-Build the in-repo sample app with:
-
-```bash
-cmake -B build -DMOONBASE_BUILD_JUCE_NATIVE_EXAMPLE=ON
-cmake --build build --target MoonbaseActivationNative
-```
-
-#### Reference implementation: DRIFT
-
-[**DRIFT by Corino**](https://github.com/Moonbase-sh/corino-drift) is a JUCE 8
-VST3 / AU / Standalone plugin built as a reference implementation of this module
-(the native-module counterpart to [HALO](https://github.com/Moonbase-sh/corino-halo),
-which uses the bridge). Its knobs are real, automatable parameters that
-deliberately don't process audio; the point is the activation workflow wrapped
-around a real plugin:
-
-- The processor owns the headless `ActivationController` as the single source of
-  truth and calls `start()` to load + validate any stored license on a background
-  thread, updating the audio-thread-safe `licensedFlag()`.
-- `LicenseGate` reads that lock-free flag in `processBlock` and fades to silence
-  when unlicensed (and back up when licensed), so gating never clicks.
-- The editor shares the processor's controller and shows the module's brandable
-  `ActivationComponent` as a modal overlay (`overlayBackdrop = true`), opened from
-  a "Manage License" button via `appear()`; `onActivationChanged` keeps the UI in
-  sync with no re-wiring.
-- Every connection, branding, trial and telemetry field lives in one
-  `makeDriftActivationConfig()` factory shared by the processor and the editor.
-- GitHub Actions CI + release pipelines build the plugin bundles across platforms.
-
-DRIFT consumes the module via `FetchContent` + `juce_add_module()` (no git
-submodule). See
-[`src/Licensing.h`](https://github.com/Moonbase-sh/corino-drift/blob/main/src/Licensing.h)
-for the single config point and its
-[`CMakeLists.txt`](https://github.com/Moonbase-sh/corino-drift/blob/main/CMakeLists.txt)
-for the full wiring.
+Three fields and one component, and every screen below is wired up:
+[module overview](modules/moonbase_licensing/), [full guide](docs/juce-module.md).
 
 ### `OnlineUnlockStatus` bridge
 
-A drop-in bridge ([`docs/juce.md`](docs/juce.md)) that wires Moonbase activation
-into `juce::OnlineUnlockStatus`, uses the same spec device id as the rest of the
-SDK, and populates activation metadata with host/system
-context (DAW, plugin format, OS, CPU, JUCE version). The bridge header lives at
-[`examples/juce/MoonbaseJuceBridge.h`](examples/juce/MoonbaseJuceBridge.h) and is
-copy-pasteable into any JUCE project; you supply your own activation UI.
+Copy [`examples/juce/MoonbaseJuceBridge.h`](examples/juce/MoonbaseJuceBridge.h) into
+your project and use `MoonbaseUnlockStatus` wherever you use
+`juce::OnlineUnlockStatus` today: [bridge guide](docs/juce.md).
 
-Build the in-repo sample app with:
+<p align="center">
+  <img src="assets/moonbase-juce-trial.png" width="49%"
+       alt="Trial screen: a free-trial panel with days remaining, a progress bar, and an Unlock full version button.">
+  <img src="assets/moonbase-juce-update.png" width="49%"
+       alt="Update available screen: an 'Update available' pill, a 'Solstice 1.0.0 is ready' heading, a 'What's new' changelog card, a Download button, and a 'Skip this update' link.">
+</p>
+<p align="center"><em>Trials and in-app updates, both built into the module.</em></p>
 
-```bash
-cmake -B build -DMOONBASE_BUILD_JUCE_EXAMPLE=ON
-cmake --build build --target MoonbaseJuceExample
-```
+## What you get
 
-The flag is opt-in: JUCE is fetched and compiled only when it's set (the same
-applies to `MOONBASE_BUILD_JUCE_NATIVE_EXAMPLE`).
+- **Browser activation.** The app asks for a request, opens a URL, and polls. No serial
+  numbers to type, no keyfiles to email.
+- **Offline activation.** Either mint an offline license through the normal browser
+  flow, or, on a machine with no network at all, exchange a device token file for a
+  license token file. Both produce a permanent, locally-validated license.
+- **Local-first validation.** Signature, audience, issuer, device and expiry are checked
+  in-process. The API is contacted at most every few minutes, and a configurable grace
+  period keeps a plugin working through an outage.
+- **Cross-SDK device identity.** A SHA-256 of stable native hardware identifiers, per
+  the [shared spec](FINGERPRINT_SPEC.md). No subprocess, no root-only file, so it works
+  inside an App Sandbox and a plugin host and reads the same elevated or not.
+- **Trials, seats and entitlements.** Trial state, seat counts, expiry, sub-product
+  ownership and custom properties all arrive on the validated license, so you can gate
+  on more than a boolean.
+- **In-app updates.** The module surfaces a newer entitled release, shows its notes, and
+  downloads the installer for the user's platform with progress.
 
-#### Reference implementation: HALO
+## Reference implementations
 
-[**HALO by Corino**](https://github.com/Moonbase-sh/corino-halo) is a JUCE 8
-standalone GUI application built specifically as a reference implementation
-of this SDK. It's a saturator-styled app that doesn't actually process
-audio; the entire point is the license-gate workflow around it:
+Two real JUCE 8 projects built as reference integrations. Their knobs deliberately do
+not process audio; the point is the licensing workflow wrapped around a real plugin.
 
-- Startup runs a synchronous local JWT check, then re-validates against the
-  Moonbase API on a background thread via `tryLoadStoredLicenseAsync`.
-- Browser activation handshake with 1-second `juce::Timer` polling.
-- "Sign out" menu item wired to `revokeActivationAsync` with a graceful
-  `NotRevokable` fallback to a local-only forget.
-- `file_license_store` persisted under the platform's per-user app data
-  directory.
-- GitHub Actions release pipeline that builds on macOS + Windows and
-  publishes binaries straight to a Moonbase tenant.
+**[DRIFT by Corino](https://github.com/Moonbase-sh/corino-drift)** (VST3 / AU /
+Standalone) is the **native module** reference. The processor owns a headless
+`ActivationController`, `LicenseGate` fades to silence off a lock-free flag in
+`processBlock`, and the editor shows `ActivationComponent` as a modal overlay. Every
+connection, branding, trial and telemetry field lives in one shared factory:
+[`src/Licensing.h`](https://github.com/Moonbase-sh/corino-drift/blob/main/src/Licensing.h).
 
-HALO vendors the bridge header verbatim from this repo and consumes
-`moonbase::licensing` via `FetchContent`. See
-[`src/license/HaloLicenseBridge.cpp`](https://github.com/Moonbase-sh/corino-halo/blob/main/src/license/HaloLicenseBridge.cpp)
-and its [`CMakeLists.txt`](https://github.com/Moonbase-sh/corino-halo/blob/main/CMakeLists.txt)
-for the full wiring.
+**[HALO by Corino](https://github.com/Moonbase-sh/corino-halo)** (standalone app) is the
+**bridge** reference: a synchronous local check on startup, background re-validation,
+timer-polled activation, and a "Sign out" item wired to revocation with a local-only
+fallback. It vendors the bridge header verbatim from this repo:
+[`src/license/HaloLicenseBridge.cpp`](https://github.com/Moonbase-sh/corino-halo/blob/main/src/license/HaloLicenseBridge.cpp).
 
-## Live Tests
+## Documentation
 
-Unit tests do not hit the network. Live API tests are opt-in:
+| | |
+| --- | --- |
+| [Core SDK](docs/core-sdk.md) | Install, CMake options, activation, validation, revocation, offline licenses, custom storage |
+| [JUCE module](docs/juce-module.md) | Setup, the flow, gating, theming, updates, diagnostics, telemetry |
+| [`OnlineUnlockStatus` bridge](docs/juce.md) | Wiring, async activation, deactivation, gating, metadata |
+| [Device identity](docs/device-identity.md) | What the device id is made of, failure modes, diagnostics |
+| [Fingerprint spec](FINGERPRINT_SPEC.md) | The normative cross-SDK algorithm and stability contract |
+| [Security](docs/security.md) | What the SDK guarantees, what it leaves to you, and how to gate well |
+| [Migrating from 3.x](docs/migration-3x.md) | The 4.0.0 device id change, and how to migrate a shipped fleet |
+| [Contributing](CONTRIBUTING.md) | Build, test, generated files, CI, releases |
+| Samples | [core](examples/activation.cpp), [JUCE module](examples/juce-native/), [bridge](examples/juce/), [UI snapshots](tests/visual/) |
 
-```bash
-scripts/test.sh
-scripts/test.sh --live
-```
+## Security
 
-Defaults target the demo setup used by the Node SDK:
+This SDK answers one question soundly: is this license valid, for this product, on this
+machine, right now? It deliberately ships no anti-debugging, obfuscation or tamper
+detection, because anything general enough to live in an open-source header is
+identical in every plugin using it, and one published bypass would apply to all of
+them. Hardening belongs in your binary. [How to do it well](docs/security.md).
 
-- `MOONBASE_CPP_ENDPOINT`, default `https://demo.moonbase.sh`
-- `MOONBASE_CPP_PRODUCT_ID`, default `demo-app`
-- `MOONBASE_CPP_PUBLIC_KEY`, default demo public key
-- `MOONBASE_CPP_ACCOUNT_ID`, optional issuer check
+## Versioning
 
-Live tests create a unique activation request and try to fulfill it through the anonymous trial endpoint.
-
-## Releases
-
-Releases are fully automated by [semantic-release](https://semantic-release.gitbook.io/) running on every push to `main`. The next version is determined by [Conventional Commits](https://www.conventionalcommits.org/):
-
-- `fix: ...` &rarr; patch (e.g. `0.1.0` &rarr; `0.1.1`)
-- `feat: ...` &rarr; minor (e.g. `0.1.0` &rarr; `0.2.0`)
-- `feat!: ...` or any commit with a `BREAKING CHANGE:` footer &rarr; major
-
-Pull requests must be merged with **squash merging**, and the PR title must follow Conventional Commits — that title becomes the squash commit on `main` and is what semantic-release reads. The `PR Title` workflow enforces this on every PR.
-
-Each release:
-
-- Bumps `VERSION` in `CMakeLists.txt` (which flows into `MOONBASE_CPP_VERSION` and the `User-Agent: moonbase-cpp/<version>` header)
-- Updates `CHANGELOG.md`
-- Tags the commit and creates a GitHub Release (with the auto-generated source archives at `https://github.com/<owner>/<repo>/archive/refs/tags/v<version>.tar.gz`)
+Semantic versioning, tagged `v<major>.<minor>.<patch>`. Source archives are published
+per tag at
+`https://github.com/Moonbase-sh/moonbase-cpp/archive/refs/tags/v<version>.tar.gz`, and
+the installed CMake package declares `SameMajorVersion` compatibility.
 
 ## License
 

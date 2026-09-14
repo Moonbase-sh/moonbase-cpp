@@ -314,7 +314,7 @@ public path into JUCE's private `status` ValueTree, so we go through it.
 implements the cross-SDK [device fingerprint spec](../FINGERPRINT_SPEC.md)
 (`moonbase:fingerprint:v2`). A license activated in a web or Electron app built on
 `@moonbase.sh/licensing` therefore validates in your plugin, and the other way
-round. See [Device fingerprint](../README.md#device-fingerprint) for the stability
+round. See [Device identity](device-identity.md) for the stability
 contract and the Linux caveats.
 
 It needs no JUCE at all, and spawns no subprocess on any platform: IOKit on macOS,
@@ -345,7 +345,7 @@ it, so do not combine this upgrade with a JUCE major bump.
 
 Without the wrapper, users are locked out until they re-activate, which consumes a
 fresh activation seat and resets any device-scoped trial. The full set of options is
-in [Migrating from 3.x](../README.md#migrating-from-3x).
+in [Migrating from 3.x](migration-3x.md).
 
 Switching resolvers changes the device id Moonbase sees, so pick one when you ship
 and stay with it. The migrating wrapper exists precisely so a change of algorithm

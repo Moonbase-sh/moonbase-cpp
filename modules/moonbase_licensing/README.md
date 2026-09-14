@@ -191,5 +191,5 @@ ships the JUCE version that created it, so do not combine this upgrade with a JU
 major bump.
 
 See [`docs/juce-module.md`](../../docs/juce-module.md#migrating-an-already-shipped-plugin)
-for the details, and [Migrating from 3.x](../../README.md#migrating-from-3x) for the
+for the details, and [Migrating from 3.x](../../docs/migration-3x.md) for the
 other options.

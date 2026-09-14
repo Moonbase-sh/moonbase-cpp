@@ -7,7 +7,7 @@
 // moonbase_device_id_resolver rather than to the old `moonbase-cpp:fingerprint:v1`
 // algorithm. Device ids computed here therefore differ from those computed by
 // 3.x, and existing licenses need either re-activation or a
-// migrating_device_id_resolver. See "Migrating from 3.x" in the README.
+// migrating_device_id_resolver. See docs/migration-3x.md.
 //
 // The previous algorithm is preserved verbatim as
 // moonbase::legacy_cpp_device_id_resolver in <moonbase/legacy_fingerprint.hpp>,
