@@ -15,7 +15,6 @@ fi
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cmake_file="$repo_root/CMakeLists.txt"
-readme_file="$repo_root/README.md"
 module_file="$repo_root/modules/moonbase_licensing/moonbase_licensing.h"
 
 if [[ ! -f "$cmake_file" ]]; then
@@ -34,20 +33,35 @@ fi
 
 echo "bumped CMakeLists.txt VERSION to $new_version"
 
-if [[ ! -f "$readme_file" ]]; then
-    echo "bump-version.sh: README.md not found at $readme_file" >&2
-    exit 1
-fi
+# The pinned GIT_TAG in the FetchContent install snippets. Every file listed here
+# must carry at least one `GIT_TAG v<semver>` line and must also appear in
+# .releaserc.json's git assets, or the rewrite happens in the release workflow's
+# working tree and is thrown away. The grep guard below is what turns a moved or
+# reformatted snippet into a failed release rather than a stale published pin.
 
-sed -E -i.bak "s|(GIT_TAG[[:space:]]+)v[0-9]+\.[0-9]+\.[0-9]+|\1v${new_version}|" "$readme_file"
-rm -f "${readme_file}.bak"
+pinned_files=(
+    "README.md"
+    "docs/core-sdk.md"
+)
 
-if ! grep -Eq "GIT_TAG[[:space:]]+v${new_version}([^0-9]|$)" "$readme_file"; then
-    echo "bump-version.sh: failed to update README.md GIT_TAG to v$new_version" >&2
-    exit 1
-fi
+for rel in "${pinned_files[@]}"; do
+    file="$repo_root/$rel"
 
-echo "bumped README.md GIT_TAG to v$new_version"
+    if [[ ! -f "$file" ]]; then
+        echo "bump-version.sh: $rel not found at $file" >&2
+        exit 1
+    fi
+
+    sed -E -i.bak "s|(GIT_TAG[[:space:]]+)v[0-9]+\.[0-9]+\.[0-9]+|\1v${new_version}|" "$file"
+    rm -f "${file}.bak"
+
+    if ! grep -Eq "GIT_TAG[[:space:]]+v${new_version}([^0-9]|$)" "$file"; then
+        echo "bump-version.sh: failed to update $rel GIT_TAG to v$new_version" >&2
+        exit 1
+    fi
+
+    echo "bumped $rel GIT_TAG to v$new_version"
+done
 
 # The JUCE module carries its own version in two places: the `version:` field the
 # Projucer reads out of the BEGIN_JUCE_MODULE_DECLARATION block, and the

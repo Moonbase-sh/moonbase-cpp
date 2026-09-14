@@ -199,7 +199,7 @@ By default the module identifies the device with
 [device fingerprint spec](../FINGERPRINT_SPEC.md) (`moonbase:fingerprint:v2`). A
 license activated in a web or Electron app built on `@moonbase.sh/licensing`
 validates in your plugin, and the other way round. See
-[Device fingerprint](../README.md#device-fingerprint) for the stability contract and
+[Device identity](device-identity.md) for the stability contract and
 the Linux caveats.
 
 It still shells out to nothing: IOKit on macOS, world-readable files on Linux and
@@ -236,7 +236,7 @@ release. Because `getUniqueDeviceID()` is JUCE's own derivation rather than a
 published format, the historical resolver only vouches for a binding if the plugin
 still ships the JUCE version that created it, so do not combine this upgrade with a
 JUCE major bump. Full options in
-[Migrating from 3.x](../README.md#migrating-from-3x).
+[Migrating from 3.x](migration-3x.md).
 
 ### iOS and Android use a scoped identity
 
