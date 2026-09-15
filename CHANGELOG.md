@@ -1,3 +1,10 @@
+# [4.3.0](https://github.com/Moonbase-sh/moonbase-cpp/compare/v4.2.0...v4.3.0) (2026-09-15)
+
+
+### Features
+
+* **juce:** build the module on JUCE 6.1.3, 7.x and 8.x ([#28](https://github.com/Moonbase-sh/moonbase-cpp/issues/28)) ([dbc2a41](https://github.com/Moonbase-sh/moonbase-cpp/commit/dbc2a41dd6ec1343af7c597b41fe9243c953014a))
+
 # [4.2.0](https://github.com/Moonbase-sh/moonbase-cpp/compare/v4.1.0...v4.2.0) (2026-08-21)
 
 
