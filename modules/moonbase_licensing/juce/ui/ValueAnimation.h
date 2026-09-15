@@ -11,6 +11,7 @@
 // source is the owner's juce::Timer, which is how ActivationComponent already
 // drove the JUCE 8 animators.
 
+#include <cstddef>
 #include <functional>
 #include <memory>
 #include <utility>
@@ -343,10 +344,11 @@ public:
 #if MOONBASE_JUCE_HAS_ANIMATION
         updater.update(nowMs);
 #else
-        // Copy first: a completion callback may add or drop animations.
-        auto snapshot = animations;
-        for (auto& a : snapshot)
-            a->update(nowMs);
+        // By index, re-reading size(): this runs 60 times a second, so it must not
+        // allocate, and a completion callback is allowed to add an animation (which
+        // can reallocate the vector underneath us). Nothing ever removes one.
+        for (std::size_t i = 0; i < animations.size(); ++i)
+            animations[i]->update(nowMs);
 #endif
     }
 

@@ -38,9 +38,6 @@ jobs:
           - { os: ubuntu-latest, juce: "8.0.4" }
           - { os: macos-14, juce: "8.0.4" }
           - { os: windows-latest, juce: "8.0.4" }
-          # 8.0.0 is the boundary the compat shims care about: FontOptions is
-          # there, but GlyphArrangement::getStringWidth (8.0.2) and
-          # AnimatorUpdater::update(double) (8.0.4) are not.
           - { os: macos-14, juce: "8.0.0" }
           - { os: macos-14, juce: "7.0.12" }
           - { os: macos-14, juce: "6.1.3" }
