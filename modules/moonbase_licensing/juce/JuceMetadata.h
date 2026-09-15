@@ -66,7 +66,9 @@ inline std::string pluginFormatTag(juce::AudioProcessor::WrapperType wrapper)
         case juce::AudioProcessor::wrapperType_AudioUnitv3: return "AUv3";
         case juce::AudioProcessor::wrapperType_AAX:         return "AAX";
         case juce::AudioProcessor::wrapperType_Standalone:  return "Standalone";
+#if JUCE_MAJOR_VERSION >= 7
         case juce::AudioProcessor::wrapperType_LV2:         return "LV2";
+#endif
         case juce::AudioProcessor::wrapperType_Unity:       return "Unity";
         case juce::AudioProcessor::wrapperType_Undefined:
         default:                                            return "Unknown";

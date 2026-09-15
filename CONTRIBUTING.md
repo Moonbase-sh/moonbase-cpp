@@ -81,9 +81,9 @@ Both take `--check`, which is exactly what the `consistency` job in
 | Workflow | Runs |
 | --- | --- |
 | [CI](.github/workflows/ci.yml) | Consistency checks, then build + test + install + consumer smoke on Linux, macOS and Windows |
-| [JUCE module](.github/workflows/juce.yml) | The module and its tests on all three platforms, the only job exercising the native crypto backends |
+| [JUCE module](.github/workflows/juce.yml) | The module and its tests on all three platforms, plus JUCE 8.0.0, 7.0.12 and 6.1.3 on macOS; the only job exercising the native crypto backends |
 | [Sanitizers](.github/workflows/sanitizers.yml) | ASan + UBSan and TSan over the test suite |
-| [Visual tests](.github/workflows/visual.yml) | Renders the UI snapshots and uploads them to Argos when `ARGOS_TOKEN` is set |
+| [Visual tests](.github/workflows/visual.yml) | Renders the UI snapshots and uploads them to Argos when `ARGOS_TOKEN` is set, plus a JUCE 6.1.3 smoke render |
 | [Fingerprint parity](.github/workflows/fingerprint-parity.yml) | Proves on real hardware, per OS, that this SDK and `@moonbase.sh/licensing` compute the same device id |
 | [PR Title](.github/workflows/pr-title.yml) | Enforces the Conventional Commits PR title |
 

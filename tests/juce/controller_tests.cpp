@@ -15,6 +15,7 @@
 
 #include <moonbase_licensing/moonbase_licensing.h>
 
+#include <cmath>
 #include <functional>
 #include <utility>
 #include <vector>
@@ -1280,7 +1281,7 @@ TEST_CASE("fonts.makeFont takes over every font the UI asks for")
     fonts.makeFont = [&asked](Role role, float height)
     {
         asked.emplace_back(role, height);
-        return juce::Font(juce::FontOptions().withHeight(height).withStyle("Italic"));
+        return compat::font(height).withStyle(juce::Font::italic);
     };
 
     ActivationLookAndFeel lnf(juce::Colour(0xff186cdc), {}, fonts);
@@ -1299,7 +1300,7 @@ TEST_CASE("a role typeface is used for that role only")
 {
     // A tiny valid TTF is more machinery than this needs: a system typeface is
     // enough to prove the plumbing, since the fallback path never sets one.
-    auto face = juce::Font(juce::FontOptions().withHeight(12.0f)).getTypefacePtr();
+    auto face = compat::font(12.0f).getTypefacePtr();
     if (face == nullptr)
         return; // no resolvable system font on this box; the fallbacks are covered above
 
@@ -1312,6 +1313,86 @@ TEST_CASE("a role typeface is used for that role only")
     CHECK(lnf.mono(12.5f).getHeight() == doctest::Approx(12.5f));
     // The other roles are untouched, so they still resolve at paint time.
     CHECK(lnf.heading(12.5f).isBold());
+}
+
+//==============================================================================
+// The animation seam has two backends (juce_animation when the project links it,
+// the module's own otherwise). These pin the semantics the UI depends on, and run
+// against whichever one this build picked.
+
+TEST_CASE("an animation eases from 0 to 1 and completes exactly once")
+{
+    anim::Updater updater;
+    std::vector<float> values;
+    int completions = 0;
+
+    auto animation = anim::AnimationBuilder{}
+                         .withDurationMs(100.0)
+                         .withEasing(anim::easings::createLinear())
+                         .withValueChangedCallback([&](float v) { values.push_back(v); })
+                         .withOnCompleteCallback([&] { ++completions; })
+                         .build();
+    updater.addAnimation(animation);
+    animation.start();
+
+    // The first tick is the start of the timeline, not an offset into it, so the
+    // ticks below are 0/25/50/75/100 percent of the duration.
+    for (int i = 0; i <= 6; ++i)
+        updater.update(static_cast<double>(i) * 25.0);
+
+    REQUIRE(values.size() >= 5);
+    CHECK(values.front() == doctest::Approx(0.0f));
+    CHECK(values[2] == doctest::Approx(0.5f));
+    // The frame that finishes reports exactly 1.0, and nothing is reported after.
+    CHECK(values.back() == doctest::Approx(1.0f));
+    CHECK(completions == 1);
+}
+
+TEST_CASE("an infinite animation keeps advancing past 1.0")
+{
+    // This is the panel glow: linear, infinite, wrapped into [0,1) by the caller.
+    // Any other easing flattens past 1.0 (the curve extrapolates by its end-point
+    // gradient, 0 for the default ease) and the glow would stop after one pass.
+    anim::Updater updater;
+    std::vector<float> values;
+
+    auto animation = anim::AnimationBuilder{}
+                         .withDurationMs(100.0)
+                         .runningInfinitely()
+                         .withEasing(anim::easings::createLinear())
+                         .withValueChangedCallback([&](float v) { values.push_back(v); })
+                         .build();
+    updater.addAnimation(animation);
+    animation.start();
+
+    for (int i = 0; i <= 25; ++i)
+        updater.update(static_cast<double>(i) * 10.0);
+
+    REQUIRE(values.size() >= 26);
+    CHECK(values.back() == doctest::Approx(2.5f));           // 250ms of a 100ms loop
+    CHECK(std::fmod(values.back(), 1.0f) == doctest::Approx(0.5f));
+}
+
+TEST_CASE("the shipped easing curves match the ones juce::Easings builds")
+{
+    // Same cubic-bezier control points either way, so a build with juce_animation
+    // and a build without it animate identically.
+    const auto easeOut = anim::easings::createEaseOut();
+    const auto easeOutBack = anim::easings::createEaseOutBack();
+    const auto easeInOutCubic = anim::easings::createEaseInOutCubic();
+
+    for (const auto& easing : { easeOut, easeOutBack, easeInOutCubic })
+    {
+        CHECK(easing(0.0f) == doctest::Approx(0.0f).epsilon(0.001));
+        CHECK(easing(1.0f) == doctest::Approx(1.0f).epsilon(0.001));
+    }
+
+    // cubic-bezier(0, 0, 0.58, 1): decelerating, so it is ahead of linear.
+    CHECK(easeOut(0.5f) > 0.5f);
+    // cubic-bezier(0.65, 0, 0.35, 1): symmetric about the midpoint.
+    CHECK(easeInOutCubic(0.5f) == doctest::Approx(0.5f).epsilon(0.001));
+    // cubic-bezier(0.34, 1.56, 0.64, 1): overshoots 1.0 before settling.
+    CHECK(easeOutBack(0.6f) > 1.0f);
 }
 
 //==============================================================================

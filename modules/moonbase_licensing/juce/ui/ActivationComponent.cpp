@@ -1,7 +1,6 @@
 #include "ActivationComponent.h"
 #include "ActivationLookAndFeel.h"
-
-#include <juce_animation/juce_animation.h>
+#include "ValueAnimation.h"
 
 #include <cmath>
 #include <optional>
@@ -101,7 +100,7 @@ constexpr float iconSz = 14.0f;
 [[nodiscard]] inline float width(const juce::Font& f, const juce::String& drawnLabel,
                                  float ornamentW = 0.0f)
 {
-    return labelOffset(ornamentW) + juce::GlyphArrangement::getStringWidth(f, drawnLabel) + sidePad;
+    return labelOffset(ornamentW) + compat::stringWidth(f, drawnLabel) + sidePad;
 }
 
 // Right-anchored in `slot`, clear of `rightInset` (the close button).
@@ -227,7 +226,7 @@ public:
         g.setFont(font);
         const float iconSize = 16.0f;
         const float gap = icon ? 8.0f : 0.0f;
-        const float textW = juce::GlyphArrangement::getStringWidth(font, label);
+        const float textW = compat::stringWidth(font, label);
         const float totalW = textW + (icon ? iconSize + gap : 0.0f);
         float x = (r.getWidth() - totalW) * 0.5f;
 
@@ -318,7 +317,7 @@ public:
         g.setFont(font);
         const float iconSize = 14.0f;
         const float gap = icon ? 6.0f : 0.0f;
-        const float textW = juce::GlyphArrangement::getStringWidth(font, label);
+        const float textW = compat::stringWidth(font, label);
         const float totalW = textW + (icon ? iconSize + gap : 0.0f);
         float x = justification.testFlags(Justification::left)
                       ? 0.0f
@@ -435,8 +434,8 @@ public:
 
         const float iconS = 22.0f, gap = 10.0f;
         const float avail = r.getWidth() - iconS - gap - 20.0f;
-        const float textW = juce::jmin(avail, juce::jmax(juce::GlyphArrangement::getStringWidth(fontMain, line1),
-                                                         juce::GlyphArrangement::getStringWidth(fontSub, line2)));
+        const float textW = juce::jmin(avail, juce::jmax(compat::stringWidth(fontMain, line1),
+                                                         compat::stringWidth(fontSub, line2)));
         const float groupW = iconS + gap + textW;
         float gx = r.getCentreX() - groupW * 0.5f;
         const float cy = r.getCentreY();
@@ -556,8 +555,8 @@ public:
         const auto fontB = lnf.body(12.0f);
         const juce::String prefix = "Licensing secured by";
         const juce::String name = "moonbase";
-        const float w1 = juce::GlyphArrangement::getStringWidth(fontA, prefix);
-        const float w2 = juce::GlyphArrangement::getStringWidth(fontB, name);
+        const float w1 = compat::stringWidth(fontA, prefix);
+        const float w2 = compat::stringWidth(fontB, name);
         const float lockS = 14.0f, markS = 14.0f, g1 = 6.0f, g2 = 8.0f, g3 = 7.0f;
         const float total = lockS + g1 + w1 + g2 + markS + g3 + w2;
 
@@ -808,7 +807,7 @@ private:
     {
         const auto chipText = controller.deviceLabel();
         auto chipFont = lnf.mono(12.5f);
-        const float tw = juce::GlyphArrangement::getStringWidth(chipFont, chipText);
+        const float tw = compat::stringWidth(chipFont, chipText);
         auto chip = Rectangle<float>(0, 0, juce::jmin((float) getWidth(), tw + 52.0f), 32.0f)
                         .withCentre({ (float) getWidth() * 0.5f, (float) row.getCentreY() });
         g.setColour(lnf.palette.ghostFill);
@@ -1596,8 +1595,7 @@ public:
         const int bw = juce::jmin(180, content.getWidth() / 2);
 
         // Drop to a short label when the button is too narrow for the full text.
-        const float fullW = juce::GlyphArrangement::getStringWidth(lnf.heading(14.0f),
-                                                                   "Deactivate this device");
+        const float fullW = compat::stringWidth(lnf.heading(14.0f), "Deactivate this device");
         deactivate->setButtonText((float) bw >= fullW + 24.0f ? juce::String("Deactivate this device")
                                                               : juce::String("Deactivate"));
 
@@ -1699,8 +1697,8 @@ private:
     {
         const auto& cfg = controller.config();
         const float textW = juce::jmax(
-            juce::GlyphArrangement::getStringWidth(lnf.heading(15.0f), cfg.resolvedProductName()),
-            juce::GlyphArrangement::getStringWidth(lnf.body(11.5f), cfg.resolvedManufacturerName()));
+            compat::stringWidth(lnf.heading(15.0f), cfg.resolvedProductName()),
+            compat::stringWidth(lnf.body(11.5f), cfg.resolvedManufacturerName()));
         return headerRow.getX() + 34 + 13 + (int) std::ceil(textW);
     }
 
@@ -2146,9 +2144,9 @@ struct ActivationComponent::Impl : public juce::ChangeListener,
         owner.addChildComponent(*moonbaseBadge); // shown only when config.showMoonbaseBadge
 
         buildAnimators();
-        // Drive the JUCE 8 animators from a timer rather than a
-        // VBlankAnimatorUpdater: the latter did not deliver ticks reliably for a
-        // freshly-shown plugin/app window. update() uses the hi-res clock.
+        // Drive the animations from a timer rather than a VBlankAnimatorUpdater:
+        // the latter did not deliver ticks reliably for a freshly-shown
+        // plugin/app window. update() uses the hi-res clock.
         startTimerHz(60);
         controller.addChangeListener(this);
 
@@ -2262,10 +2260,14 @@ struct ActivationComponent::Impl : public juce::ChangeListener,
     void buildAnimators()
     {
         // runningInfinitely() makes progress climb past 1.0 without wrapping, so
-        // wrap into [0,1) ourselves for a continuous loop.
-        glowAnim.emplace(juce::ValueAnimatorBuilder{}
+        // wrap into [0,1) ourselves for a continuous loop. That only loops with a
+        // linear easing: every other curve extrapolates past 1.0 by its end-point
+        // gradient, which for the default ease is 0, freezing the glow after one
+        // pass.
+        glowAnim.emplace(anim::AnimationBuilder{}
                              .withDurationMs(5000.0)
                              .runningInfinitely()
+                             .withEasing(anim::easings::createLinear())
                              .withValueChangedCallback([this](float v)
                                                        {
                                                            glowPhase = (float) std::fmod(v, 1.0);
@@ -2274,23 +2276,23 @@ struct ActivationComponent::Impl : public juce::ChangeListener,
                              .build());
 
         // Directional slide + cross-fade between screens, clipped to screenHost.
-        transitionAnim.emplace(juce::ValueAnimatorBuilder{}
+        transitionAnim.emplace(anim::AnimationBuilder{}
                                    .withDurationMs(380.0)
-                                   .withEasing(juce::Easings::createEaseInOutCubic())
+                                   .withEasing(anim::easings::createEaseInOutCubic())
                                    .withValueChangedCallback([this](float v) { applyTransition(v); })
                                    .withOnCompleteCallback([this] { finishTransition(); })
                                    .build());
 
-        successAnim.emplace(juce::ValueAnimatorBuilder{}
+        successAnim.emplace(anim::AnimationBuilder{}
                                 .withDurationMs(520.0)
-                                .withEasing(juce::Easings::createEaseOutBack())
+                                .withEasing(anim::easings::createEaseOutBack())
                                 .withValueChangedCallback([this](float v) { success->setPop(v); })
                                 .build());
 
         // Modal appear/dismiss: fades + scales the whole overlay (scrim + panel).
-        appearAnim.emplace(juce::ValueAnimatorBuilder{}
+        appearAnim.emplace(anim::AnimationBuilder{}
                                .withDurationMs(260.0)
-                               .withEasing(juce::Easings::createEaseOut())
+                               .withEasing(anim::easings::createEaseOut())
                                .withValueChangedCallback([this](float v)
                                                          {
                                                              appear_ = appearStart_
@@ -2310,10 +2312,10 @@ struct ActivationComponent::Impl : public juce::ChangeListener,
                                                        })
                                .build());
 
-        updater.addAnimator(*glowAnim);
-        updater.addAnimator(*transitionAnim);
-        updater.addAnimator(*successAnim);
-        updater.addAnimator(*appearAnim);
+        updater.addAnimation(*glowAnim);
+        updater.addAnimation(*transitionAnim);
+        updater.addAnimation(*successAnim);
+        updater.addAnimation(*appearAnim);
         glowAnim->start();
     }
 
@@ -2604,8 +2606,8 @@ struct ActivationComponent::Impl : public juce::ChangeListener,
     std::unique_ptr<CloseButton> closeButton;
     std::unique_ptr<MoonbaseBadge> moonbaseBadge;
 
-    juce::AnimatorUpdater updater;
-    std::optional<juce::Animator> glowAnim, transitionAnim, successAnim, appearAnim;
+    anim::Updater updater;
+    std::optional<anim::Animation> glowAnim, transitionAnim, successAnim, appearAnim;
     float glowPhase = 0.0f;
 
     // Modal appear/dismiss animation state.

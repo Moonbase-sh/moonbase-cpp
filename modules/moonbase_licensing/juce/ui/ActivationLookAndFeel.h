@@ -12,6 +12,7 @@
 #include <juce_gui_basics/juce_gui_basics.h>
 
 #include "../ActivationTheme.h"
+#include "../JuceCompat.h"
 
 namespace moonbase::juce_integration {
 
@@ -38,25 +39,24 @@ public:
         if (fonts.makeFont)
             return fonts.makeFont(ActivationFonts::Role::heading, height);
         if (fonts.heading != nullptr)
-            return juce::Font(juce::FontOptions().withTypeface(fonts.heading).withHeight(height));
-        return juce::Font(juce::FontOptions().withHeight(height).withStyle("Bold"));
+            return compat::font(fonts.heading, height);
+        return compat::font(height, true);
     }
     [[nodiscard]] juce::Font body(float height) const
     {
         if (fonts.makeFont)
             return fonts.makeFont(ActivationFonts::Role::body, height);
         if (fonts.body != nullptr)
-            return juce::Font(juce::FontOptions().withTypeface(fonts.body).withHeight(height));
-        return juce::Font(juce::FontOptions().withHeight(height));
+            return compat::font(fonts.body, height);
+        return compat::font(height);
     }
     [[nodiscard]] juce::Font mono(float height) const
     {
         if (fonts.makeFont)
             return fonts.makeFont(ActivationFonts::Role::mono, height);
         if (fonts.mono != nullptr)
-            return juce::Font(juce::FontOptions().withTypeface(fonts.mono).withHeight(height));
-        return juce::Font(juce::FontOptions(juce::Font::getDefaultMonospacedFontName(), height,
-                                            juce::Font::plain));
+            return compat::font(fonts.mono, height);
+        return compat::font(juce::Font::getDefaultMonospacedFontName(), height);
     }
 };
 

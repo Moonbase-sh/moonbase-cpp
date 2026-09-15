@@ -1,6 +1,6 @@
-# moonbase_licensing — JUCE module
+# moonbase_licensing: JUCE module
 
-License activation for JUCE 8 apps and plugins, with a polished built-in UI, in one
+License activation for JUCE apps and plugins, with a polished built-in UI, in one
 drop-in [JUCE module](https://github.com/juce-framework/JUCE/blob/master/docs/JUCE%20Module%20Format.md).
 Add the module, fill in three fields, show one component.
 
@@ -37,7 +37,7 @@ Add the module, fill in three fields, show one component.
   already shipped.
 - **Built-in UI.** A configurable, themeable `ActivationComponent` (and one-call
   `ActivationDialog`) covering every state — welcome, activating, success, offline,
-  trial, trial expired, license details, and update-available — with JUCE 8 animated
+  trial, trial expired, license details, and update-available — with animated
   transitions and drag-and-drop for offline license files. Designed to sit as a modal
   over your plugin and lock it until activated.
 - **In-app updates.** When the user's license entitles them to a newer release than the
@@ -54,7 +54,9 @@ Add the module, fill in three fields, show one component.
   misconfiguration, exposes a diagnostics sink for field debugging, and can attach
   JUCE system/host telemetry to requests. Brandable end to end.
 
-Requires **JUCE 8** (8.0.4+) and C++17. Supports macOS, Windows, Linux, iOS and Android.
+Requires **JUCE 6.1.3 or later** (6.x, 7.x and 8.x are all supported) and C++17.
+Supports macOS, Windows, Linux, iOS and Android. 6.1.3 is also the version HISE
+pins, so the module drops into a HISE project.
 
 <p align="center">
   <img src="../../assets/moonbase-juce-update.png" width="66%"
@@ -80,6 +82,11 @@ target_compile_definitions(MyPlugin PRIVATE JUCE_USE_CURL=0)  # keep the zero-de
 *Modules → Add a module → Add a module from a specified folder…* and select
 `modules/moonbase_licensing`. The bundled SDK headers and `nlohmann/json` resolve from
 the module's own search paths — nothing else to set up.
+
+`juce_animation` is deliberately *not* a declared dependency, since the API the module
+needs from it only exists from JUCE 8.0.4. The module detects it: link it and the
+transitions run on `juce::Animator`, leave it out and they run on the module's own
+equivalent, with the same curves.
 
 ## Configure and use
 

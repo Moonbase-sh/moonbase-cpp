@@ -6,6 +6,11 @@ name: Visual tests
 # Runs on macOS so the snapshots also exercise the Apple (Security.framework)
 # crypto backend. Set the ARGOS_TOKEN repository secret to enable the upload;
 # without it the job still builds, renders, and stores the PNGs as an artifact.
+#
+# The second job smoke-renders the same 29 states against the JUCE version HISE
+# pins. It is not a pixel baseline: JUCE 8 replaced the font backend, so the
+# older render is the same layout with different glyph raster. What it proves is
+# that every screen still lays out and paints through the pre-8 compat path.
 
 on:
   push:
@@ -42,3 +47,20 @@ jobs:
       - name: Upload to Argos
         if: ${{ env.ARGOS_TOKEN != '' }}
         run: npx --yes @argos-ci/cli upload ui-snapshots
+
+  ui-smoke-juce6:
+    name: render on JUCE 6.1.3
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build harness + render snapshots
+        env:
+          MOONBASE_JUCE_VERSION: "6.1.3"
+        run: ./scripts/visual-snapshots.sh
+
+      - name: Upload snapshots artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ui-snapshots-juce6
+          path: ui-snapshots/*.png

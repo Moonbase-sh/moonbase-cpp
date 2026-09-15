@@ -53,7 +53,9 @@ one is a single lazy hardware read on the mismatch path, so "pass both if unsure
 is the safe advice. Note that the JUCE resolver derives its id from
 `juce::SystemStats::getUniqueDeviceID()`, which is not a published stable format,
 so it only vouches for a binding if your plugin still ships the JUCE version that
-created it.
+created it. That method arrived in JUCE 7.0.5 (HISE backported it into its 6.1.3),
+and on a JUCE without it `legacy_juce_device_id_resolver::is_available` is false and
+`device_id()` throws rather than inventing an id.
 
 **3. Stay on the old id.** Pin `legacy_cpp_device_id_resolver` as the current
 resolver. Nothing changes, but you keep the old algorithm's defects (on Linux the

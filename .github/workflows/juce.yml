@@ -8,6 +8,14 @@ name: JUCE module
 # The suite signs tokens with OpenSSL then verifies them with the platform's
 # native backend, i.e. a real cross-backend RS256 round-trip on each OS. The
 # module needs no curl, so the build turns it off (-DMOONBASE_USE_CURL=OFF).
+#
+# The module supports JUCE 6.1.3 and up, so the matrix also builds the two older
+# lines: 6.1.3 is what HISE pins, 7.0.12 is the last 7.x. They run on macOS only.
+# The version shims are platform-independent C++ and the crypto backends do not
+# vary by JUCE version, so a second OS would only re-test whether old JUCE itself
+# still compiles on a modern runner. macOS is the one that matters here because
+# it is the only platform that compiles the module through its Objective-C++
+# translation unit.
 
 on:
   push:
@@ -20,13 +28,19 @@ concurrency:
 
 jobs:
   controller-tests:
-    name: ${{ matrix.os }}
+    name: ${{ matrix.os }} (JUCE ${{ matrix.juce }})
     runs-on: ${{ matrix.os }}
     timeout-minutes: 30
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-14, windows-latest]
+        include:
+          - { os: ubuntu-latest, juce: "8.0.4" }
+          - { os: macos-14, juce: "8.0.4" }
+          - { os: windows-latest, juce: "8.0.4" }
+          - { os: macos-14, juce: "8.0.0" }
+          - { os: macos-14, juce: "7.0.12" }
+          - { os: macos-14, juce: "6.1.3" }
 
     steps:
       - uses: actions/checkout@v4
@@ -57,7 +71,8 @@ jobs:
           cmake -S . -B build \
             -DCMAKE_BUILD_TYPE=Release \
             -DMOONBASE_USE_CURL=OFF \
-            -DMOONBASE_BUILD_JUCE_TESTS=ON
+            -DMOONBASE_BUILD_JUCE_TESTS=ON \
+            -DMOONBASE_JUCE_VERSION="${{ matrix.juce }}"
 
       - name: Configure (macOS)
         if: runner.os == 'macOS'
@@ -66,6 +81,7 @@ jobs:
             -DCMAKE_BUILD_TYPE=Release \
             -DMOONBASE_USE_CURL=OFF \
             -DMOONBASE_BUILD_JUCE_TESTS=ON \
+            -DMOONBASE_JUCE_VERSION="${{ matrix.juce }}" \
             -DOPENSSL_ROOT_DIR="$(brew --prefix openssl@3)"
 
       - name: Configure (Windows)
@@ -75,6 +91,7 @@ jobs:
           cmake -S . -B build \
             -DMOONBASE_USE_CURL=OFF \
             -DMOONBASE_BUILD_JUCE_TESTS=ON \
+            -DMOONBASE_JUCE_VERSION="${{ matrix.juce }}" \
             -DCMAKE_TOOLCHAIN_FILE="$VCPKG_INSTALLATION_ROOT/scripts/buildsystems/vcpkg.cmake" \
             -DVCPKG_TARGET_TRIPLET=x64-windows
 

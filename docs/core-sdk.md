@@ -73,7 +73,7 @@ off when the project is consumed as a subproject, so a `FetchContent` or
 | `MOONBASE_BUILD_JUCE_TESTS` | `OFF` | Fetch JUCE and doctest and build the JUCE module's test suite (`tests/juce/`). |
 | `MOONBASE_BUILD_UI_SNAPSHOTS` | `OFF` | Fetch JUCE and build the [offscreen UI snapshot harness](../tests/visual/README.md). |
 | `MOONBASE_SANITIZER` | *(empty)* | Sanitizer for the test targets: `address`, `thread`, `undefined`, or `address,undefined`. Ignored under MSVC. |
-| `MOONBASE_JUCE_VERSION` | `8.0.4` | JUCE tag the four JUCE options above fetch. It only exists as a cache variable once one of them is on. |
+| `MOONBASE_JUCE_VERSION` | `8.0.4` | JUCE tag the four JUCE options above fetch. Anything from `6.1.3` up works. It only exists as a cache variable once one of them is on. |
 
 Override `MOONBASE_BUILD_TESTS` and `MOONBASE_BUILD_EXAMPLES` explicitly when you want
 a subproject integration to build SDK artifacts too. The four JUCE options are opt-in

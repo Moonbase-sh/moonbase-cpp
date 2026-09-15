@@ -13,7 +13,7 @@ License activation for desktop apps and audio plugins, in C++.
 Ship a paid plugin or app and you need the same four things: let a customer unlock it,
 keep it unlocked offline, tie the seat to a machine, and hand the seat back when they
 move. This repo is those four things for C++, as a header-only core library and a
-drop-in JUCE 8 module that adds a finished activation UI on top of it.
+drop-in JUCE module that adds a finished activation UI on top of it.
 
 <p align="center">
   <img src="assets/moonbase-juce-welcome.png" width="66%"
@@ -26,7 +26,7 @@ drop-in JUCE 8 module that adds a finished activation UI on top of it.
 | | What it is | Where |
 | --- | --- | --- |
 | **Core SDK** | Header-only C++17 library: activation, polling, local RS256 validation, offline licenses, revocation, pluggable storage and HTTP. No framework. | [`include/moonbase/`](include/moonbase/) |
-| **`moonbase_licensing`** | Drop-in JUCE 8 module. The core SDK plus a themeable activation UI, in-app updates, and zero third-party dependencies. | [`modules/moonbase_licensing/`](modules/moonbase_licensing/) |
+| **`moonbase_licensing`** | Drop-in JUCE module. The core SDK plus a themeable activation UI, in-app updates, and zero third-party dependencies. | [`modules/moonbase_licensing/`](modules/moonbase_licensing/) |
 | **`OnlineUnlockStatus` bridge** | Copy-paste reference header that drives `juce::OnlineUnlockStatus` from Moonbase. You supply the UI. | [`examples/juce/`](examples/juce/) |
 | **Fingerprint spec** | The normative, language-neutral device id algorithm every Moonbase SDK implements, with conformance vectors. | [`FINGERPRINT_SPEC.md`](FINGERPRINT_SPEC.md) |
 
@@ -36,9 +36,9 @@ drop-in JUCE 8 module that adds a finished activation UI on top of it.
 | --- | --- | --- | --- |
 | **Form** | Header-only library | Drop-in JUCE module | Copy-paste reference header |
 | **Built-in UI** | No | Yes, themeable and animated | No, you build it |
-| **Requires** | CMake 3.20, C++17 | JUCE 8.0.4+, C++17 | JUCE 7+, plus the core SDK |
+| **Requires** | CMake 3.20, C++17 | JUCE 6.1.3+, C++17 | JUCE 7+, plus the core SDK |
 | **Third-party deps** | CURL, OpenSSL, nlohmann_json | None | Inherits the core SDK's |
-| **Best for** | Non-JUCE apps, CLI tools, your own frontend | New JUCE plugins that want a ready-made UI | Projects already on `OnlineUnlockStatus`, or JUCE 7 |
+| **Best for** | Non-JUCE apps, CLI tools, your own frontend | New JUCE plugins that want a ready-made UI, including HISE projects | Projects already on `OnlineUnlockStatus` |
 | **Guide** | [`core-sdk.md`](docs/core-sdk.md) | [`juce-module.md`](docs/juce-module.md) | [`juce.md`](docs/juce.md) |
 
 All three compute the same [device id](docs/device-identity.md), so a license activated

@@ -1,7 +1,7 @@
 # JUCE module: `moonbase_licensing`
 
 A drop-in [JUCE module](https://github.com/juce-framework/JUCE/blob/master/docs/JUCE%20Module%20Format.md)
-that adds Moonbase license activation — with a polished built-in UI — to any JUCE 8
+that adds Moonbase license activation, with a polished built-in UI, to any JUCE
 app or plugin. It integrates **natively** with the Moonbase licensing API; it does
 not use `juce::OnlineUnlockStatus`.
 
@@ -10,7 +10,10 @@ not use `juce::OnlineUnlockStatus`.
 > is the native alternative.
 
 Lives at [`modules/moonbase_licensing/`](../modules/moonbase_licensing/). Requires
-**JUCE 8** (8.0.4+) and **C++17**.
+**JUCE 6.1.3 or later** (6.x, 7.x and 8.x are all supported and all covered by CI)
+and **C++17**. 6.1.3 is the floor because it is the first release with
+`juce::URL::DownloadTaskOptions`, which the in-app updater uses. It is also the
+version [HISE](https://hise.audio) pins, so the module drops into a HISE project.
 
 ## Why it's drop-in
 
@@ -47,6 +50,11 @@ target_compile_definitions(MyPlugin PRIVATE JUCE_USE_CURL=0)
 **Projucer** — *Modules → Add a module from a specified folder…* → select
 `modules/moonbase_licensing`. The bundled SDK headers and `nlohmann/json` resolve
 from the module's own search paths.
+
+`juce_animation` is deliberately *not* a declared dependency, since the API the
+module needs from it only exists from JUCE 8.0.4. The module detects it: link it
+and the transitions run on `juce::Animator`, leave it out and they run on the
+module's own equivalent. Nothing to configure either way.
 
 ## Configure + show it
 
@@ -108,9 +116,13 @@ The screens:
   Controlled by `config.enableUpdatePrompt` / `config.applicationVersion` /
   `config.downloadDirectory` / `config.autoPresentUpdate`.
 
-All transitions use JUCE 8's animation API (`juce::Animator` / `ValueAnimatorBuilder`
-/ `Easings`, driven by a `VBlankAnimatorUpdater`): cross-fade + fade-up between
-screens, the activating spinner, the success pop, and the breathing top-edge glow.
+Animated throughout: cross-fade + fade-up between screens, the activating spinner,
+the success pop, and the breathing top-edge glow. From JUCE 8.0.4 these run on
+`juce_animation` (`juce::Animator` / `ValueAnimatorBuilder` / `Easings`) when your
+project links it; otherwise the module uses its own equivalent, with the same
+cubic-bezier curves, so the motion is identical on every JUCE version. Either way
+a 60 Hz `juce::Timer` supplies the ticks, not a `VBlankAnimatorUpdater`. Set
+`config.reduceMotion` to turn all of it off.
 
 ## Gating
 
@@ -299,8 +311,10 @@ cmake -B build -DMOONBASE_BUILD_JUCE_NATIVE_EXAMPLE=ON
 cmake --build build --target MoonbaseActivationNative
 ```
 
-It fetches JUCE 8 on first configure and adds the module with `juce_add_module` —
-exactly how a downstream project consumes it.
+It fetches JUCE on first configure and adds the module with `juce_add_module`,
+exactly how a downstream project consumes it. Pass
+`-DMOONBASE_JUCE_VERSION=6.1.3` (or `7.0.12`) to build the sample against an
+older JUCE.
 
 ## Tests
 
