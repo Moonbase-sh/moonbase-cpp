@@ -89,11 +89,29 @@ options.endpoint = "https://demo.moonbase.sh";
 options.product_id = "demo-app";
 options.public_key = public_key_pem;
 options.account_id = "tenant-id"; // optional issuer check
+options.client_info = "my-framework/1.2.0"; // optional, see below
 options.http_connect_timeout = std::chrono::seconds(10);
 options.http_request_timeout = std::chrono::seconds(30);
 
 moonbase::licensing licensing(options);
+```
 
+`client_info` identifies a higher-level integration built on top of the SDK (the
+JUCE module sets `moonbase-juce/<version> (JUCE …; OS)`, for example). It is
+appended to the `User-Agent` after `moonbase-cpp/<version>`, so requests report
+every layer, outermost last:
+
+```
+User-Agent: moonbase-cpp/4.3.1 my-framework/1.2.0
+```
+
+Use product tokens (`Name/Version`, with an optional `(comment)`) and keep it
+ASCII. If your code sits on top of another integration that already set it,
+append a segment rather than replacing the string. Control characters are
+stripped and the value is capped at 256 characters when the header is built, so
+a stray newline can never inject a header.
+
+```cpp
 auto request = licensing.request_activation();
 std::cout << "Open: " << request.browser_url << "\n";
 

@@ -499,3 +499,34 @@ The collected map flows into `moonbase::licensing_options::metadata` and is sent
 SDK's requests. When you don't set `config.applicationVersion`, it auto-fills from
 `JucePlugin_VersionString` in a plugin build (or the running app's version otherwise), so
 telemetry reports a version without extra wiring.
+
+### Identifying an integration built on the module
+
+Every request carries a layered `User-Agent`: the SDK, then this module, then anything a
+higher-level integration adds. Out of the box:
+
+```
+User-Agent: moonbase-cpp/4.3.1 moonbase-juce/4.3.1 (JUCE v8.0.4; macOS 15.2)
+```
+
+A framework, wrapper or white-label host that embeds the module can add its own segment
+with `config.clientInfo`:
+
+```cpp
+config.clientInfo << " HISE/4.1.0";   // append, don't assign
+```
+
+```
+User-Agent: moonbase-cpp/4.3.1 moonbase-juce/4.3.1 (JUCE v8.0.4; macOS 15.2) HISE/4.1.0
+```
+
+Your segment is appended *after* the module's own, never in place of it, so support and
+analytics still see which module and SDK version ran underneath. Append with `<<` rather
+than assigning, so a stack of layers (framework, then a plugin built on it) each keeps its
+mark.
+
+Use product tokens (`Name/Version`, with an optional `(comment)`), keep it ASCII, and keep
+it short: control characters are stripped and the whole segment is capped at 256 characters
+before it reaches the header. Unlike the analytics capture above, this is sent on every
+request and is not gated by `config.analytics.enabled`; it identifies the software, not the
+machine or the user.

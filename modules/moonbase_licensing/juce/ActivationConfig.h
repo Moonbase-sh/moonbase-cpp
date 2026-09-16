@@ -61,6 +61,20 @@ struct ActivationConfig
     juce::String accountId;      // optional issuer pin
     juce::String applicationVersion;
 
+    // An extra User-Agent segment identifying the layer built on top of this
+    // module: a framework, a wrapper, a white-label host, e.g. "HISE/4.1.0".
+    // Appended after the module's own "moonbase-juce/<version> (...)" segment,
+    // never in place of it, so support and analytics still see which module
+    // version ran underneath. Sent on every request (not gated by analytics).
+    //
+    // Append rather than assign, so a stack of layers each keeps its mark:
+    //   config.clientInfo << " MyWrapper/2.0";
+    //
+    // Use product tokens ("Name/Version", optional "(comment)") and keep it
+    // ASCII. Control characters are stripped and the segment is capped before it
+    // reaches the header. Read once, when the controller is constructed.
+    juce::String clientInfo;
+
     //== Validation / network tuning ==========================================
     // How long a license stays valid offline since its last successful online
     // validation before it is treated as stale (and the app locks). Default 7 days.
@@ -306,6 +320,29 @@ struct ActivationConfig
         return juce::File::getSpecialLocation(juce::File::tempDirectory);
     }
 
+    // What the module reports as the client in the User-Agent: its own segment
+    // (module version + JUCE version + OS, for support and analytics), then the
+    // consumer's clientInfo when set. The base client prefixes
+    // "moonbase-cpp/<version>", so the wire value reads outermost-last:
+    //
+    //   moonbase-cpp/4.3.1 moonbase-juce/4.3.1 (JUCE v8.0.4; macOS 15.2) HISE/4.1.0
+    //
+    // Trim-and-skip only: the SDK strips control characters and caps the length
+    // when it builds the header, so the character policy lives in one place.
+    [[nodiscard]] juce::String resolvedClientInfo() const
+    {
+        juce::String resolved;
+        resolved << "moonbase-juce/" << MOONBASE_LICENSING_VERSION
+                 << " (" << juce::SystemStats::getJUCEVersion()
+                 << "; " << juce::SystemStats::getOperatingSystemName() << ")";
+
+        const auto consumer = clientInfo.trim();
+        if (consumer.isNotEmpty())
+            resolved << " " << consumer;
+
+        return resolved;
+    }
+
     // The resolver the controller will use.
     [[nodiscard]] std::shared_ptr<moonbase::device_id_resolver> resolvedDeviceIdResolver() const
     {
@@ -383,13 +420,9 @@ struct ActivationConfig
             options.application_version = JucePlugin_VersionString; // a plugin has no JUCEApplication to read it from
        #endif
 
-        // Identify this client as the JUCE module (appended to the base client's
-        // User-Agent), with the JUCE version + OS for support/analytics.
-        juce::String clientInfo;
-        clientInfo << "moonbase-juce/" << MOONBASE_LICENSING_VERSION
-                   << " (" << juce::SystemStats::getJUCEVersion()
-                   << "; " << juce::SystemStats::getOperatingSystemName() << ")";
-        options.client_info = clientInfo.toStdString();
+        // Identify this client as the JUCE module, plus whatever a higher-level
+        // integration appended (see resolvedClientInfo()).
+        options.client_info = resolvedClientInfo().toStdString();
 
         options.online_validation_grace_period = onlineGracePeriod;
         options.online_validation_min_interval = onlineCheckInterval;

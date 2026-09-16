@@ -918,6 +918,56 @@ TEST_CASE("the JUCE module identifies itself via client_info (User-Agent)")
     CHECK_FALSE(opts.client_info->empty());
 }
 
+TEST_CASE("a consumer's clientInfo is appended after the module's own segment")
+{
+    ActivationConfig config;
+    config.endpoint = "https://demo.moonbase.sh";
+    config.productId = "demo-app";
+
+    // Unset: the module's own segment only, which ends with the "(JUCE …; OS)" comment.
+    CHECK(config.resolvedClientInfo().startsWith("moonbase-juce/"));
+    CHECK(config.resolvedClientInfo().endsWith(")"));
+
+    // Whitespace-only reads as unset, so no dangling separator.
+    config.clientInfo = "   ";
+    CHECK(config.resolvedClientInfo().endsWith(")"));
+
+    // Set: appended last, and that is exactly what reaches the SDK options.
+    config.clientInfo = "HISE/4.1.0";
+    const auto resolved = config.resolvedClientInfo();
+    CHECK(resolved.startsWith("moonbase-juce/"));
+    CHECK(resolved.endsWith(" HISE/4.1.0"));
+    CHECK(config.toLicensingOptions().client_info == resolved.toStdString());
+
+    // Layers append rather than assign, so each one keeps its mark.
+    config.clientInfo << " MyWrapper/2.0";
+    CHECK(config.resolvedClientInfo().endsWith(" HISE/4.1.0 MyWrapper/2.0"));
+}
+
+TEST_CASE("clientInfo reaches the wire and cannot inject a header")
+{
+    controller_fixture fx;
+    fx.config.clientInfo = "HISE/4.1.0\r\nX-Injected: 1";
+    fx.seedStored(fx.token(default_claims()));
+
+    ActivationController controller(fx.config, fx.makeLicensing());
+    controller.start();
+    REQUIRE(pumpUntil([&] { return controller.screen() == Screen::Details; }));
+    REQUIRE(fx.transport->requests.empty()); // start() was within the throttle window
+
+    fx.transport->responses.push_back(moonbase::http_response{200, {}, fx.token(default_claims())});
+    bool done = false;
+    controller.refreshLicense(true, [&](bool) { done = true; });
+    REQUIRE(pumpUntil([&] { return done; }));
+
+    REQUIRE(fx.transport->requests.size() == 1);
+    const auto ua = fx.transport->requests.front().headers.at("User-Agent");
+    CHECK(ua.find("moonbase-cpp/") == 0);
+    CHECK(ua.find("moonbase-juce/") < ua.find("HISE/4.1.0")); // module segment first
+    CHECK(ua.find('\r') == std::string::npos);
+    CHECK(ua.find('\n') == std::string::npos);
+}
+
 TEST_CASE("analytics capture is off by default and easy to switch on")
 {
     ActivationConfig config;
