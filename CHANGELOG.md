@@ -1,3 +1,10 @@
+# [4.4.0](https://github.com/Moonbase-sh/moonbase-cpp/compare/v4.3.1...v4.4.0) (2026-09-16)
+
+
+### Features
+
+* **juce:** let an integration append its own client info segment ([#30](https://github.com/Moonbase-sh/moonbase-cpp/issues/30)) ([8ced84e](https://github.com/Moonbase-sh/moonbase-cpp/commit/8ced84e4ca64b74bb3b1a0416e786ef94e0aa85b))
+
 ## [4.3.1](https://github.com/Moonbase-sh/moonbase-cpp/compare/v4.3.0...v4.3.1) (2026-09-16)
 
 

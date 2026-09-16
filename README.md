@@ -52,7 +52,7 @@ through one validates in the others.
 include(FetchContent)
 FetchContent_Declare(moonbase_cpp
     GIT_REPOSITORY https://github.com/Moonbase-sh/moonbase-cpp.git
-    GIT_TAG v4.3.1)
+    GIT_TAG v4.4.0)
 FetchContent_MakeAvailable(moonbase_cpp)
 
 target_link_libraries(your_app PRIVATE moonbase::licensing)
