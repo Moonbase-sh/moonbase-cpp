@@ -18,9 +18,22 @@
 #ifndef WIN32_LEAN_AND_MEAN
 #define WIN32_LEAN_AND_MEAN
 #endif
+// wingdi.h's global `Rectangle()` is ambiguous with juce::Rectangle in a TU with
+// a file-scope `using namespace juce;`.
+#ifndef MOONBASE_DISABLE_SYSTEM_NAME_SHIM
+#pragma push_macro("Rectangle")
+#undef Rectangle
+#define Rectangle MoonbaseGdiDummyRectangleName
+#endif
+
 #include <windows.h>
 
 #include <bcrypt.h>
+
+#ifndef MOONBASE_DISABLE_SYSTEM_NAME_SHIM
+#undef Rectangle
+#pragma pop_macro("Rectangle")
+#endif
 
 #include "moonbase/detail/crypto/der.hpp"
 #include "moonbase/errors.hpp"

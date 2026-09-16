@@ -11,8 +11,26 @@
 #include <string_view>
 #include <vector>
 
+// MacTypes.h's global `Point` is ambiguous with juce::Point in a TU with a
+// file-scope `using namespace juce;`, and MacTypes.h itself then stops parsing.
+#ifndef MOONBASE_DISABLE_SYSTEM_NAME_SHIM
+#pragma push_macro("Point")
+#pragma push_macro("Component")
+#undef Point
+#undef Component
+#define Point MoonbaseCarbonDummyPointName
+#define Component MoonbaseCarbonDummyCompName
+#endif
+
 #include <CommonCrypto/CommonDigest.h>
 #include <Security/Security.h>
+
+#ifndef MOONBASE_DISABLE_SYSTEM_NAME_SHIM
+#undef Point
+#undef Component
+#pragma pop_macro("Component")
+#pragma pop_macro("Point")
+#endif
 
 #include "moonbase/detail/crypto/der.hpp"
 #include "moonbase/errors.hpp"
