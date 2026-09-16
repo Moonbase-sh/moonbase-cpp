@@ -21,7 +21,19 @@
 #ifndef NOMINMAX
 #define NOMINMAX
 #endif
+// wingdi.h's global `Rectangle()`, see detail/crypto/windows_backend.hpp.
+#ifndef MOONBASE_DISABLE_SYSTEM_NAME_SHIM
+#pragma push_macro("Rectangle")
+#undef Rectangle
+#define Rectangle MoonbaseGdiDummyRectangleName
+#endif
+
 #include <windows.h>
+
+#ifndef MOONBASE_DISABLE_SYSTEM_NAME_SHIM
+#undef Rectangle
+#pragma pop_macro("Rectangle")
+#endif
 #else
 #include <unistd.h>
 #endif

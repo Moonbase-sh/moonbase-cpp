@@ -34,7 +34,19 @@
 #ifndef NOMINMAX
 #define NOMINMAX
 #endif
+// wingdi.h's global `Rectangle()`, see detail/crypto/windows_backend.hpp.
+#ifndef MOONBASE_DISABLE_SYSTEM_NAME_SHIM
+#pragma push_macro("Rectangle")
+#undef Rectangle
+#define Rectangle MoonbaseGdiDummyRectangleName
+#endif
+
 #include <windows.h>
+
+#ifndef MOONBASE_DISABLE_SYSTEM_NAME_SHIM
+#undef Rectangle
+#pragma pop_macro("Rectangle")
+#endif
 #else
 #include <unistd.h>
 #endif
@@ -68,9 +80,26 @@
      || (defined(TARGET_OS_MACCATALYST) && TARGET_OS_MACCATALYST)) \
     && !defined(MOONBASE_FINGERPRINT_NO_IOKIT)
 #define MOONBASE_FINGERPRINT_USE_IOKIT 1
+// MacTypes.h's global `Point`, see detail/crypto/apple_backend.hpp.
+#ifndef MOONBASE_DISABLE_SYSTEM_NAME_SHIM
+#pragma push_macro("Point")
+#pragma push_macro("Component")
+#undef Point
+#undef Component
+#define Point MoonbaseCarbonDummyPointName
+#define Component MoonbaseCarbonDummyCompName
+#endif
+
 #include <CoreFoundation/CoreFoundation.h>
 #include <IOKit/IOKitLib.h>
 #include <IOKit/IOKitKeys.h>
+
+#ifndef MOONBASE_DISABLE_SYSTEM_NAME_SHIM
+#undef Point
+#undef Component
+#pragma pop_macro("Component")
+#pragma pop_macro("Point")
+#endif
 #endif
 #endif
 

@@ -88,6 +88,11 @@ needs from it only exists from JUCE 8.0.4. The module detects it: link it and th
 transitions run on `juce::Animator`, leave it out and they run on the module's own
 equivalent, with the same curves.
 
+The header is safe to include from a translation unit with a file-scope
+`using namespace juce;`, in either include order. See
+[the JUCE module guide](../../docs/juce-module.md) for the one caveat that comes with
+that.
+
 ## Configure and use
 
 Only three fields are required; in a plugin the product and manufacturer names default

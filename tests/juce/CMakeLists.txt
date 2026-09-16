@@ -22,7 +22,10 @@ endif()
 juce_add_console_app(MoonbaseJuceTests
     PRODUCT_NAME "Moonbase JUCE Tests")
 
-target_sources(MoonbaseJuceTests PRIVATE controller_tests.cpp)
+target_sources(MoonbaseJuceTests PRIVATE
+    controller_tests.cpp
+    # Compile-only guard, see the file header.
+    global_using_namespace_juce.cpp)
 
 target_compile_features(MoonbaseJuceTests PRIVATE cxx_std_17)
 

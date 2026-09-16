@@ -56,6 +56,13 @@ module needs from it only exists from JUCE 8.0.4. The module detects it: link it
 and the transitions run on `juce::Animator`, leave it out and they run on the
 module's own equivalent. Nothing to configure either way.
 
+The header is safe to include from a translation unit with a file-scope
+`using namespace juce;`, in either include order. Getting there costs one thing
+worth knowing about: it renames the two system-header names that would otherwise
+be ambiguous with JUCE's, Carbon's `Point` and GDI's `Rectangle()`, so neither is
+reachable under its own name once you include the module header. Define
+`MOONBASE_DISABLE_SYSTEM_NAME_SHIM` if you need them.
+
 ## Configure + show it
 
 ```cpp
