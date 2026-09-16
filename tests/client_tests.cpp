@@ -95,6 +95,58 @@ TEST_CASE("request_activation posts device information and parses response")
     CHECK(response.method == activation_method::online);
 }
 
+TEST_CASE("client_info is appended to the User-Agent, sanitised and capped")
+{
+    licensing_options options;
+
+    SUBCASE("layers read outermost-last after the base segment")
+    {
+        options.client_info = "moonbase-juce/9.9 (JUCE v8; TestOS) HISE/4.1.0";
+        const auto ua = detail::default_headers(options).at("User-Agent");
+        CHECK(ua.find("moonbase-cpp/") == 0);
+        CHECK(ua.find("moonbase-juce/9.9") < ua.find("HISE/4.1.0"));
+    }
+
+    SUBCASE("CR/LF cannot inject a second header")
+    {
+        options.client_info = "HISE/4.1.0\r\nX-Injected: 1";
+        const auto ua = detail::default_headers(options).at("User-Agent");
+        CHECK(ua.find('\r') == std::string::npos);
+        CHECK(ua.find('\n') == std::string::npos);
+        CHECK(ua.find("HISE/4.1.0 X-Injected: 1") != std::string::npos);
+    }
+
+    SUBCASE("an embedded NUL cannot truncate the header")
+    {
+        options.client_info = std::string("HISE/4.1.0\0hidden", 17);
+        CHECK(detail::default_headers(options).at("User-Agent").find("HISE/4.1.0 hidden") !=
+              std::string::npos);
+    }
+
+    SUBCASE("a segment that sanitises away leaves no trailing space")
+    {
+        options.client_info = "  \r\n\t ";
+        CHECK(detail::default_headers(options).at("User-Agent") ==
+              "moonbase-cpp/" + detail::version_string());
+    }
+
+    SUBCASE("whitespace runs collapse to a single separator")
+    {
+        options.client_info = "  HISE/4.1.0   MyWrapper/2.0  ";
+        CHECK(detail::default_headers(options).at("User-Agent").find("HISE/4.1.0 MyWrapper/2.0") !=
+              std::string::npos);
+    }
+
+    SUBCASE("an oversized segment is capped rather than dropped")
+    {
+        options.client_info = std::string(1000, 'x');
+        const auto ua = detail::default_headers(options).at("User-Agent");
+        CHECK(ua.find("moonbase-cpp/") == 0);
+        CHECK(ua.size() < 320); // base segment + the 256-char cap
+        CHECK(ua.find("xxx") != std::string::npos);
+    }
+}
+
 TEST_CASE("request_activation asks for an offline license")
 {
     client_fixture fixture({

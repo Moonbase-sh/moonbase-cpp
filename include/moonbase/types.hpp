@@ -127,6 +127,12 @@ struct licensing_options {
     // Identifies a higher-level integration built on top of the SDK (e.g. the
     // JUCE module). Appended to the User-Agent after "moonbase-cpp/<version>" so
     // the server can tell which client made the request.
+    //
+    // Each layer appends its own space-separated segment rather than replacing
+    // what is already there, so the header reads outermost-last:
+    // "moonbase-cpp/4.3.1 moonbase-juce/4.3.1 (JUCE v8.0.4; macOS 15.2) HISE/4.1.0".
+    // Control characters are stripped and the segment is capped before it reaches
+    // the header (see detail::sanitize_client_info).
     std::optional<std::string> client_info;
     std::map<std::string, std::string> metadata;
     std::chrono::milliseconds http_connect_timeout{std::chrono::seconds{10}};

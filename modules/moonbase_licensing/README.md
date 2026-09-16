@@ -156,6 +156,9 @@ richer gating, and `onActivationChanged` fires whenever it changes.
 - **Telemetry** — `config.analytics.enabled = true` attaches JUCE system/host metadata
   (OS, CPU, DAW host, plugin format, …) to activation requests; add your own via
   `config.metadata` / `config.onCollectMetadata`.
+- **Building on top of the module.** A framework or wrapper that embeds it identifies
+  itself with `config.clientInfo << " HISE/4.1.0"`, which is appended to the `User-Agent`
+  after the module's own `moonbase-juce/<version>` segment rather than replacing it.
 
 See [`docs/juce-module.md`](../../docs/juce-module.md) for the full guide and
 [`examples/juce-native/`](../../examples/juce-native/) for a runnable sample app.

@@ -29,6 +29,38 @@ inline std::string version_string()
 #endif
 }
 
+// Every transport we ship assembles headers into a single line, so a CR or LF in
+// a caller-supplied client_info would inject a header and an embedded NUL would
+// silently truncate one. Control characters become spaces, runs of whitespace
+// collapse, and the result is trimmed and capped, so the User-Agent stays a
+// well-formed, bounded token list however many integration layers appended to it.
+inline std::string sanitize_client_info(const std::string& value)
+{
+    // Generous for a stack of "Name/Version (comment)" segments, and well under
+    // the per-line header limits proxies enforce: an oversized User-Agent fails
+    // as an opaque 400/431 that is undebuggable from the field.
+    constexpr std::string::size_type max_length = 256;
+
+    std::string result;
+    for (const char character : value) {
+        const auto byte = static_cast<unsigned char>(character);
+        if (byte < 0x20 || byte == 0x7F || byte == ' ') {
+            if (!result.empty() && result.back() != ' ') {
+                result.push_back(' '); // leading runs drop, interior runs collapse
+            }
+        } else {
+            result.push_back(character);
+        }
+        if (result.size() >= max_length) {
+            break;
+        }
+    }
+    while (!result.empty() && result.back() == ' ') {
+        result.pop_back();
+    }
+    return result;
+}
+
 inline std::string request_path(const licensing_options& options)
 {
     return trim_trailing_slashes(options.endpoint) +
@@ -74,8 +106,13 @@ inline std::map<std::string, std::string> default_headers(const licensing_option
                                                           const std::string& content_type = {})
 {
     std::string user_agent = "moonbase-cpp/" + version_string();
-    if (options.client_info && !options.client_info->empty()) {
-        user_agent += " " + *options.client_info;
+    if (options.client_info) {
+        // Sanitise before the emptiness check: a segment that is only whitespace
+        // or control characters must not leave a dangling separator behind.
+        const auto client_info = sanitize_client_info(*options.client_info);
+        if (!client_info.empty()) {
+            user_agent += " " + client_info;
+        }
     }
     std::map<std::string, std::string> headers{
         {"Accept", "application/json, application/jwt, text/plain"},

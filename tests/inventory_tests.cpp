@@ -52,6 +52,7 @@ TEST_CASE("get_release queries the product endpoint with the license token")
     CHECK(request.url.find("includeManifests=false") != std::string::npos);
     CHECK(request.headers.at("Authorization") == "LicenseToken the-token");
     CHECK(request.headers.at("x-mb-client") == "moonbase-cpp");
+    CHECK(request.headers.at("User-Agent").find("moonbase-juce/9.9") != std::string::npos);
     CHECK(request.connect_timeout == std::chrono::milliseconds{1234});
     CHECK(request.request_timeout == std::chrono::milliseconds{5678});
 }
