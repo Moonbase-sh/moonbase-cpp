@@ -1,3 +1,10 @@
+## [4.3.1](https://github.com/Moonbase-sh/moonbase-cpp/compare/v4.3.0...v4.3.1) (2026-09-16)
+
+
+### Bug Fixes
+
+* **juce:** keep the module header includable under `using namespace juce` ([#29](https://github.com/Moonbase-sh/moonbase-cpp/issues/29)) ([a126bd4](https://github.com/Moonbase-sh/moonbase-cpp/commit/a126bd40acd8b4390652735ee14ecd0fd9f7e1a8))
+
 # [4.3.0](https://github.com/Moonbase-sh/moonbase-cpp/compare/v4.2.0...v4.3.0) (2026-09-15)
 
 
