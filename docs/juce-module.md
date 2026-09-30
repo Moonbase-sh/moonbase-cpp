@@ -47,6 +47,27 @@ target_link_libraries(MyPlugin PRIVATE moonbase_licensing)
 target_compile_definitions(MyPlugin PRIVATE JUCE_USE_CURL=0)
 ```
 
+**CMake, through FetchContent**
+
+Fetch the repository instead and turn on `MOONBASE_JUCE_MODULE_ONLY`. The build
+then adds the `moonbase_licensing` module target and nothing else: the core SDK
+target and its OpenSSL and CURL lookups are skipped, so the machine needs neither.
+The module is added with JUCE's own `juce_add_module`, so make JUCE available
+first. When your JUCE has `juce_animation`, the build links it into the module
+for you.
+
+```cmake
+include(FetchContent)
+FetchContent_Declare(moonbase_cpp
+    GIT_REPOSITORY https://github.com/Moonbase-sh/moonbase-cpp.git
+    GIT_TAG v4.4.0)
+set(MOONBASE_JUCE_MODULE_ONLY ON)
+FetchContent_MakeAvailable(moonbase_cpp)  # after JUCE
+
+target_link_libraries(MyPlugin PRIVATE moonbase_licensing)
+target_compile_definitions(MyPlugin PRIVATE JUCE_USE_CURL=0)
+```
+
 **Projucer** — *Modules → Add a module from a specified folder…* → select
 `modules/moonbase_licensing`. The bundled SDK headers and `nlohmann/json` resolve
 from the module's own search paths.

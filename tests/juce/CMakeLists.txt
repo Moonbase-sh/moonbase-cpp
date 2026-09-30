@@ -40,6 +40,9 @@ target_compile_definitions(MoonbaseJuceTests PRIVATE
 
 # test_helpers.hpp (shared with the SDK tests) lives one directory up and signs
 # tokens with OpenSSL. The moonbase SDK headers come from the module itself.
+# Looked up here rather than relied on from the top level, which skips its own
+# lookup under MOONBASE_JUCE_MODULE_ONLY.
+find_package(OpenSSL REQUIRED)
 target_include_directories(MoonbaseJuceTests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/..)
 
 target_link_libraries(MoonbaseJuceTests PRIVATE

@@ -65,6 +65,7 @@ off when the project is consumed as a subproject, so a `FetchContent` or
 | Option | Default | Purpose |
 | --- | --- | --- |
 | `MOONBASE_USE_CURL` | `ON` | Build the SDK target with the libcurl HTTP transport. Off drops the CURL dependency entirely; the interface then defines `MOONBASE_DISABLE_CURL_TRANSPORT=1` and you supply your own `http_client`. |
+| `MOONBASE_JUCE_MODULE_ONLY` | `OFF` | Add only the [`moonbase_licensing` module](juce-module.md) target, with JUCE's `juce_add_module`, so JUCE has to be added first. Skips the SDK target and everything built on it (SDK tests, examples, device id tool, bridge example, install rules), along with its OpenSSL, CURL and nlohmann_json lookups. |
 | `MOONBASE_BUILD_TESTS` | `ON` top-level, `OFF` as a subproject | Build the doctest-based unit and [live tests](../CONTRIBUTING.md#tests). |
 | `MOONBASE_BUILD_EXAMPLES` | `ON` top-level, `OFF` as a subproject | Build the standalone activation example under `examples/`. |
 | `MOONBASE_BUILD_DEVICE_ID_TOOL` | `ON` top-level, `OFF` as a subproject | Build the `moonbase_device_id` diagnostic, which prints this machine's device id and how it was derived. |
