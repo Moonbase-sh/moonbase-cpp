@@ -394,7 +394,7 @@ TEST_CASE("file_license_store names a non-ASCII path in UTF-8 in its storage_err
     // ANSI code page, and MSVC throws std::system_error for a letter with no
     // mapping there, so the storage_error never got built. char16_t is UTF-16 by
     // the standard, which keeps this portable without the C++20-deprecated u8path.
-    auto name = std::filesystem::path(u"moonbase-cpp-Björn-日本-");
+    auto name = std::filesystem::path(u"moonbase-cpp-Bj\u00f6rn-\u65e5\u672c-");
     name += unique_suffix();
     const auto blocker = std::filesystem::temp_directory_path() / name;
     {
