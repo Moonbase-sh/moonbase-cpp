@@ -13,8 +13,10 @@
 //   juce_animation + AnimatorUpdater::update JUCE 8.0.4+ (see ui/ValueAnimation.h)
 //
 // Everything here is a thin inline wrapper picking the right spelling, so the
-// rest of the module reads the same on every supported JUCE.
+// rest of the module reads the same on every supported JUCE. One shim is per
+// platform rather than per JUCE version: toFilesystemPath, see below.
 
+#include <filesystem>
 #include <utility>
 
 #include <juce_core/juce_core.h>
@@ -122,5 +124,18 @@ namespace moonbase::juce_integration::compat {
     #pragma GCC diagnostic pop
   #endif
 #endif
+
+// std::filesystem::path reads a narrow string in the ANSI code page on Windows,
+// so a UTF-8 path with non-ASCII letters (C:\Users\Björn) names a different
+// file there. Hand it UTF-16 on Windows; everywhere else a JUCE path is UTF-8,
+// which is what the OS expects.
+[[nodiscard]] inline std::filesystem::path toFilesystemPath(const juce::File& file)
+{
+#if JUCE_WINDOWS
+    return std::filesystem::path(file.getFullPathName().toWideCharPointer());
+#else
+    return std::filesystem::path(file.getFullPathName().toStdString());
+#endif
+}
 
 } // namespace moonbase::juce_integration::compat

@@ -388,6 +388,38 @@ TEST_CASE("file_license_store wraps a blocked directory creation in storage_erro
     std::filesystem::remove(blocker, ec);
 }
 
+TEST_CASE("file_license_store names a non-ASCII path in UTF-8 in its storage_error")
+{
+    // Regression: messages used path::string(), which on Windows converts to the
+    // ANSI code page, and MSVC throws std::system_error for a letter with no
+    // mapping there, so the storage_error never got built. char16_t is UTF-16 by
+    // the standard, which keeps this portable without the C++20-deprecated u8path.
+    auto name = std::filesystem::path(u"moonbase-cpp-Björn-日本-");
+    name += unique_suffix();
+    const auto blocker = std::filesystem::temp_directory_path() / name;
+    {
+        std::ofstream file(blocker);
+        file << "not a directory";
+    }
+    REQUIRE(std::filesystem::is_regular_file(blocker));
+
+    file_license_store store(blocker / "nested" / "license.mb");
+
+    bool threw_storage_error = false;
+    std::string message;
+    try {
+        store.store_local_license(sample_license());
+    } catch (const storage_error& ex) {
+        threw_storage_error = true;
+        message = ex.what();
+    }
+    CHECK(threw_storage_error);
+    CHECK(message.find("Bj\xc3\xb6rn-\xe6\x97\xa5\xe6\x9c\xac-") != std::string::npos);
+
+    std::error_code ec;
+    std::filesystem::remove(blocker, ec);
+}
+
 #ifndef _WIN32
 TEST_CASE("file_license_store reports a storage_error with the path when the license file is unreadable")
 {
