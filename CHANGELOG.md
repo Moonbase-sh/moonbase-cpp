@@ -1,3 +1,10 @@
+## [4.4.1](https://github.com/Moonbase-sh/moonbase-cpp/compare/v4.4.0...v4.4.1) (2026-09-30)
+
+
+### Bug Fixes
+
+* keep the file lock free of MSVC C4996 ([#31](https://github.com/Moonbase-sh/moonbase-cpp/issues/31)) ([9c3c9d3](https://github.com/Moonbase-sh/moonbase-cpp/commit/9c3c9d3d42f6642d87f0528248877e4217ce0793))
+
 # [4.4.0](https://github.com/Moonbase-sh/moonbase-cpp/compare/v4.3.1...v4.4.0) (2026-09-16)
 
 
