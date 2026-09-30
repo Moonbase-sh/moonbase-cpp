@@ -42,6 +42,7 @@ echo "bumped CMakeLists.txt VERSION to $new_version"
 pinned_files=(
     "README.md"
     "docs/core-sdk.md"
+    "docs/juce-module.md"
 )
 
 for rel in "${pinned_files[@]}"; do

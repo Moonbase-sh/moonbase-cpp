@@ -77,6 +77,10 @@ target_link_libraries(MyPlugin PRIVATE moonbase_licensing)
 target_compile_definitions(MyPlugin PRIVATE JUCE_USE_CURL=0)  # keep the zero-dep HTTP path
 ```
 
+Prefer `FetchContent` to a submodule? Set `MOONBASE_JUCE_MODULE_ONLY` and the
+repository adds just this module, with no OpenSSL or CURL lookups. See
+[the JUCE module guide](../../docs/juce-module.md#add-it-to-your-project).
+
 ### Projucer
 
 *Modules → Add a module → Add a module from a specified folder…* and select

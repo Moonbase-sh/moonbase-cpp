@@ -108,7 +108,8 @@ running on every push to `main`. Each release:
 - Bumps `VERSION` in `CMakeLists.txt` (which flows into `MOONBASE_CPP_VERSION` and the
   `User-Agent: moonbase-cpp/<version>` header) and the JUCE module's own version in
   `modules/moonbase_licensing/moonbase_licensing.h`
-- Rewrites the pinned `GIT_TAG` in `README.md` and [`docs/core-sdk.md`](docs/core-sdk.md)
+- Rewrites the pinned `GIT_TAG` in `README.md`, [`docs/core-sdk.md`](docs/core-sdk.md) and
+  [`docs/juce-module.md`](docs/juce-module.md)
 - Updates `CHANGELOG.md`
 - Tags the commit and creates a GitHub Release, with source archives at
   `https://github.com/Moonbase-sh/moonbase-cpp/archive/refs/tags/v<version>.tar.gz`
