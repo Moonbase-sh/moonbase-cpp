@@ -72,10 +72,13 @@ jobs:
         if: runner.os == 'macOS'
         run: brew install openssl@3
 
+      # From vcpkg rather than Chocolatey, whose package downloads from
+      # slproweb.com and fails there often enough to redden unrelated runs.
       - name: Install OpenSSL (Windows)
         if: runner.os == 'Windows'
-        shell: pwsh
-        run: choco install openssl --no-progress -y
+        shell: bash
+        run: |
+          "$VCPKG_INSTALLATION_ROOT/vcpkg" install --triplet x64-windows openssl
 
       - name: Configure (Ubuntu)
         if: runner.os == 'Linux'
@@ -99,7 +102,8 @@ jobs:
           cmake -S . -B build -DCMAKE_BUILD_TYPE=Release \
             -DMOONBASE_USE_CURL=OFF -DMOONBASE_BUILD_TESTS=OFF -DMOONBASE_BUILD_EXAMPLES=OFF \
             -DMOONBASE_BUILD_DEVICE_ID_TOOL=ON \
-            -DOPENSSL_ROOT_DIR="C:/Program Files/OpenSSL"
+            -DCMAKE_TOOLCHAIN_FILE="$VCPKG_INSTALLATION_ROOT/scripts/buildsystems/vcpkg.cmake" \
+            -DVCPKG_TARGET_TRIPLET=x64-windows
 
       - name: Build the device id probe
         run: cmake --build build --config Release --target moonbase_device_id
