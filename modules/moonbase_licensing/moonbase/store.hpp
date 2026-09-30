@@ -111,7 +111,7 @@ public:
         std::ifstream file(path_);
         if (!file) {
             const int err = errno;
-            throw storage_error("Could not open local license file for reading: " + path_.string()
+            throw storage_error("Could not open local license file for reading: " + utf8_path(path_)
                                 + errno_suffix(err));
         }
 
@@ -138,7 +138,7 @@ public:
             std::error_code ec;
             std::filesystem::create_directories(parent, ec);
             if (ec) {
-                throw storage_error("Could not create license directory " + parent.string()
+                throw storage_error("Could not create license directory " + utf8_path(parent)
                                     + ": " + ec.message());
             }
         }
@@ -147,13 +147,13 @@ public:
         std::ofstream file(path_, std::ios::trunc);
         if (!file) {
             const int err = errno;
-            throw storage_error("Could not open local license file for writing: " + path_.string()
+            throw storage_error("Could not open local license file for writing: " + utf8_path(path_)
                                 + errno_suffix(err));
         }
         file << nlohmann::json(value).dump(2);
         file.flush();
         if (!file) {
-            throw storage_error("Could not write local license file: " + path_.string());
+            throw storage_error("Could not write local license file: " + utf8_path(path_));
         }
     }
 
@@ -162,7 +162,7 @@ public:
         std::error_code error;
         std::filesystem::remove(path_, error);
         if (error) {
-            throw storage_error("Could not delete local license file " + path_.string() + ": "
+            throw storage_error("Could not delete local license file " + utf8_path(path_) + ": "
                                 + error.message());
         }
     }
@@ -191,6 +191,16 @@ private:
             return {};
         }
         return " (" + std::generic_category().message(err) + ")";
+    }
+
+    // The path as UTF-8, for messages. path::string() converts to the ANSI code
+    // page on Windows, where MSVC throws for a letter with no mapping there (a
+    // Japanese user folder on a Western-locale machine), and that would replace
+    // the storage_error being built with an unrelated conversion error.
+    static std::string utf8_path(const std::filesystem::path& path)
+    {
+        const auto utf8 = path.u8string(); // std::string before C++20, std::u8string from it
+        return std::string(utf8.begin(), utf8.end());
     }
 
     class file_store_lock : public store_lock_guard {

@@ -107,9 +107,14 @@ ERUn++6CVMPvZo67jVbTY+GCXYfW4gGVZQIDAQAB
         const auto path = juce::File::getSpecialLocation(juce::File::userApplicationDataDirectory)
                               .getChildFile("MoonbaseJuceExample")
                               .getChildFile("license.mb")
-                              .getFullPathName()
-                              .toStdString();
-        return std::make_shared<moonbase::file_license_store>(path);
+                              .getFullPathName();
+        // std::filesystem::path reads a narrow string in the ANSI code page on
+        // Windows, so pass UTF-16 there or a non-ASCII user folder breaks saving.
+#if JUCE_WINDOWS
+        return std::make_shared<moonbase::file_license_store>(path.toWideCharPointer());
+#else
+        return std::make_shared<moonbase::file_license_store>(path.toStdString());
+#endif
     }
 
     void startActivation()

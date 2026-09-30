@@ -51,8 +51,7 @@ ActivationController::ActivationController(ActivationConfig config)
     const auto file = config_.resolvedLicenseFile();
     file.getParentDirectory().createDirectory();
 
-    auto store = std::make_shared<moonbase::file_license_store>(
-        std::filesystem::path(file.getFullPathName().toStdString()));
+    auto store = std::make_shared<moonbase::file_license_store>(compat::toFilesystemPath(file));
 #if JUCE_ANDROID
     // The one thing the core SDK cannot obtain by itself: an application Context.
     // JUCE has one, so hand it over and the core's plain-JNI reader does the rest.

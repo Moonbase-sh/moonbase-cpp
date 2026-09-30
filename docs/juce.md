@@ -59,9 +59,15 @@ options.public_key = embeddedPublicKeyPem;
 
 moonbase::juce_bridge::applyJuceMetadata(options);
 
-auto store = std::make_shared<moonbase::file_license_store>(
-    juce::File::getSpecialLocation(juce::File::userApplicationDataDirectory)
-        .getChildFile("YourApp/license.mb").getFullPathName().toStdString());
+const auto licensePath = juce::File::getSpecialLocation(juce::File::userApplicationDataDirectory)
+    .getChildFile("YourApp/license.mb").getFullPathName();
+// std::filesystem::path reads a narrow string in the ANSI code page on Windows,
+// so pass UTF-16 there or a non-ASCII user folder breaks saving.
+#if JUCE_WINDOWS
+auto store = std::make_shared<moonbase::file_license_store>(licensePath.toWideCharPointer());
+#else
+auto store = std::make_shared<moonbase::file_license_store>(licensePath.toStdString());
+#endif
 
 moonbase::juce_bridge::MoonbaseUnlockStatus unlockStatus(std::move(options), std::move(store));
 unlockStatus.tryLoadStoredLicense();

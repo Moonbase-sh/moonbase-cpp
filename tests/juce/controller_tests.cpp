@@ -68,8 +68,7 @@ struct controller_fixture
                           .getChildFile(juce::Uuid().toString() + ".mb");
         licenseFile.getParentDirectory().createDirectory();
         licenseFile.deleteFile();
-        store = std::make_shared<moonbase::file_license_store>(
-            std::filesystem::path(licenseFile.getFullPathName().toStdString()));
+        store = std::make_shared<moonbase::file_license_store>(compat::toFilesystemPath(licenseFile));
 
         config.endpoint = "https://demo.moonbase.sh";
         config.productId = "demo-app";
@@ -650,6 +649,46 @@ TEST_CASE("activateOffline with a valid license file unlocks and persists")
     CHECK(fx.licenseFile.existsAsFile()); // persisted into the store
     CHECK(fx.transport->requests.empty());
     responseFile.deleteFile();
+}
+
+TEST_CASE("a license under a non-ASCII folder is saved where JUCE looks for it")
+{
+    // Regression: the controller built its store path from toStdString(), which
+    // std::filesystem reads in the ANSI code page on Windows, so a user folder
+    // like C:\Users\Björn sent the license somewhere else. Escaped UTF-8 keeps
+    // the name independent of the compiler's source charset; the CJK letters are
+    // outside every Western code page.
+    controller_fixture fx;
+    const juce::String folder(juce::CharPointer_UTF8("Bj\xc3\xb6rn \xe6\x97\xa5\xe6\x9c\xac"));
+    fx.licenseFile = fx.licenseFile.getParentDirectory()
+                         .getChildFile(juce::Uuid().toString() + " " + folder)
+                         .getChildFile("license.mb");
+    fx.config.licenseFile = fx.licenseFile;
+    fx.config.deviceIdResolver = fx.fingerprint;
+
+    // The config-only constructor, which builds the store from licenseFile.
+    ActivationController controller(fx.config);
+    controller.start();
+    REQUIRE(pumpUntil([&] { return controller.screen() == Screen::Welcome; }));
+
+    auto claims = default_claims();
+    claims["method"] = "Offline";
+    auto responseFile = fx.licenseFile.getSiblingFile("response.mb");
+    REQUIRE(responseFile.replaceWithText(fx.token(claims)));
+
+    controller.setOfflineResponse(responseFile);
+    controller.activateOffline();
+    REQUIRE(pumpUntil([&] { return controller.screen() == Screen::Success; }));
+
+    // JUCE's view of the path is the ground truth: the store must have written
+    // this exact file, not a mis-decoded twin of it.
+    CHECK(fx.licenseFile.existsAsFile());
+
+    // And a fresh controller reads it back from the same place.
+    ActivationController relaunched(fx.config);
+    relaunched.start();
+    REQUIRE(pumpUntil([&] { return settled(relaunched); }));
+    CHECK(relaunched.screen() == Screen::Details);
 }
 
 TEST_CASE("activateOffline with a foreign license file reports an error and stays offline")
