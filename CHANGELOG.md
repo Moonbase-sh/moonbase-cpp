@@ -1,3 +1,10 @@
+## [4.5.1](https://github.com/Moonbase-sh/moonbase-cpp/compare/v4.5.0...v4.5.1) (2026-09-30)
+
+
+### Bug Fixes
+
+* keep license paths intact under non-ASCII Windows user folders ([#34](https://github.com/Moonbase-sh/moonbase-cpp/issues/34)) ([5aed455](https://github.com/Moonbase-sh/moonbase-cpp/commit/5aed4559c924858b6371b667de5a958ceb3efcb7))
+
 # [4.5.0](https://github.com/Moonbase-sh/moonbase-cpp/compare/v4.4.1...v4.5.0) (2026-09-30)
 
 
