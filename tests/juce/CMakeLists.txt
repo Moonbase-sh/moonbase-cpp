@@ -24,8 +24,9 @@ juce_add_console_app(MoonbaseJuceTests
 
 target_sources(MoonbaseJuceTests PRIVATE
     controller_tests.cpp
-    # Compile-only guard, see the file header.
-    global_using_namespace_juce.cpp)
+    # Compile-only guards, see the file headers.
+    global_using_namespace_juce.cpp
+    msvc_deprecation_guard.cpp)
 
 target_compile_features(MoonbaseJuceTests PRIVATE cxx_std_17)
 

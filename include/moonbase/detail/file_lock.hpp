@@ -2,7 +2,6 @@
 
 #include <cerrno>
 #include <cstdio>
-#include <cstring>
 #include <filesystem>
 #include <string>
 #include <system_error>
@@ -68,7 +67,7 @@ public:
         if (open_error != 0) {
             throw storage_error(
                 "Could not open license lock file: "
-                + std::string(std::strerror(open_error)));
+                + std::generic_category().message(open_error));
         }
         fd_ = fd;
 
@@ -78,14 +77,15 @@ public:
             fd_ = -1;
             throw storage_error(
                 "Could not acquire license file lock: "
-                + std::string(std::strerror(err)));
+                + std::generic_category().message(err));
         }
 #else
         fd_ = ::open(path.c_str(), O_RDWR | O_CREAT | O_CLOEXEC, 0644);
         if (fd_ < 0) {
+            const auto err = errno;
             throw storage_error(
-                std::string("Could not open license lock file: ")
-                + std::strerror(errno));
+                "Could not open license lock file: "
+                + std::generic_category().message(err));
         }
 
         if (::flock(fd_, LOCK_EX) != 0) {
@@ -93,8 +93,8 @@ public:
             ::close(fd_);
             fd_ = -1;
             throw storage_error(
-                std::string("Could not acquire license file lock: ")
-                + std::strerror(err));
+                "Could not acquire license file lock: "
+                + std::generic_category().message(err));
         }
 #endif
     }
