@@ -62,17 +62,14 @@ jobs:
         if: runner.os == 'macOS'
         run: brew install openssl@3 nlohmann-json
 
-      - name: Install OpenSSL (Windows)
-        if: runner.os == 'Windows'
-        shell: pwsh
-        run: |
-          choco install openssl --no-progress -y
-
-      - name: Install curl via vcpkg (Windows)
+      # OpenSSL comes from vcpkg like everything else here, as in juce.yml. The
+      # Chocolatey package downloads its installer from slproweb.com, which
+      # drops connections from GitHub runners and deletes superseded versions.
+      - name: Install dependencies via vcpkg (Windows)
         if: runner.os == 'Windows'
         shell: bash
         run: |
-          "$VCPKG_INSTALLATION_ROOT/vcpkg" install --triplet x64-windows curl nlohmann-json
+          "$VCPKG_INSTALLATION_ROOT/vcpkg" install --triplet x64-windows openssl curl nlohmann-json
 
       - name: Configure (Ubuntu)
         if: runner.os == 'Linux'
@@ -91,8 +88,7 @@ jobs:
         run: |
           cmake -S . -B build \
             -DCMAKE_TOOLCHAIN_FILE="$VCPKG_INSTALLATION_ROOT/scripts/buildsystems/vcpkg.cmake" \
-            -DVCPKG_TARGET_TRIPLET=x64-windows \
-            -DOPENSSL_ROOT_DIR="C:/Program Files/OpenSSL"
+            -DVCPKG_TARGET_TRIPLET=x64-windows
 
       - name: Build
         run: cmake --build build --config Release
@@ -123,8 +119,7 @@ jobs:
           cmake -S tests/consumer_smoke -B consumer-build \
             -DCMAKE_TOOLCHAIN_FILE="$VCPKG_INSTALLATION_ROOT/scripts/buildsystems/vcpkg.cmake" \
             -DVCPKG_TARGET_TRIPLET=x64-windows \
-            -DCMAKE_PREFIX_PATH="${{ github.workspace }}/install" \
-            -DOPENSSL_ROOT_DIR="C:/Program Files/OpenSSL"
+            -DCMAKE_PREFIX_PATH="${{ github.workspace }}/install"
 
       - name: Build consumer smoke
         run: cmake --build consumer-build --config Release
