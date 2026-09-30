@@ -1,3 +1,10 @@
+# [4.5.0](https://github.com/Moonbase-sh/moonbase-cpp/compare/v4.4.1...v4.5.0) (2026-09-30)
+
+
+### Features
+
+* **juce:** let JUCE projects add the module through FetchContent ([#32](https://github.com/Moonbase-sh/moonbase-cpp/issues/32)) ([1717a08](https://github.com/Moonbase-sh/moonbase-cpp/commit/1717a080fa94e9d4872ed89638ca3f50694c7e6d))
+
 ## [4.4.1](https://github.com/Moonbase-sh/moonbase-cpp/compare/v4.4.0...v4.4.1) (2026-09-30)
 
 
