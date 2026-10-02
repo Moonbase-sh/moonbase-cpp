@@ -149,6 +149,62 @@ TEST_CASE("validate_token_online propagates definitive license errors regardless
     }
 }
 
+TEST_CASE("a closed store is not kept alive by the grace period")
+{
+    licensing_options options;
+    options.online_validation_grace_period = std::chrono::hours(24 * 365);
+    facade_fixture fixture(options);
+
+    auto stale = moonbase::tests::default_claims();
+    stale["validated"] = moonbase::tests::now_seconds() - (10 * 60);
+    const auto stale_token = fixture.make_token(stale);
+
+    fixture.transport->responses.push_back(http_response{
+        410,
+        {},
+        R"({"title":"Store closed","status":410,"detail":"This store has closed.","errorType":"StoreClosed"})"});
+    CHECK_THROWS_AS(
+        (void)fixture.instance.validate_token_online(stale_token),
+        store_closed_error);
+}
+
+TEST_CASE("validate_token_online rides out what only looks like a verdict within grace")
+{
+    facade_fixture fixture;
+    auto stale = moonbase::tests::default_claims();
+    stale["validated"] = moonbase::tests::now_seconds() - (10 * 60);
+    const auto stale_token = fixture.make_token(stale);
+
+    SUBCASE("a 404 with no body")
+    {
+        fixture.transport->responses.push_back(http_response{404, {}, ""});
+    }
+    SUBCASE("a 404 ProblemDetails, which any ASP.NET service sends")
+    {
+        fixture.transport->responses.push_back(http_response{
+            404,
+            {},
+            R"({"type":"https://tools.ietf.org/html/rfc9110#section-15.5.5","title":"Not Found","status":404})"});
+    }
+    SUBCASE("a captive portal's 200")
+    {
+        fixture.transport->responses.push_back(
+            http_response{200, {}, "<html><body>Sign in to continue</body></html>"});
+    }
+    SUBCASE("rate limited")
+    {
+        fixture.transport->responses.push_back(http_response{429, {{"Retry-After", "60"}}, ""});
+    }
+    SUBCASE("an empty 500")
+    {
+        fixture.transport->responses.push_back(http_response{500, {}, ""});
+    }
+
+    const auto result = fixture.instance.validate_token_online(stale_token);
+    CHECK(result.token == stale_token);
+    CHECK(fixture.transport->requests.size() == 1);
+}
+
 TEST_CASE("validate_token_online never contacts the API for offline-activated tokens")
 {
     facade_fixture fixture;

@@ -436,6 +436,18 @@ int main(int argc, char* argv[])
                                       "Couldn't reach Moonbase to start activation. "
                                       "Check your connection and try again."); });
 
+    // The welcome view's error slot holds two lines and truncates the rest. 01c is
+    // the longest copy the controller puts there; 01d is a rejected activation,
+    // the one message that used to quote the SDK's own, unbounded reason.
+    writeSnapshot(outDir, "01c-welcome-error-long", [](ActivationController& c)
+                  { c.setPreviewState(Screen::Error, {},
+                                      "Activation isn't available for this product right now. "
+                                      "If this keeps happening, contact the developer."); });
+
+    writeSnapshot(outDir, "01d-welcome-error-rejected", [](ActivationController& c)
+                  { c.setPreviewState(Screen::Error, {},
+                                      "Activation was rejected. If this keeps happening, contact the developer."); });
+
     writeSnapshot(outDir, "02-activating", [](ActivationController& c)
                   { c.setPreviewState(Screen::BrowserWait); });
 
@@ -571,6 +583,14 @@ int main(int argc, char* argv[])
     {
         writeSnapshot(outDir, "15-theme-ember-welcome",
                       [](ActivationController& c) { c.setPreviewState(Screen::Welcome); },
+                      emberTheme());
+
+        // Monospaced, so the widest a message gets.
+        writeSnapshot(outDir, "15b-theme-ember-welcome-error",
+                      [](ActivationController& c)
+                      { c.setPreviewState(Screen::Error, {},
+                                          "Activation isn't available for this product right now. "
+                                          "If this keeps happening, contact the developer."); },
                       emberTheme());
 
         writeSnapshot(outDir, "16-theme-ember-activating",

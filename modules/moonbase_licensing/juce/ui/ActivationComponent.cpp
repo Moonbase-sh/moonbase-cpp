@@ -81,6 +81,25 @@ int drawBrand(Graphics& g, const ActivationLookAndFeel& lnf, const juce::Drawabl
 // EXPIRED", "Active", "Update available"). One set of pads so they read as one
 // family, and one measure path that takes the label exactly as it will be drawn
 // (case included), so the padding can't be eaten by the glyphs.
+// An inline error: the warning icon on the row's left edge, a gap, then up to
+// two lines of text, all centred on the row. Every screen draws its error through
+// here so the icon sits the same distance from the text everywhere.
+void drawInlineError(Graphics& g, const ActivationLookAndFeel& lnf, Rectangle<int> row,
+                     const juce::String& text)
+{
+    constexpr int iconSize = 16;
+    constexpr int iconGap = 8;
+
+    if (auto warn = icons::fromStroke(icons::warning, lnf.palette.error, 1.8f))
+        warn->drawWithin(g, row.removeFromLeft(iconSize).toFloat().withSizeKeepingCentre(iconSize, iconSize),
+                         juce::RectanglePlacement::centred, 1.0f);
+    row.removeFromLeft(iconGap);
+
+    g.setColour(lnf.palette.error);
+    g.setFont(lnf.body(12.5f));
+    g.drawFittedText(text, row, Justification::centredLeft, 2, 1.0f);
+}
+
 namespace pill {
 
 constexpr float sidePad = 12.0f; // left/right breathing room
@@ -676,13 +695,7 @@ public:
         // Surface activation errors here (the Error screen reuses this view).
         if (controller.statusMessage().isNotEmpty())
         {
-            auto errArea = getLocalBounds().removeFromBottom(38);
-            if (auto warn = icons::fromStroke(icons::warning, lnf.palette.error, 1.8f))
-                warn->drawWithin(g, errArea.removeFromLeft(20).toFloat().withSizeKeepingCentre(16, 16),
-                                 juce::RectanglePlacement::centred, 1.0f);
-            g.setColour(lnf.palette.error);
-            g.setFont(lnf.body(12.5f));
-            g.drawFittedText(controller.statusMessage(), errArea, Justification::centredLeft, 2, 1.0f);
+            drawInlineError(g, lnf, getLocalBounds().removeFromBottom(38), controller.statusMessage());
         }
     }
 
@@ -1005,15 +1018,7 @@ public:
 
         if (controller.offlineError().isNotEmpty() && ! l.error.isEmpty())
         {
-            auto line = l.error;
-            if (auto w = icons::fromStroke(icons::warning, lnf.palette.error, 1.8f))
-                w->drawWithin(g, line.removeFromLeft(20).toFloat().withSizeKeepingCentre(15.0f, 15.0f),
-                              juce::RectanglePlacement::centred, 1.0f);
-            line.removeFromLeft(4);
-            g.setColour(lnf.palette.error);
-            g.setFont(lnf.body(12.5f));
-            g.drawFittedText(controller.offlineError(), line.getX(), line.getY(), line.getWidth(),
-                             line.getHeight(), Justification::centredLeft, 2, 1.0f);
+            drawInlineError(g, lnf, l.error, controller.offlineError());
         }
     }
 
@@ -2061,12 +2066,7 @@ private:
         }
         else if (info.error.isNotEmpty())
         {
-            if (auto warn = icons::fromStroke(icons::warning, lnf.palette.error, 1.8f))
-                warn->drawWithin(g, row.removeFromLeft(20).toFloat().withSizeKeepingCentre(15, 15),
-                                 juce::RectanglePlacement::centred, 1.0f);
-            g.setColour(lnf.palette.error);
-            g.setFont(lnf.body(12.5f));
-            g.drawFittedText(info.error, row, Justification::centredLeft, 2, 1.0f);
+            drawInlineError(g, lnf, row, info.error);
         }
         else if (! info.canDownload)
         {
