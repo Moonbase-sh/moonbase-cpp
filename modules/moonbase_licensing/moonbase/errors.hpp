@@ -19,6 +19,9 @@ enum class error_type {
     license_device_mismatch,
     /// No stable hardware identifier could be read, so no device id exists.
     device_identity_unavailable,
+    /// The server will never complete a browser activation request: it expired,
+    /// was cancelled, or was refused.
+    activation_request_ended,
 };
 
 class moonbase_error : public std::runtime_error {
@@ -90,6 +93,21 @@ class license_device_mismatch_error : public license_invalid_error {
 public:
     explicit license_device_mismatch_error(const std::string& message)
         : license_invalid_error(error_type::license_device_mismatch, message)
+    {
+    }
+};
+
+// The server will never complete this browser activation: the request expired,
+// was cancelled, or was otherwise refused. Polling it again cannot succeed; stop
+// and start over with request_activation.
+//
+// Not a license_invalid_error: no license exists yet, so nothing about one is
+// invalid. A refused poll used to throw license_invalid_error, so code that
+// caught that type to stop polling must catch this one as well.
+class activation_request_error : public moonbase_error {
+public:
+    explicit activation_request_error(const std::string& message)
+        : moonbase_error(error_type::activation_request_ended, message)
     {
     }
 };

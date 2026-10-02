@@ -204,19 +204,32 @@ TEST_CASE("request_activation throws for API errors")
 
 TEST_CASE("get_requested_activation returns nullopt while pending or missing")
 {
-    client_fixture fixture({
-        http_response{204, {}, ""},
-        http_response{404, {}, ""},
-    });
+    activation_request request{"request-123", "https://demo.moonbase.sh/api/client/activations/request-123?format=JWT", ""};
+
+    // A fresh client per status: a second poll on the same client would be held
+    // back by the activation poll floor before it reached the transport.
+    for (const long status : {204L, 404L}) {
+        CAPTURE(status);
+        client_fixture fixture({http_response{status, {}, ""}});
+
+        CHECK_FALSE(fixture.client.get_requested_activation(request).has_value());
+        REQUIRE(fixture.transport->requests.size() == 1);
+        CHECK(fixture.transport->requests[0].method == "GET");
+        CHECK(fixture.transport->requests[0].connect_timeout == std::chrono::milliseconds{1234});
+        CHECK(fixture.transport->requests[0].request_timeout == std::chrono::milliseconds{5678});
+    }
+}
+
+TEST_CASE("copies of a client share the activation poll floor")
+{
+    client_fixture fixture({http_response{204, {}, ""}});
+    const auto copy = fixture.client;
 
     activation_request request{"request-123", "https://demo.moonbase.sh/api/client/activations/request-123?format=JWT", ""};
 
     CHECK_FALSE(fixture.client.get_requested_activation(request).has_value());
-    CHECK_FALSE(fixture.client.get_requested_activation(request).has_value());
-    REQUIRE(fixture.transport->requests.size() == 2);
-    CHECK(fixture.transport->requests[0].method == "GET");
-    CHECK(fixture.transport->requests[0].connect_timeout == std::chrono::milliseconds{1234});
-    CHECK(fixture.transport->requests[0].request_timeout == std::chrono::milliseconds{5678});
+    CHECK_FALSE(copy.get_requested_activation(request).has_value());
+    CHECK(fixture.transport->requests.size() == 1);
 }
 
 TEST_CASE("get_requested_activation validates fulfilled JWT response")
@@ -242,6 +255,75 @@ TEST_CASE("get_requested_activation maps license problem details")
 
     activation_request request{"request-123", "https://demo.moonbase.sh/api/client/activations/request-123?format=JWT", ""};
     CHECK_THROWS_AS((void)fixture.client.get_requested_activation(request), license_expired_error);
+}
+
+TEST_CASE("a 400 from the activation poll ends the request with the server's reason")
+{
+    client_fixture fixture({
+        http_response{400, {}, R"({"title":"Invalid state","detail":"Activation request was cancelled"})"},
+    });
+
+    activation_request request{"request-123", "https://demo.moonbase.sh/api/client/activations/request-123?format=JWT", ""};
+    CHECK_THROWS_WITH_AS(
+        (void)fixture.client.get_requested_activation(request),
+        "Activation request can no longer be completed: Activation request was cancelled",
+        activation_request_error);
+}
+
+TEST_CASE("an expired activation request is not reported as an expired license")
+{
+    client_fixture fixture({
+        http_response{400, {}, R"({"title":"Invalid state","detail":"Activation request has expired"})"},
+    });
+
+    activation_request request{"request-123", "https://demo.moonbase.sh/api/client/activations/request-123?format=JWT", ""};
+    CHECK_THROWS_WITH_AS(
+        (void)fixture.client.get_requested_activation(request),
+        "Activation request can no longer be completed: Activation request has expired",
+        activation_request_error);
+}
+
+TEST_CASE("a 400 without a problem body still ends the activation request")
+{
+    client_fixture fixture({http_response{400, {}, ""}});
+
+    activation_request request{"request-123", "https://demo.moonbase.sh/api/client/activations/request-123?format=JWT", ""};
+    CHECK_THROWS_WITH_AS(
+        (void)fixture.client.get_requested_activation(request),
+        "Activation request can no longer be completed (HTTP 400)",
+        activation_request_error);
+}
+
+TEST_CASE("an ended activation request has its own error type, not license_invalid")
+{
+    client_fixture fixture({
+        http_response{400, {}, R"({"detail":"Activation request was cancelled"})"},
+    });
+
+    activation_request request{"request-123", "https://demo.moonbase.sh/api/client/activations/request-123?format=JWT", ""};
+    try {
+        (void)fixture.client.get_requested_activation(request);
+        FAIL("expected the poll to throw");
+    } catch (const moonbase_error& ex) {
+        CHECK(dynamic_cast<const activation_request_error*>(&ex) != nullptr);
+        CHECK(dynamic_cast<const license_invalid_error*>(&ex) == nullptr);
+        CHECK(ex.type() == error_type::activation_request_ended);
+    }
+}
+
+TEST_CASE("server errors from the activation poll stay retryable")
+{
+    client_fixture fixture({
+        http_response{503, {}, R"({"title":"Service Unavailable"})"},
+    });
+
+    activation_request request{"request-123", "https://demo.moonbase.sh/api/client/activations/request-123?format=JWT", ""};
+    try {
+        (void)fixture.client.get_requested_activation(request);
+        FAIL("expected the poll to throw");
+    } catch (const api_error& ex) {
+        CHECK(ex.status_code() == 503);
+    }
 }
 
 TEST_CASE("validate_token_online posts the JWT and parses the refreshed response")

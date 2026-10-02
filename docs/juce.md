@@ -159,16 +159,46 @@ url.launchInDefaultBrowser();
 // Then, on a juce::Timer running on the message thread:
 void timerCallback() override
 {
-    if (unlockStatus.pollPendingActivation())
+    try
     {
-        stopTimer();
-        // unlockStatus.isMoonbaseUnlocked() is now true.
+        if (unlockStatus.pollPendingActivation())
+        {
+            stopTimer();
+            // unlockStatus.isMoonbaseUnlocked() is now true.
+        }
+    }
+    catch (const std::exception& ex)
+    {
+        // A rejection drops the pending request; a network blip keeps it.
+        if (! unlockStatus.pendingActivationMethod())
+        {
+            stopTimer();
+            // Show ex.what() and offer to start again.
+        }
     }
 }
 ```
 
-`pollPendingActivation()` is non-blocking. The poll cadence is up to you;
-once a second is plenty for a UI-driven flow.
+`pollPendingActivation()` is non-blocking. Poll every 2 to 3 seconds; the user
+is switching back from the browser, so a faster cadence gains nothing. To protect
+the Moonbase API, the SDK sends at most one poll per second, and calls in between
+return `false` without contacting the server. Calling it from an editor timer
+that runs much faster is therefore safe, though only one call per second does
+anything.
+
+Always catch around `pollPendingActivation()`: it throws when a poll fails, and
+JUCE does not catch exceptions thrown from a timer, so one that escapes ends the
+process (in a plugin, the host).
+
+- `moonbase::activation_request_error` means the server answered 400: the request
+  expired or was cancelled and can never complete. Any other
+  `license_invalid_error` or `license_expired_error` means the server refused the
+  activation. In both cases the bridge drops the pending request before
+  throwing, so `pendingActivationMethod()` returns `std::nullopt` and later polls
+  return `false` without contacting the server. Stop the timer and let the user
+  start again.
+- `moonbase::api_error` is a network or server problem. The request stays
+  pending, so keep polling.
 
 `beginActivation()` takes an optional `moonbase::activation_method`. Pass
 `activation_method::offline` to have the same browser flow mint an offline

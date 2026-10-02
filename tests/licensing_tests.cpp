@@ -216,6 +216,127 @@ TEST_CASE("a browser activation requested as offline yields an offline license")
     CHECK(fixture.transport->requests.size() == 2); // neither call hit the API
 }
 
+namespace {
+
+activation_request pending_activation()
+{
+    activation_request request;
+    request.id = "request-123";
+    request.request_url = "https://demo.moonbase.sh/api/client/activations/request-123";
+    request.browser_url = "https://demo.moonbase.sh/activate?token=request-123";
+    return request;
+}
+
+} // namespace
+
+TEST_CASE("get_requested_activation skips polls inside the minimum interval")
+{
+    facade_fixture fixture;
+    const auto request = pending_activation();
+    fixture.transport->responses.push_back(http_response{204, {}, {}});
+
+    CHECK_FALSE(fixture.instance.get_requested_activation(request).has_value());
+    CHECK_FALSE(fixture.instance.get_requested_activation(request).has_value());
+    CHECK_FALSE(fixture.instance.get_requested_activation(request).has_value());
+
+    // Only the first poll reached the transport; the rest answered "not yet"
+    // locally. Had they gone out, the empty response queue would have thrown.
+    CHECK(fixture.transport->requests.size() == 1);
+}
+
+TEST_CASE("get_requested_activation polls again once the minimum interval has passed")
+{
+    facade_fixture fixture;
+    const auto request = pending_activation();
+    fixture.transport->responses.push_back(http_response{204, {}, {}});
+    fixture.transport->responses.push_back(
+        http_response{200, {}, fixture.make_token(moonbase::tests::default_claims())});
+
+    CHECK_FALSE(fixture.instance.get_requested_activation(request).has_value());
+    std::this_thread::sleep_for(
+        detail::activation_poll_min_interval + std::chrono::milliseconds(50));
+    const auto activated = fixture.instance.get_requested_activation(request);
+
+    REQUIRE(activated.has_value());
+    CHECK(activated->id == "license-123");
+    CHECK(fixture.transport->requests.size() == 2);
+}
+
+TEST_CASE("polling two requests in turn lets both reach the server")
+{
+    facade_fixture fixture;
+    const auto first = pending_activation();
+    auto second = pending_activation();
+    second.id = "request-456";
+    second.request_url = "https://demo.moonbase.sh/api/client/activations/request-456";
+
+    // Each tick polls both requests back to back, in the same order. A single
+    // floor for the whole client would let the first claim every tick and hold
+    // the second back for good.
+    fixture.transport->responses.push_back(http_response{204, {}, {}});
+    fixture.transport->responses.push_back(http_response{204, {}, {}});
+    CHECK_FALSE(fixture.instance.get_requested_activation(first).has_value());
+    CHECK_FALSE(fixture.instance.get_requested_activation(second).has_value());
+    CHECK(fixture.transport->requests.size() == 2);
+
+    // Each request is still held to its own floor.
+    CHECK_FALSE(fixture.instance.get_requested_activation(first).has_value());
+    CHECK_FALSE(fixture.instance.get_requested_activation(second).has_value());
+    CHECK(fixture.transport->requests.size() == 2);
+
+    std::this_thread::sleep_for(
+        detail::activation_poll_min_interval + std::chrono::milliseconds(50));
+    fixture.transport->responses.push_back(http_response{204, {}, {}});
+    fixture.transport->responses.push_back(
+        http_response{200, {}, fixture.make_token(moonbase::tests::default_claims())});
+    CHECK_FALSE(fixture.instance.get_requested_activation(first).has_value());
+    const auto activated = fixture.instance.get_requested_activation(second);
+
+    REQUIRE(activated.has_value());
+    CHECK(activated->id == "license-123");
+    REQUIRE(fixture.transport->requests.size() == 4);
+    CHECK(fixture.transport->requests[3].url == second.request_url);
+}
+
+TEST_CASE("the activation poll floor also covers the client accessor")
+{
+    facade_fixture fixture;
+    const auto request = pending_activation();
+    fixture.transport->responses.push_back(http_response{204, {}, {}});
+
+    CHECK_FALSE(fixture.instance.get_requested_activation(request).has_value());
+    CHECK_FALSE(fixture.instance.client().get_requested_activation(request).has_value());
+    CHECK(fixture.transport->requests.size() == 1);
+}
+
+TEST_CASE("a failed activation poll still counts against the interval")
+{
+    facade_fixture fixture;
+    const auto request = pending_activation();
+    // No queued response: the transport throws, as a dropped connection would.
+
+    CHECK_THROWS((void)fixture.instance.get_requested_activation(request));
+    CHECK_FALSE(fixture.instance.get_requested_activation(request).has_value());
+    CHECK(fixture.transport->requests.size() == 1);
+}
+
+TEST_CASE("concurrent activation polls inside the interval send one request")
+{
+    facade_fixture fixture;
+    const auto request = pending_activation();
+    fixture.transport->responses.push_back(http_response{204, {}, {}});
+
+    std::vector<std::thread> threads;
+    for (int i = 0; i < 8; ++i) {
+        threads.emplace_back([&] { (void)fixture.instance.get_requested_activation(request); });
+    }
+    for (auto& thread : threads) {
+        thread.join();
+    }
+
+    CHECK(fixture.transport->requests.size() == 1);
+}
+
 TEST_CASE("generate_device_token emits a base64 JSON descriptor of the device and product")
 {
     facade_fixture fixture;

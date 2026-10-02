@@ -1,7 +1,9 @@
 #pragma once
 
+#include <chrono>
 #include <map>
 #include <memory>
+#include <mutex>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -125,31 +127,41 @@ inline std::map<std::string, std::string> default_headers(const licensing_option
     return headers;
 }
 
-inline void throw_for_problem(long status_code, const std::string& body)
-{
+struct problem_details {
     std::string title;
     std::string detail;
     std::string error_type;
+};
 
-    if (!body.empty()) {
-        try {
-            const auto problem = nlohmann::json::parse(body);
-            if (problem.contains("title") && problem.at("title").is_string()) {
-                title = problem.at("title").get<std::string>();
-            }
-            if (problem.contains("detail") && problem.at("detail").is_string()) {
-                detail = problem.at("detail").get<std::string>();
-            }
-            if (problem.contains("errorType")) {
-                if (problem.at("errorType").is_string()) {
-                    error_type = problem.at("errorType").get<std::string>();
-                } else if (problem.at("errorType").is_number_integer()) {
-                    error_type = std::to_string(problem.at("errorType").get<int>());
-                }
-            }
-        } catch (const std::exception&) {
-        }
+inline problem_details parse_problem(const std::string& body)
+{
+    problem_details result;
+    if (body.empty()) {
+        return result;
     }
+    try {
+        const auto problem = nlohmann::json::parse(body);
+        if (problem.contains("title") && problem.at("title").is_string()) {
+            result.title = problem.at("title").get<std::string>();
+        }
+        if (problem.contains("detail") && problem.at("detail").is_string()) {
+            result.detail = problem.at("detail").get<std::string>();
+        }
+        if (problem.contains("errorType")) {
+            if (problem.at("errorType").is_string()) {
+                result.error_type = problem.at("errorType").get<std::string>();
+            } else if (problem.at("errorType").is_number_integer()) {
+                result.error_type = std::to_string(problem.at("errorType").get<int>());
+            }
+        }
+    } catch (const std::exception&) {
+    }
+    return result;
+}
+
+inline void throw_for_problem(long status_code, const std::string& body)
+{
+    const auto [title, detail, error_type] = parse_problem(body);
 
     const auto message = !detail.empty()
         ? detail
@@ -167,6 +179,58 @@ inline void throw_for_problem(long status_code, const std::string& body)
 
     throw api_error(static_cast<int>(status_code), message, title, detail);
 }
+
+// A 400 from the activation poll means the request will never complete: it
+// expired, was cancelled, or was refused. Kept away from throw_for_problem's
+// text match, which would report "Activation request has expired" as an expired
+// license; only an explicit LicenseExpired code still means that.
+inline void throw_for_activation_poll_problem(long status_code, const std::string& body)
+{
+    if (status_code != 400) {
+        throw_for_problem(status_code, body);
+    }
+
+    const auto problem = parse_problem(body);
+    const auto& reason = !problem.detail.empty() ? problem.detail : problem.title;
+    if (problem.error_type == "LicenseExpired") {
+        throw license_expired_error(reason.empty() ? "The license has expired" : reason);
+    }
+    throw activation_request_error(
+        reason.empty() ? "Activation request can no longer be completed (HTTP 400)"
+                       : "Activation request can no longer be completed: " + reason);
+}
+
+// Hard floor between activation polls, protecting the API from callers that poll
+// from a fast UI timer or a tight loop. Deliberately not configurable.
+inline constexpr std::chrono::milliseconds activation_poll_min_interval{1000};
+
+// Spaces polls of the same activation request at least
+// activation_poll_min_interval apart. Each request has its own slot, so a caller
+// polling several requests in turn never starves the later ones. The timestamp
+// is taken before the request goes out, so a poll still in flight on another
+// thread counts too.
+class activation_poll_gate {
+public:
+    bool try_claim(const std::string& request_url)
+    {
+        std::lock_guard<std::mutex> guard(mutex_);
+        const auto now = std::chrono::steady_clock::now();
+        // Polls older than the interval no longer hold anything back. Dropping
+        // them keeps the map to the requests polled within the last interval.
+        for (auto it = last_poll_.begin(); it != last_poll_.end();) {
+            if (now - it->second >= activation_poll_min_interval) {
+                it = last_poll_.erase(it);
+            } else {
+                ++it;
+            }
+        }
+        return last_poll_.emplace(request_url, now).second;
+    }
+
+private:
+    std::mutex mutex_;
+    std::map<std::string, std::chrono::steady_clock::time_point> last_poll_;
+};
 
 } // namespace detail
 
@@ -274,9 +338,21 @@ public:
         }
     }
 
+    // Returns nullopt while the activation is pending, and also, without contacting
+    // the API, when called within detail::activation_poll_min_interval of this
+    // client's previous poll of the same request.
+    //
+    // Throws activation_request_error when the server answers 400: the request
+    // expired, was cancelled, or was refused, so stop polling and start a new
+    // one. Transport failures and other server errors throw api_error and are
+    // worth retrying.
     [[nodiscard]] std::optional<license> get_requested_activation(
         const activation_request& activation) const
     {
+        if (!poll_gate_->try_claim(activation.request_url)) {
+            return std::nullopt;
+        }
+
         http_request request;
         request.method = "GET";
         request.url = activation.request_url;
@@ -289,7 +365,7 @@ public:
             return std::nullopt;
         }
         if (response.status_code < 200 || response.status_code >= 300) {
-            detail::throw_for_problem(response.status_code, response.body);
+            detail::throw_for_activation_poll_problem(response.status_code, response.body);
         }
         return validator_->validate_token(response.body);
     }
@@ -299,6 +375,9 @@ private:
     std::shared_ptr<device_id_resolver> device_ids_;
     std::shared_ptr<license_validator> validator_;
     std::shared_ptr<http_transport> transport_;
+    // Shared, so a copy of this client cannot double the poll rate.
+    std::shared_ptr<detail::activation_poll_gate> poll_gate_ =
+        std::make_shared<detail::activation_poll_gate>();
 };
 
 } // namespace moonbase

@@ -58,7 +58,7 @@ int main()
 
         std::optional<moonbase::license> activated;
         while (!activated) {
-            std::this_thread::sleep_for(std::chrono::seconds(1));
+            std::this_thread::sleep_for(std::chrono::seconds(2));
             activated = licensing.get_requested_activation(request);
             std::cout << "Waiting for activation...\n";
         }

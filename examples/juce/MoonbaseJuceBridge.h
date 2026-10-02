@@ -675,6 +675,17 @@ public:
     // Non-blocking poll. Returns true the first call after the user finishes
     // activation in the browser; returns false otherwise. Run from a juce::Timer
     // on the message thread.
+    //
+    // Throws when the poll fails, so catch in your timer callback: JUCE does not
+    // catch exceptions thrown from a timer, and one that escapes ends the process.
+    //   - moonbase::activation_request_error: the request expired or was
+    //     cancelled. Any other license_invalid_error or license_expired_error:
+    //     the server refused the activation. Either way the bridge drops the
+    //     request first, so pendingActivationMethod() returns nullopt and later
+    //     polls return false without contacting the server. Stop the timer and
+    //     let the user start again.
+    //   - moonbase::api_error: a network or server problem. The request stays
+    //     pending, so keep polling.
     bool pollPendingActivation()
     {
         std::optional<moonbase::activation_request> request;
@@ -685,7 +696,26 @@ public:
         if (!request)
             return false;
 
-        auto fulfilled = licensing_->get_requested_activation(*request);
+        std::optional<moonbase::license> fulfilled;
+        try
+        {
+            fulfilled = licensing_->get_requested_activation(*request);
+        }
+        catch (const moonbase::activation_request_error&)
+        {
+            dropPendingRequest(request->id);
+            throw;
+        }
+        catch (const moonbase::license_invalid_error&)
+        {
+            dropPendingRequest(request->id);
+            throw;
+        }
+        catch (const moonbase::license_expired_error&)
+        {
+            dropPendingRequest(request->id);
+            throw;
+        }
         if (!fulfilled)
             return false;
 
@@ -887,6 +917,15 @@ public:
     }
 
 private:
+    // Forgets a browser activation the server refused, unless a newer
+    // beginActivation() has already replaced it.
+    void dropPendingRequest(const std::string& requestId)
+    {
+        const juce::ScopedLock lock(stateLock_);
+        if (pendingRequest_ && pendingRequest_->id == requestId)
+            pendingRequest_.reset();
+    }
+
     void setUnlocked(std::optional<moonbase::license> license)
     {
         const juce::ScopedLock lock(stateLock_);
