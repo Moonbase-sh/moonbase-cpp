@@ -118,12 +118,32 @@ std::cout << "Open: " << request.browser_url << "\n";
 
 std::optional<moonbase::license> license;
 while (!license) {
-    std::this_thread::sleep_for(std::chrono::seconds(1));
+    std::this_thread::sleep_for(std::chrono::seconds(2));
     license = licensing.get_requested_activation(request);
 }
 
 licensing.store().store_local_license(*license);
 ```
+
+Poll every 2 to 3 seconds. The user is switching back from the browser, so a
+faster cadence gains nothing.
+
+To protect the Moonbase API, the SDK sends at most one poll per second for each
+request. A call to `get_requested_activation` less than a second after the
+previous poll of the same request returns `std::nullopt` without contacting the
+API, so a caller polling from a fast UI timer does not flood the server. Each
+request is limited separately, so polling several requests in turn never holds
+one of them back. The limit is built in and cannot be turned off.
+
+A 400 from the poll means the server will never complete the request: it
+expired, was cancelled, or was refused. `get_requested_activation` then throws
+`activation_request_error` (`error_type::activation_request_ended`) carrying the
+server's reason. Stop polling and start a new activation with
+`request_activation`. Earlier releases threw `license_invalid_error` here, so
+if your polling loop catches that type to stop, catch `activation_request_error`
+too.
+Network failures and other server errors throw `api_error`; those are worth
+retrying on the next poll.
 
 `request_activation` takes an optional `moonbase::activation_method`. Pass
 `activation_method::offline` to have the same browser flow mint an *offline*

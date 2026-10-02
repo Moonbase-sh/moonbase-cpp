@@ -62,7 +62,10 @@ public:
     }
 
     // Starts a browser activation. Poll the returned request with
-    // get_requested_activation until it yields a license.
+    // get_requested_activation every 2 to 3 seconds until it yields a license.
+    // The SDK sends at most one poll per second for each request; calls in
+    // between return nullopt. A request that expires or is cancelled makes the
+    // poll throw activation_request_error: stop, and start a new one.
     //
     // method (optional): pass activation_method::offline to ask the backend for
     // an offline license. The browser flow itself is identical, but the token it

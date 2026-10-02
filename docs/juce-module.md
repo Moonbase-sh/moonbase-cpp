@@ -125,8 +125,11 @@ time (plugin scanning, pluginval, rapid open/close) without deferring or guardin
 The screens:
 
 - **Welcome** — Activate online (browser flow) or Activate offline.
-- **Activating** — opens the browser and polls `get_requested_activation()`; the
-  device chip shows the local fingerprint + platform; Cancel aborts.
+- **Activating** — opens the browser and polls `get_requested_activation()` every
+  2 seconds; the device chip shows the local fingerprint + platform; Cancel aborts.
+  If the request expires or is cancelled (the server answers 400), polling stops
+  and the welcome screen returns with "This activation expired or was cancelled.
+  Activate again to continue."; the server's reason goes to `onDiagnostic`.
 - **Success** — animated confirmation with a mini license card.
 - **Offline** — two-step machine-file flow: save the request (`generate_device_token`),
   then load the response file (`read_offline_license`, validated locally).

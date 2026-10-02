@@ -7,7 +7,7 @@
 namespace moonbase::juce_integration {
 
 namespace {
-constexpr int kPollIntervalMs = 1500;
+constexpr int kPollIntervalMs = 2000;
 
 // Diagnostic-only error text. For transport failures (moonbase::api_error) the
 // SDK stashes actionable guidance (e.g. the macOS network entitlement hint) in
@@ -484,20 +484,39 @@ void ActivationController::timerCallback()
         std::optional<moonbase::license> fulfilled;
         bool fatal = false;
         juce::String error;
+        juce::String userMessage;
         juce::String transient;
         try
         {
             fulfilled = licensing->get_requested_activation(request);
         }
-        catch (const moonbase::license_invalid_error& ex) { fatal = true; error = ex.what(); }
-        catch (const moonbase::license_expired_error& ex) { fatal = true; error = ex.what(); }
+        catch (const moonbase::activation_request_error& ex)
+        {
+            // The server answered 400: the request expired or was cancelled, so
+            // it can never complete. The server's reason goes to diagnostics.
+            fatal = true;
+            error = ex.what();
+            userMessage = "This activation expired or was cancelled. Activate again to continue.";
+        }
+        catch (const moonbase::license_invalid_error& ex)
+        {
+            fatal = true;
+            error = ex.what();
+            userMessage = "Activation was rejected. " + error;
+        }
+        catch (const moonbase::license_expired_error& ex)
+        {
+            fatal = true;
+            error = ex.what();
+            userMessage = "Activation was rejected. " + error;
+        }
         catch (const std::exception& ex)
         {
             // Transient transport/5xx error — keep polling.
             transient = describeError(ex);
         }
 
-        juce::MessageManager::callAsync([safe, generation, fulfilled, fatal, error, transient]() mutable
+        juce::MessageManager::callAsync([safe, generation, fulfilled, fatal, error, userMessage, transient]() mutable
         {
             auto* self = safe.get();
             if (self == nullptr)
@@ -511,7 +530,7 @@ void ActivationController::timerCallback()
                 self->emitDiagnostic("Activation rejected during polling: " + error);
                 self->stopTimer();
                 self->pendingRequest_.reset();
-                self->setScreen(Screen::Error, "Activation was rejected. " + error);
+                self->setScreen(Screen::Error, userMessage);
             }
             else if (fulfilled)
             {

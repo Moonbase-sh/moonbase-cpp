@@ -123,7 +123,7 @@ ERUn++6CVMPvZo67jVbTY+GCXYfW4gGVZQIDAQAB
         {
             const auto url = unlockStatus_.beginActivation();
             url.launchInDefaultBrowser();
-            startTimer(1000);
+            startTimer(2000);
             refreshLabel("Waiting for activation in browser...");
         }
         catch (const std::exception& ex)
@@ -134,10 +134,28 @@ ERUn++6CVMPvZo67jVbTY+GCXYfW4gGVZQIDAQAB
 
     void timerCallback() override
     {
-        if (unlockStatus_.pollPendingActivation())
+        try
+        {
+            if (unlockStatus_.pollPendingActivation())
+            {
+                stopTimer();
+                refreshLabel();
+            }
+        }
+        catch (const moonbase::activation_request_error&)
         {
             stopTimer();
-            refreshLabel();
+            refreshLabel("Activation expired or was cancelled. Click Activate to start again.");
+        }
+        catch (const std::exception& ex)
+        {
+            // Any other rejection also drops the request. A network or server
+            // problem leaves it pending, so keep polling.
+            if (!unlockStatus_.pendingActivationMethod())
+            {
+                stopTimer();
+                refreshLabel(juce::String("Activation failed: ") + ex.what());
+            }
         }
     }
 
