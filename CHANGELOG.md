@@ -1,3 +1,10 @@
+# [4.6.0](https://github.com/Moonbase-sh/moonbase-cpp/compare/v4.5.1...v4.6.0) (2026-10-02)
+
+
+### Features
+
+* rate limit activation polls and end expired or cancelled requests cleanly ([#35](https://github.com/Moonbase-sh/moonbase-cpp/issues/35)) ([1787105](https://github.com/Moonbase-sh/moonbase-cpp/commit/178710532d385df9d1c2d4b28d6f27b6b0640435))
+
 ## [4.5.1](https://github.com/Moonbase-sh/moonbase-cpp/compare/v4.5.0...v4.5.1) (2026-09-30)
 
 
