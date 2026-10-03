@@ -197,8 +197,9 @@ process (in a plugin, the host).
   throwing, so `pendingActivationMethod()` returns `std::nullopt` and later polls
   return `false` without contacting the server. Stop the timer and let the user
   start again.
-- `moonbase::api_error` is a network or server problem. The request stays
-  pending, so keep polling.
+- `moonbase::api_error` is a network or server problem, or rate limiting. The
+  request stays pending, so keep polling; after a rate limit, polls return
+  `false` without contacting the server until its `Retry-After` has passed.
 
 `beginActivation()` takes an optional `moonbase::activation_method`. Pass
 `activation_method::offline` to have the same browser flow mint an offline

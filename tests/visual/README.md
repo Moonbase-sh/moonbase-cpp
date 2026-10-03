@@ -23,6 +23,8 @@ PNG per state:
 | --- | --- |
 | `01-welcome` | Not activated — online / offline |
 | `01b-welcome-error` | Activation request failed (error message) |
+| `01c-welcome-error-long` | The longest error copy the welcome view shows (two lines) |
+| `01d-welcome-error-rejected` | A rejected activation (fixed copy, never the SDK's reason) |
 | `02-activating` | Browser activation in progress (spinner + device chip) |
 | `03-success` | Just activated (license card) |
 | `04-offline-empty` | Offline flow, nothing chosen yet |
@@ -43,6 +45,7 @@ PNG per state:
 | `13-update-error` | Update details failed to load (error) |
 | `14-update-gated` | Update the license can't download (Unlock CTA) |
 | `15-theme-ember-welcome` | Welcome, "Ember" theme (warm near-black, amber, monospaced) |
+| `15b-theme-ember-welcome-error` | The longest welcome error copy in Ember's monospaced face, where it runs widest |
 | `16-theme-ember-activating` | Browser activation, Ember (spinner arc + track) |
 | `17-theme-ember-trial` | Trial, Ember (pill, progress gradient, feature list) |
 | `18-theme-daylight-success` | Just activated, "Daylight" theme (light) |

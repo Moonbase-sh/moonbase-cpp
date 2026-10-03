@@ -5,7 +5,7 @@
 // for the running platform. Authenticates with the license token via the
 // custom "Authorization: LicenseToken <jwt>" scheme. Mirrors license_client and
 // reuses its request helpers (detail::append_query / default_headers /
-// throw_for_problem).
+// throw_for_inventory_problem).
 
 #include <map>
 #include <memory>
@@ -168,6 +168,10 @@ public:
 
     // GET /api/customer/inventory/products/{id}?version=<version>: release notes
     // for the given version (empty version asks for the current release).
+    //
+    // Every failure throws api_error with the HTTP status. These endpoints never
+    // refuse the license itself: a token they cannot use just makes the request
+    // anonymous, so a private product then answers 404.
     [[nodiscard]] release_info get_release(std::string_view version,
                                            std::string_view license_token) const
     {
@@ -186,7 +190,7 @@ public:
 
         const auto response = transport_->send(request);
         if (response.status_code < 200 || response.status_code >= 300) {
-            detail::throw_for_problem(response.status_code, response.body);
+            detail::throw_for_inventory_problem(response);
         }
 
         try {
@@ -214,7 +218,8 @@ public:
     // GET /api/customer/inventory/products/{id}/download/{platform}/latest?redirect=false
     // resolves the latest installer for the platform to a presigned URL.
     // `platform_name` is the backend Platform enum name (e.g. "Mac", "Windows").
-    // Throws (404) when no installer exists for the platform.
+    // Throws api_error: 404 when no installer exists for the platform or the
+    // product has no release, 403 when this license may not download it.
     [[nodiscard]] download_target get_download_url(std::string_view platform_name,
                                                    std::string_view license_token) const
     {
@@ -231,7 +236,7 @@ public:
 
         const auto response = transport_->send(request);
         if (response.status_code < 200 || response.status_code >= 300) {
-            detail::throw_for_problem(response.status_code, response.body);
+            detail::throw_for_inventory_problem(response);
         }
 
         try {

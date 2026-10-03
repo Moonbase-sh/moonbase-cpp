@@ -127,9 +127,12 @@ The screens:
 - **Welcome** — Activate online (browser flow) or Activate offline.
 - **Activating** — opens the browser and polls `get_requested_activation()` every
   2 seconds; the device chip shows the local fingerprint + platform; Cancel aborts.
-  If the request expires or is cancelled (the server answers 400), polling stops
-  and the welcome screen returns with "This activation expired or was cancelled.
-  Activate again to continue."; the server's reason goes to `onDiagnostic`.
+  If the request expires (after an hour) or is cancelled, the server answers 400,
+  polling stops and the welcome screen returns with "This activation expired or
+  was cancelled. Activate again to continue."; the server's reason goes to
+  `onDiagnostic`. If the request can't be started, the welcome screen's message
+  says whether Moonbase was unreachable, busy (rate limiting or a server error), or
+  refused it for this product, or that the machine has no identity to activate.
 - **Success** — animated confirmation with a mini license card.
 - **Offline** — two-step machine-file flow: save the request (`generate_device_token`),
   then load the response file (`read_offline_license`, validated locally).
@@ -417,8 +420,13 @@ persisted and `onActivationChanged` fires; `controller().license()` then reflect
 `owned_sub_product_ids`, `properties`, expiry, and seat counts. `force` bypasses the
 SDK's `online_validation_min_interval` throttle (you want that right after a purchase);
 pass `false` for a polite background re-check that respects it. A network failure is
-non-fatal: the current license is kept and the reason goes to `onDiagnostic`. Offline
-licenses are a no-op (they are permanent and not server-tracked).
+non-fatal: the current license is kept and the reason goes to `onDiagnostic`. So are rate
+limiting, a server error, and a response that didn't come from Moonbase (a captive
+portal's sign-in page). A definitive rejection is not: when the server says the license
+was revoked or has lapsed, or that the store has closed, the controller drops it
+and shows the welcome screen, and `onActivationChanged` fires. The license file stays, as it does when
+`start()` meets the same answer, so the next launch checks it again. Offline licenses are
+a no-op (they are permanent and not server-tracked).
 
 ### Cadence and timeouts
 

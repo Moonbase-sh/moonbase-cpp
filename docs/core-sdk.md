@@ -136,14 +136,24 @@ request is limited separately, so polling several requests in turn never holds
 one of them back. The limit is built in and cannot be turned off.
 
 A 400 from the poll means the server will never complete the request: it
-expired, was cancelled, or was refused. `get_requested_activation` then throws
+expired, was cancelled, or was refused. A request still unfulfilled an hour
+after it was made expires. `get_requested_activation` then throws
 `activation_request_error` (`error_type::activation_request_ended`) carrying the
 server's reason. Stop polling and start a new activation with
 `request_activation`. Earlier releases threw `license_invalid_error` here, so
 if your polling loop catches that type to stop, catch `activation_request_error`
 too.
-Network failures and other server errors throw `api_error`; those are worth
-retrying on the next poll.
+
+A 404 also returns `std::nullopt`. The API reads requests with eventual
+consistency, so one created a moment ago can briefly answer 404, and the SDK
+cannot tell Moonbase's 404 from one a proxy sent, so it never ends a request on
+one.
+
+Network failures, rate limiting and other server errors throw `api_error`;
+those are worth retrying on the next poll. When the server rate limits with a
+`Retry-After` header, `api_error::retry_after()` carries it, and later polls
+return `std::nullopt` without contacting the API until it has passed (at most
+5 minutes).
 
 `request_activation` takes an optional `moonbase::activation_method`. Pass
 `activation_method::offline` to have the same browser flow mint an *offline*
@@ -183,7 +193,8 @@ much offline tolerance is allowed:
   grace, the failure is propagated.
 
 Definitive server rejections (`license_invalid_error`, `license_expired_error`)
-always propagate regardless of grace.
+always propagate regardless of grace. See [Errors](#errors) for what counts as
+definitive.
 
 Offline-activated tokens (`activation_method::offline`) are validated locally
 even when calling `validate_token_online` — the SDK never contacts the API for
@@ -208,6 +219,48 @@ online-activated paid licenses; calling it for offline or trial tokens raises
 (`license_invalid_error`) and transport failures (`api_error`) propagate the
 same way they do for `validate_token_online`, but with no grace-period
 fallback — revoke is a one-shot operation.
+
+## Errors
+
+Everything the SDK throws derives from `moonbase::moonbase_error`, whose `type()`
+returns an `error_type`. For calls to the API, the exception type says whether
+trying again can help:
+
+| Exception | Meaning | What to do |
+| --- | --- | --- |
+| `api_error` | No definitive answer. The API was unreachable (`status_code()` is 0), rate limited (429), failing (5xx, including the gateway's own 502 and 504), or something other than the API answered, such as a captive portal | Retry later; `retry_after()` says when, if the server did |
+| `license_invalid_error` | The API refused the license for good: a bad signature or product, or a revoked license or activation | Lock, and offer to activate again |
+| `license_expired_error` | The license has expired: a trial ended, or a subscription lapsed | Lock, and offer to buy |
+| `store_closed_error` | The merchant closed their Moonbase account, so the store answers 410 to everything. A `license_invalid_error`, as in the .NET SDK. Offline licenses keep working | Lock; nothing can be checked online again |
+| `activation_request_error` | A browser activation request can never complete | Start a new request |
+| `configuration_error` | Bad options, or a device id resolver that returned an empty id | Fix the setup |
+
+How each call maps what the API returns:
+
+| Call | Response | Result |
+| --- | --- | --- |
+| `request_activation` | 400 (product not active, offline activations disabled, invalid product id, a rejected field) | `license_invalid_error` with the server's reason |
+| | 404 (no such product or account) | `api_error` |
+| `get_requested_activation` | 204 or 404 | `std::nullopt` |
+| | 400 | `activation_request_error` |
+| `validate_token_online`, `revoke_activation` | 400 | `license_invalid_error` (`license_expired_error` when `errorType` is `LicenseExpired`) |
+| | 403 or 404 | `api_error`, covered by the grace period |
+| `inventory_client` | any failure but a closed store | `api_error` with the status; these endpoints never judge the license |
+| any | 410 with `errorType: StoreClosed` | `store_closed_error`, read before the status |
+| any | 429, 5xx, a transport failure | `api_error` |
+
+Only an answer that can only have come from Moonbase is definitive, because
+`license_invalid_error` skips the offline grace period. So a 2xx whose body is
+not what the endpoint returns, such as a sign-in page where a license token
+belongs, is an `api_error`. So is a 403 or 404, although `/validate` and
+`/revoke` send those for a license that no longer exists or changed hands: their
+body is stock ASP.NET ProblemDetails with no `errorType`, which a misrouted
+request gets from any other ASP.NET service too. A license deleted on the server
+therefore keeps working until the grace period runs out.
+
+The message of each exception carries the server's reason where it gave one:
+the problem's `detail`, the first field error of a validation failure, or the
+gateway's own message.
 
 ## Offline Activation
 

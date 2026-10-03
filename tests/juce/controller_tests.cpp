@@ -17,6 +17,7 @@
 
 #include <cmath>
 #include <functional>
+#include <optional>
 #include <utility>
 #include <vector>
 
@@ -608,6 +609,46 @@ TEST_CASE("deactivate() that can't reach the server keeps the license and surfac
     CHECK(fx.licenseFile.existsAsFile()); // not deleted
 }
 
+TEST_CASE("deactivate() keeps the license through a 404 anything could have sent")
+{
+    controller_fixture fx;
+    fx.seedStored(fx.token(default_claims()));
+    ActivationController controller(fx.config, fx.makeLicensing());
+    controller.start();
+    REQUIRE(pumpUntil([&] { return controller.screen() == Screen::Details; }));
+
+    // Stock ASP.NET NotFound(): Moonbase's for a license that is gone, but a
+    // misrouted request gets the same from any other service. The seat may still
+    // be taken, so the license stays and the user can try again.
+    fx.transport->responses.push_back(moonbase::http_response{
+        404, {}, R"({"type":"https://tools.ietf.org/html/rfc9110#section-15.5.5","title":"Not Found","status":404})"});
+    controller.deactivate();
+
+    REQUIRE(pumpUntil([&] { return ! controller.isBusy(); }));
+    CHECK(controller.screen() == Screen::Details);
+    REQUIRE(controller.license().has_value());
+    CHECK(controller.statusMessage().contains("Couldn't reach Moonbase to deactivate"));
+    CHECK(fx.licenseFile.existsAsFile());
+}
+
+TEST_CASE("deactivate() while Moonbase is rate limiting says to try again shortly")
+{
+    controller_fixture fx;
+    fx.seedStored(fx.token(default_claims()));
+    ActivationController controller(fx.config, fx.makeLicensing());
+    controller.start();
+    REQUIRE(pumpUntil([&] { return controller.screen() == Screen::Details; }));
+
+    fx.transport->responses.push_back(moonbase::http_response{429, {{"Retry-After", "60"}}, ""});
+    controller.deactivate();
+
+    REQUIRE(pumpUntil([&] { return ! controller.isBusy(); }));
+    CHECK(controller.screen() == Screen::Details);
+    REQUIRE(controller.license().has_value());
+    CHECK(controller.statusMessage().containsIgnoreCase("Try again in a minute"));
+    CHECK(fx.licenseFile.existsAsFile());
+}
+
 //==============================================================================
 // Offline activation flow (machine file out, license file in)
 //==============================================================================
@@ -818,6 +859,69 @@ TEST_CASE("a transport failure routes the entitlement hint to diagnostics, not t
     CHECK(diags.joinIntoString(" ").containsIgnoreCase("entitlement"));
 }
 
+TEST_CASE("a failed activation start says what kind of failure it was")
+{
+    struct expectation
+    {
+        const char* name;
+        std::optional<moonbase::http_response> response; // none: the transport throws
+        const char* copy;
+    };
+    const std::vector<expectation> cases{
+        {"unreachable", std::nullopt, "Couldn't reach Moonbase"},
+        {"server error", moonbase::http_response{500, {}, ""}, "Try again in a minute"},
+        {"rate limited", moonbase::http_response{429, {{"Retry-After", "60"}}, ""}, "Try again in a minute"},
+        // A 404 or 403 is no verdict: a proxy or misrouted request sends them too.
+        {"404", moonbase::http_response{404, {}, R"({"title":"Not Found","status":404})"}, "Couldn't reach Moonbase"},
+        {"proxy 403", moonbase::http_response{403, {}, "<html><body>Blocked</body></html>"}, "Couldn't reach Moonbase"},
+        {"product not active",
+         moonbase::http_response{400, {}, R"({"title":"Invalid state","detail":"Product is not active","status":400})"},
+         "isn't available for this product"},
+        {"store closed",
+         moonbase::http_response{410, {}, R"({"title":"Store closed","status":410,"detail":"This store has closed.","errorType":"StoreClosed"})"},
+         "This store has closed"},
+    };
+
+    for (const auto& c : cases)
+    {
+        CAPTURE(c.name);
+        controller_fixture fx;
+        juce::StringArray diags;
+        fx.config.onDiagnostic = [&](const juce::String& m) { diags.add(m); };
+        if (c.response)
+            fx.transport->responses.push_back(*c.response);
+
+        ActivationController controller(fx.config, fx.makeLicensing());
+        controller.beginOnlineActivation();
+
+        REQUIRE(pumpUntil([&] { return controller.screen() == Screen::Error; }));
+        CHECK(controller.statusMessage().contains(c.copy));
+        CHECK(diags.joinIntoString(" ").contains("request_activation failed"));
+    }
+}
+
+TEST_CASE("an unidentifiable machine is not told to check its connection")
+{
+    controller_fixture fx;
+    struct no_identity : moonbase::device_id_resolver
+    {
+        std::string device_name() const override { return "Studio Mac"; }
+        std::string device_id() const override
+        {
+            throw moonbase::insufficient_device_identity_error("test");
+        }
+    };
+    auto licensing = std::make_shared<moonbase::licensing>(
+        fx.config.toLicensingOptions(), fx.store, std::make_shared<no_identity>(), fx.transport);
+
+    ActivationController controller(fx.config, licensing);
+    controller.beginOnlineActivation();
+
+    REQUIRE(pumpUntil([&] { return controller.screen() == Screen::Error; }));
+    CHECK(controller.statusMessage().contains("can't be identified"));
+    CHECK(fx.transport->requests.empty());
+}
+
 //==============================================================================
 // Online re-validation (refresh entitlements after a purchase)
 //==============================================================================
@@ -914,6 +1018,77 @@ TEST_CASE("refreshLicense keeps the current license when the server is unreachab
     CHECK_FALSE(ok);
     CHECK(controller.license().has_value());      // not locked out by a blip
     CHECK(controller.screen() == Screen::Details);
+}
+
+TEST_CASE("refreshLicense locks when the server rejects the license for good")
+{
+    const std::vector<std::pair<const char*, moonbase::http_response>> rejections{
+        {"license revoked",
+         moonbase::http_response{400, {}, R"({"title":"Invalid state","detail":"License has been revoked","status":400,"errorType":"LicenseRevoked"})"}},
+        {"subscription lapsed",
+         moonbase::http_response{400, {}, R"({"title":"Invalid state","detail":"License has expired","status":400,"errorType":"LicenseExpired"})"}},
+        {"license no longer active",
+         moonbase::http_response{400, {}, R"({"title":"Invalid state","detail":"License is no longer active","status":400})"}},
+        {"store closed",
+         moonbase::http_response{410, {}, R"({"title":"Store closed","status":410,"detail":"This store has closed.","errorType":"StoreClosed"})"}},
+        {"activation revoked",
+         moonbase::http_response{400, {}, R"({"title":"Not allowed","detail":"License has been revoked","status":400,"errorType":"LicenseActivationRevoked"})"}},
+    };
+
+    for (const auto& entry : rejections)
+    {
+        CAPTURE(entry.first);
+        const auto& response = entry.second;
+        controller_fixture fx;
+        juce::StringArray diags;
+        fx.config.onDiagnostic = [&](const juce::String& m) { diags.add(m); };
+        fx.seedStored(fx.token(default_claims()));
+        ActivationController controller(fx.config, fx.makeLicensing());
+        controller.start();
+        REQUIRE(pumpUntil([&] { return controller.screen() == Screen::Details; }));
+
+        fx.transport->responses.push_back(response);
+        bool done = false, ok = true;
+        controller.refreshLicense(true, [&](bool refreshed) { done = true; ok = refreshed; });
+
+        REQUIRE(pumpUntil([&] { return done; }));
+        CHECK_FALSE(ok);
+        CHECK_FALSE(controller.license().has_value());
+        CHECK(controller.screen() == Screen::Welcome);
+        CHECK(fx.licenseFile.existsAsFile()); // kept, as start() keeps it, for the next launch to re-check
+        CHECK(diags.joinIntoString(" ").contains("License rejected on re-validation"));
+    }
+}
+
+TEST_CASE("refreshLicense keeps the license through what only looks like a verdict")
+{
+    const std::vector<std::pair<const char*, moonbase::http_response>> blips{
+        {"captive portal", moonbase::http_response{200, {}, "<html><body>Sign in</body></html>"}},
+        {"proxy 404", moonbase::http_response{404, {}, ""}},
+        {"404 ProblemDetails", moonbase::http_response{404, {}, R"({"title":"Not Found","status":404})"}},
+        {"rate limited", moonbase::http_response{429, {{"Retry-After", "60"}}, ""}},
+        {"gateway timeout", moonbase::http_response{504, {}, R"({"message":"Endpoint request timed out"})"}},
+    };
+
+    for (const auto& entry : blips)
+    {
+        CAPTURE(entry.first);
+        const auto& response = entry.second;
+        controller_fixture fx;
+        fx.seedStored(fx.token(default_claims()));
+        ActivationController controller(fx.config, fx.makeLicensing());
+        controller.start();
+        REQUIRE(pumpUntil([&] { return controller.screen() == Screen::Details; }));
+
+        fx.transport->responses.push_back(response);
+        bool done = false, ok = true;
+        controller.refreshLicense(true, [&](bool refreshed) { done = true; ok = refreshed; });
+
+        REQUIRE(pumpUntil([&] { return done; }));
+        CHECK_FALSE(ok);
+        CHECK(controller.license().has_value());
+        CHECK(controller.screen() == Screen::Details);
+    }
 }
 
 //==============================================================================

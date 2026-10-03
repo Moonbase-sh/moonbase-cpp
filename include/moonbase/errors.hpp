@@ -1,5 +1,7 @@
 #pragma once
 
+#include <chrono>
+#include <optional>
 #include <stdexcept>
 #include <string>
 #include <utility>
@@ -22,6 +24,8 @@ enum class error_type {
     /// The server will never complete a browser activation request: it expired,
     /// was cancelled, or was refused.
     activation_request_ended,
+    /// The store the product is sold through has closed its Moonbase account.
+    store_closed,
 };
 
 class moonbase_error : public std::runtime_error {
@@ -45,13 +49,23 @@ public:
     }
 };
 
+// The request did not get a definitive answer: the server could not be reached
+// (status_code() is 0), was rate limited or failing (429, 5xx), or answered with
+// something other than what the endpoint returns. Worth retrying later, which is
+// why online validation falls back on the offline grace period when it gets one.
+// A definitive refusal is license_invalid_error or license_expired_error instead.
 class api_error : public moonbase_error {
 public:
-    api_error(int status_code, std::string message, std::string title = {}, std::string detail = {})
+    api_error(int status_code,
+              std::string message,
+              std::string title = {},
+              std::string detail = {},
+              std::optional<std::chrono::seconds> retry_after = std::nullopt)
         : moonbase_error(error_type::api_error, std::move(message)),
           status_code_(status_code),
           title_(std::move(title)),
-          detail_(std::move(detail))
+          detail_(std::move(detail)),
+          retry_after_(retry_after)
     {
     }
 
@@ -59,10 +73,16 @@ public:
     [[nodiscard]] const std::string& title() const noexcept { return title_; }
     [[nodiscard]] const std::string& detail() const noexcept { return detail_; }
 
+    /// How long the server asked to be left alone, from a Retry-After header
+    /// given in seconds. Moonbase sends one with its 429 rate-limit response.
+    /// Empty when the response carried none.
+    [[nodiscard]] std::optional<std::chrono::seconds> retry_after() const noexcept { return retry_after_; }
+
 private:
     int status_code_;
     std::string title_;
     std::string detail_;
+    std::optional<std::chrono::seconds> retry_after_;
 };
 
 class license_invalid_error : public moonbase_error {
@@ -93,6 +113,22 @@ class license_device_mismatch_error : public license_invalid_error {
 public:
     explicit license_device_mismatch_error(const std::string& message)
         : license_invalid_error(error_type::license_device_mismatch, message)
+    {
+    }
+};
+
+// The merchant has closed their Moonbase account, so their store answers every
+// request with 410 StoreClosed: nothing about a license can be checked, activated
+// or renewed online again. Not transient, so it must not ride the offline grace
+// period. An offline license keeps working, since it never asks the server.
+//
+// Derives from license_invalid_error, as the .NET SDK's StoreClosedException
+// does, so existing catch sites and the grace-period logic treat it as the
+// definitive answer it is. Code switching on type() must add the new case.
+class store_closed_error : public license_invalid_error {
+public:
+    explicit store_closed_error(const std::string& message)
+        : license_invalid_error(error_type::store_closed, message)
     {
     }
 };
