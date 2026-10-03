@@ -1,3 +1,10 @@
+# [4.7.0](https://github.com/Moonbase-sh/moonbase-cpp/compare/v4.6.0...v4.7.0) (2026-10-03)
+
+
+### Features
+
+* handle every error the Moonbase API can return ([#36](https://github.com/Moonbase-sh/moonbase-cpp/issues/36)) ([39460df](https://github.com/Moonbase-sh/moonbase-cpp/commit/39460dfa4e26835664fd302b8fed3a089c0b6ba0))
+
 # [4.6.0](https://github.com/Moonbase-sh/moonbase-cpp/compare/v4.5.1...v4.6.0) (2026-10-02)
 
 
