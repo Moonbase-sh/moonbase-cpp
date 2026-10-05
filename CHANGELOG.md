@@ -1,3 +1,10 @@
+# [4.8.0](https://github.com/Moonbase-sh/moonbase-cpp/compare/v4.7.1...v4.8.0) (2026-10-05)
+
+
+### Features
+
+* **juce:** lock on expiry mid-session and keep plugin instances in sync ([#38](https://github.com/Moonbase-sh/moonbase-cpp/issues/38)) ([2028331](https://github.com/Moonbase-sh/moonbase-cpp/commit/2028331844005ca3ed30f8e2a2d41f7602ac1a82))
+
 ## [4.7.1](https://github.com/Moonbase-sh/moonbase-cpp/compare/v4.7.0...v4.7.1) (2026-10-05)
 
 
