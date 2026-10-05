@@ -2,6 +2,9 @@
 
 #include <chrono>
 #include <memory>
+#include <string>
+#include <utility>
+#include <vector>
 
 #include "moonbase/detail/time.hpp"
 #include "moonbase/device_id_resolver.hpp"
@@ -69,6 +72,22 @@ TEST_CASE("PKCS#1 RSA public keys are accepted")
     const auto result = make_validator(key.public_pkcs1_pem).validate_token(token);
 
     CHECK(result.id == "license-123");
+}
+
+TEST_CASE("a public key is accepted in every common text shape")
+{
+    auto key = moonbase::tests::generate_key();
+    const auto token = moonbase::tests::make_token(key.key.get(), moonbase::tests::default_claims());
+
+    const std::vector<std::pair<std::string, std::string>> formats{{"SPKI", key.public_pem},
+                                                                   {"PKCS#1", key.public_pkcs1_pem}};
+    for (const auto& format : formats) {
+        for (const auto& shape : moonbase::tests::key_text_shapes(format.second)) {
+            CAPTURE(format.first);
+            CAPTURE(shape.first);
+            CHECK(make_validator(shape.second).validate_token(token).id == "license-123");
+        }
+    }
 }
 
 TEST_CASE("validated timestamp can fall back to legacy ver claim")

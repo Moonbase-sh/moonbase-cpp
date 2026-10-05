@@ -1,9 +1,10 @@
 // Standalone sample app for the moonbase_licensing JUCE module.
 //
 // It mimics a real plugin editor ("Solstice") with a License button, and shows
-// the activation flow as a MODAL OVERLAY on top of it. "Open Solstice", the
-// close button, and a successful activation all just dismiss the overlay to
-// reveal the app underneath; the License button brings it back. The endpoint /
+// the activation flow as a MODAL OVERLAY on top of it. "Open Solstice" (shown
+// once activation succeeds), "Continue" on the trial screen, and the close
+// button dismiss the overlay to reveal the app underneath; the License button
+// brings it back. The endpoint /
 // product id / public key are the public Moonbase demo values.
 
 #include <moonbase_licensing/moonbase_licensing.h>
@@ -83,7 +84,7 @@ public:
         addAndMakeVisible(licenseButton);
 
         activation = std::make_unique<ActivationComponent>(makeConfig());
-        activation->onClose = [this] { hideActivation(); }; // "Open", close (X), success all dismiss
+        activation->onClose = [this] { hideActivation(); }; // "Open {product}", "Continue" and the close (X) dismiss
         activation->onActivationChanged = [this](bool activated)
         {
             // On launch, lock behind the modal only if not already licensed.

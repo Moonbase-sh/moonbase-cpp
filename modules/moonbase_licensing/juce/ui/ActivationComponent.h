@@ -31,13 +31,20 @@ public:
 
     ~ActivationComponent() override;
 
-    // Called when the user dismisses the flow from a "done" state — the
-    // Welcome "no thanks" is not offered, so this fires from Success ("Open …")
-    // and Trial ("Continue"). ActivationDialog wires this to close the window.
+    // Called when the user dismisses the flow from a "done" state. The Welcome
+    // "no thanks" is not offered, so this fires from Success ("Open {product}"),
+    // Trial ("Continue"), the close button once a license is loaded, and "Skip
+    // this update" on an auto-presented update. ActivationDialog wires this to
+    // close the window.
     std::function<void()> onClose;
 
-    // Fired whenever activation state settles (true once a valid license is
-    // loaded). Handy for gating: enable your plugin when this reports true.
+    // Fired once the activation state has settled (after the stored license has
+    // loaded), then whenever the license itself changes: activated, refreshed
+    // into a new token, picked up from another instance, revoked, expired or
+    // cleared. Never for screen navigation, busy flips or download progress, so
+    // it is a safe place to reload features. true once a valid license is
+    // loaded. Assign it right after construction; the first report is deferred
+    // until then.
     std::function<void(bool isActivated)> onActivationChanged;
 
     [[nodiscard]] ActivationController& controller();
@@ -46,8 +53,9 @@ public:
     // backdrop. Use these (instead of setVisible) when overlaying a host app:
     //   appear()  -> setVisible(true) and animate in
     //   dismiss() -> animate out, then setVisible(false)
-    // "Open", the close button, and a successful activation call onClose; wire
-    // onClose to dismiss().
+    // A successful activation shows an "Open {product}" button rather than
+    // closing by itself; that button and the close button call onClose, so wire
+    // onClose to dismiss(). While hidden the panel runs no timers.
     void appear();
     void dismiss();
 
@@ -62,6 +70,7 @@ public:
 
     void paint(juce::Graphics&) override;
     void resized() override;
+    void visibilityChanged() override;
 
 private:
     struct Impl;

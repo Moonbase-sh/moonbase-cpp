@@ -12,13 +12,13 @@
 #include <string_view>
 #include <vector>
 
-#include <openssl/bio.h>
 #include <openssl/evp.h>
-#include <openssl/pem.h>
 #include <openssl/rsa.h>
 #include <openssl/sha.h>
+#include <openssl/x509.h>
 
 #include "moonbase/detail/base64.hpp"
+#include "moonbase/detail/crypto/der.hpp"
 #include "moonbase/errors.hpp"
 
 namespace moonbase::detail::crypto {
@@ -38,50 +38,11 @@ namespace openssl_detail {
 #endif
 
 using evp_pkey_ptr = std::unique_ptr<EVP_PKEY, decltype(&EVP_PKEY_free)>;
-using bio_ptr = std::unique_ptr<BIO, decltype(&BIO_free)>;
 using evp_md_ctx_ptr = std::unique_ptr<EVP_MD_CTX, decltype(&EVP_MD_CTX_free)>;
 
 inline evp_pkey_ptr make_empty_pkey()
 {
     return evp_pkey_ptr(nullptr, EVP_PKEY_free);
-}
-
-inline bio_ptr make_memory_bio(const std::string& value)
-{
-    return bio_ptr(BIO_new_mem_buf(value.data(), static_cast<int>(value.size())), BIO_free);
-}
-
-inline evp_pkey_ptr read_pem_public_key(const std::string& public_key)
-{
-    {
-        auto bio = make_memory_bio(public_key);
-        if (bio) {
-            if (auto* pkey = PEM_read_bio_PUBKEY(bio.get(), nullptr, nullptr, nullptr)) {
-                return evp_pkey_ptr(pkey, EVP_PKEY_free);
-            }
-        }
-    }
-
-    {
-        auto bio = make_memory_bio(public_key);
-        if (bio) {
-            if (auto* rsa = PEM_read_bio_RSAPublicKey(bio.get(), nullptr, nullptr, nullptr)) {
-                auto* pkey = EVP_PKEY_new();
-                if (!pkey) {
-                    RSA_free(rsa);
-                    throw license_invalid_error("Could not allocate RSA public key");
-                }
-                if (EVP_PKEY_assign_RSA(pkey, rsa) != 1) {
-                    RSA_free(rsa);
-                    EVP_PKEY_free(pkey);
-                    throw license_invalid_error("Could not assign RSA public key");
-                }
-                return evp_pkey_ptr(pkey, EVP_PKEY_free);
-            }
-        }
-    }
-
-    return make_empty_pkey();
 }
 
 inline evp_pkey_ptr read_der_public_key(const std::vector<unsigned char>& der)
@@ -113,18 +74,13 @@ inline evp_pkey_ptr read_der_public_key(const std::vector<unsigned char>& der)
 #pragma GCC diagnostic pop
 #endif
 
+// The key text goes through the same decoder as the Apple and Windows backends
+// rather than OpenSSL's PEM reader, which rejects an indented armor line, so
+// every platform accepts the same key strings.
 inline evp_pkey_ptr load_public_key(const std::string& public_key)
 {
-    if (public_key.find("-----BEGIN") != std::string::npos) {
-        auto pkey = read_pem_public_key(public_key);
-        if (pkey) {
-            return pkey;
-        }
-    }
-
     try {
-        auto der = base64_decode(public_key);
-        auto pkey = read_der_public_key(der);
+        auto pkey = read_der_public_key(der::decode_key_bytes(public_key));
         if (pkey) {
             return pkey;
         }

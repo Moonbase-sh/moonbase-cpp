@@ -6,8 +6,9 @@ against the public demo environment (`https://demo.moonbase.sh`, product `demo-a
 
 It mimics a plugin editor for a fictional "Solstice" plugin and presents
 `ActivationComponent` as a **modal overlay** on top of it (`overlayBackdrop = true`).
-"Open Solstice", the close button, and a successful activation all dismiss the
-overlay to reveal the app underneath; the License button brings it back. That is the
+"Open Solstice" (shown once activation succeeds), "Continue" on the trial screen, and
+the close button dismiss the overlay to reveal the app underneath; the License button
+brings it back. That is the
 shape most plugins want, so the file doubles as reference wiring.
 
 It also exercises the config surface beyond the three required fields: product and

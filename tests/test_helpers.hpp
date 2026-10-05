@@ -90,6 +90,46 @@ inline generated_key generate_key()
 #pragma GCC diagnostic pop
 #endif
 
+// The same PEM key in the shapes it tends to arrive in after a trip through a
+// config file, an XML attribute, a JSON string or an environment variable. Every
+// crypto backend must accept all of them.
+inline std::vector<std::pair<std::string, std::string>> key_text_shapes(const std::string& pem)
+{
+    std::string body;
+    std::string crlf;
+    std::string indented;
+    std::string spaced;
+    std::string joined;
+    std::size_t start = 0;
+    while (start < pem.size()) {
+        auto end = pem.find('\n', start);
+        if (end == std::string::npos) {
+            end = pem.size();
+        }
+        const auto line = pem.substr(start, end - start);
+        start = end + 1;
+        if (line.empty()) {
+            continue;
+        }
+        if (line.find("-----") == std::string::npos) {
+            body += line;
+        }
+        crlf += line + "\r\n";
+        indented += "    " + line + "\n";
+        spaced += (spaced.empty() ? "" : " ") + line;
+        joined += line;
+    }
+
+    return {
+        {"multi-line PEM", pem},
+        {"CRLF PEM", crlf},
+        {"indented PEM", indented},
+        {"single-line PEM, spaces", spaced},
+        {"single-line PEM, no separators", joined},
+        {"base64 DER", body},
+    };
+}
+
 inline std::vector<unsigned char> sign_rs256(EVP_PKEY* key, const std::string& input)
 {
     evp_md_ctx_ptr context(EVP_MD_CTX_new(), EVP_MD_CTX_free);

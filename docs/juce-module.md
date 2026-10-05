@@ -157,8 +157,11 @@ the success pop, and the breathing top-edge glow. From JUCE 8.0.4 these run on
 `juce_animation` (`juce::Animator` / `ValueAnimatorBuilder` / `Easings`) when your
 project links it; otherwise the module uses its own equivalent, with the same
 cubic-bezier curves, so the motion is identical on every JUCE version. Either way
-a 60 Hz `juce::Timer` supplies the ticks, not a `VBlankAnimatorUpdater`. Set
-`config.reduceMotion` to turn all of it off.
+a 60 Hz `juce::Timer` supplies the ticks, not a `VBlankAnimatorUpdater`. That timer
+only runs while the component is on screen: hiding it or any parent stops it, so a panel
+kept hidden in every editor costs nothing. Set `config.reduceMotion` to turn off the transitions, the success pop, the
+appear animation and the glow. The activating spinner keeps turning, because it is the
+one sign that the wait is still alive.
 
 ## Gating
 
@@ -201,6 +204,46 @@ void processBlock (juce::AudioBuffer<float>& b, ...) override
 `controller().license()` is the full `moonbase::license` — `trial`, `expires_at`,
 `issued_to.email`, `owned_sub_product_ids`, custom `properties`, etc. — for richer
 gating decisions (read it on the message thread).
+
+To react to the license itself (reload features, update your own status), assign
+`onLicenseChanged` before `start()`. It runs on the message thread once `start()` has
+settled, then only when the license changes: activated, refreshed into a new token,
+picked up from another instance, revoked, expired or cleared. Screen changes, progress
+and a re-check that changed nothing don't fire it. `ActivationComponent::onActivationChanged`
+follows the same rules, separately for each component.
+
+```cpp
+activation.onLicenseChanged = [this] (bool licensed) { reloadFeatures(); };
+activation.start();
+```
+
+### Expiry and other instances
+
+Once started, the controller keeps an eye on the license by itself, with a local check
+every 2 seconds (a look at the license file and the clock, no network):
+
+- A trial or subscription whose `exp` passes while the plugin is open locks then, not at
+  the next launch. A trial goes to the **Trial expired** screen.
+- A license that has gone unverified for longer than `onlineGracePeriod` gets one more
+  online check, and locks if Moonbase can't be reached, as it would at launch.
+- If either happens while the user is activating (typically a trial being unlocked), the
+  license locks on the spot and the activation carries on; when it lands, it replaces the
+  license. The same goes for a license another instance removes during an activation.
+- When another plugin instance, the standalone app, or a host that runs each plugin in
+  its own process activates, refreshes or deactivates, the other controllers pick it up
+  within a couple of seconds, with no reload. They all share the license file. A refresh
+  elsewhere updates the license in place without moving the screen; a different
+  activation replaces it, and anything still in flight for the old one is dropped. A
+  stored license nobody has verified within `onlineGracePeriod` is not picked up until
+  an instance re-validates it.
+
+Sandboxed formats (AUv3, Mac App Store builds) each keep the license in their own
+container, so they don't share an activation with the other formats.
+
+For a custom UI, `pendingBrowserUrl()` returns the browser link while an online
+activation is waiting, so you can show or copy it when the browser didn't open; a change
+is broadcast when it arrives. To open the link your own way, set `config.openBrowser`
+(return `false` when it couldn't be opened).
 
 ## Branding / theming
 
@@ -421,17 +464,20 @@ activation->controller().refreshLicense (/*force*/ true, [] (bool refreshed) {
 ```
 
 It runs async and silently (no screen change). On success the license is updated +
-persisted and `onActivationChanged` fires; `controller().license()` then reflects the new
+persisted, and when the server sent a new token `onLicenseChanged` and
+`onActivationChanged` fire; `controller().license()` then reflects the new
 `owned_sub_product_ids`, `properties`, expiry, and seat counts. `force` bypasses the
 SDK's `online_validation_min_interval` throttle (you want that right after a purchase);
 pass `false` for a polite background re-check that respects it. A network failure is
 non-fatal: the current license is kept and the reason goes to `onDiagnostic`. So are rate
 limiting, a server error, and a response that didn't come from Moonbase (a captive
-portal's sign-in page). A definitive rejection is not: when the server says the license
+portal's sign-in page), as long as the license is within `onlineGracePeriod` of its last
+successful check. A definitive rejection is not: when the server says the license
 was revoked or has lapsed, or that the store has closed, the controller drops it
-and shows the welcome screen, and `onActivationChanged` fires. The license file stays, as it does when
-`start()` meets the same answer, so the next launch checks it again. Offline licenses are
-a no-op (they are permanent and not server-tracked).
+and shows the welcome screen, and `onActivationChanged` fires. The same happens when the
+grace period has run out and Moonbase still can't be reached. The license file stays, as it
+does when `start()` meets the same answer, so the next launch checks it again. Offline
+licenses are a no-op (they are permanent and not server-tracked).
 
 ### Cadence and timeouts
 
@@ -445,10 +491,12 @@ config.httpConnectTimeout  = std::chrono::seconds (5);
 config.httpRequestTimeout  = std::chrono::seconds (15);
 ```
 
-The SDK never polls on a timer; it validates on launch (`start()`) and whenever you call
-`refreshLicense()`, throttled to no more than once per `onlineCheckInterval`. A license
-stays usable offline until `onlineGracePeriod` elapses since its last successful online
-validation.
+The SDK never polls the server on a timer; it validates online on launch (`start()`) and
+whenever you call `refreshLicense()`, throttled to no more than once per
+`onlineCheckInterval`. A license stays usable offline until `onlineGracePeriod` elapses
+since its last successful online validation; the controller's local check (see
+[Expiry and other instances](#expiry-and-other-instances)) enforces that mid-session too,
+with one last online attempt before it locks.
 
 ## App updates
 
