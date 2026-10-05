@@ -39,6 +39,7 @@
 #endif
 
 #include "moonbase/detail/crypto/crypto.hpp"
+#include "moonbase/detail/unicode/utf16.hpp"
 #include "moonbase/device_id_resolver.hpp"
 
 namespace moonbase {
@@ -146,7 +147,41 @@ public:
         return parameters;
     }
 
+    // Only a label, so unlike the rest of this class it is free to be correct: read
+    // through the wide API as UTF-8 on Windows, where the ANSI reading is not UTF-8
+    // and cannot be serialized. device_id() still hashes that ANSI reading.
     [[nodiscard]] std::string device_name() const override
+    {
+#if defined(_WIN32)
+        wchar_t buffer[128]{};
+        auto size = static_cast<DWORD>(sizeof(buffer) / sizeof(buffer[0]));
+        if (!GetComputerNameExW(ComputerNamePhysicalDnsHostname, buffer, &size)) {
+            return {};
+        }
+        std::u16string name;
+        name.reserve(size);
+        for (DWORD index = 0; index != size; ++index) {
+            name.push_back(static_cast<char16_t>(buffer[index]));
+        }
+        return detail::unicode::utf16_to_utf8(name);
+#else
+        return hashed_host_name();
+#endif
+    }
+
+    [[nodiscard]] std::string device_id() const override
+    {
+        auto parameters = identity_parameters();
+        if (parameters.empty()) {
+            append_parameter(parameters, "deviceName", hashed_host_name());
+        }
+        return hash_identity_parameters(parameters);
+    }
+
+private:
+    // The host name as device_id() hashes it. On Windows that is the ANSI code
+    // page reading, byte for byte.
+    [[nodiscard]] static std::string hashed_host_name()
     {
 #if defined(_WIN32)
         char buffer[128]{};
@@ -177,16 +212,6 @@ public:
 #endif
     }
 
-    [[nodiscard]] std::string device_id() const override
-    {
-        auto parameters = identity_parameters();
-        if (parameters.empty()) {
-            append_parameter(parameters, "deviceName", device_name());
-        }
-        return hash_identity_parameters(parameters);
-    }
-
-private:
     [[nodiscard]] static std::string read_file(const std::string& path)
     {
         std::ifstream file(path);

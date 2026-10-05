@@ -110,9 +110,13 @@ public:
     // offline-activated license token in return.
     [[nodiscard]] std::string generate_device_token() const
     {
+        // As request_activation does: a name that is not UTF-8 is repaired, since
+        // it is only a label, and an id that is not UTF-8 is refused.
+        const auto device_id = device_ids_->device_id();
+        detail::require_utf8_device_id(device_id);
         const nlohmann::json payload{
-            {"id", device_ids_->device_id()},
-            {"name", device_ids_->device_name()},
+            {"id", device_id},
+            {"name", detail::replace_invalid_utf8(device_ids_->device_name())},
             {"productId", options_.product_id},
             // The Moonbase API expects this to always be "JWT".
             {"format", "JWT"},

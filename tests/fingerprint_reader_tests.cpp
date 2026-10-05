@@ -13,7 +13,9 @@
 #include <vector>
 
 #include <doctest/doctest.h>
+#include <nlohmann/json.hpp>
 
+#include "moonbase/detail/unicode/utf16.hpp"
 #include "moonbase/errors.hpp"
 #include "moonbase/fingerprint_spec.hpp"
 #include "moonbase/moonbase_device_id_resolver.hpp"
@@ -242,6 +244,45 @@ TEST_CASE("device_name survives a machine with no identity")
     // for a machine that cannot be fingerprinted.
     CHECK(resolver.device_name() == "PC-1");
     CHECK_THROWS_AS(resolver.device_id(), moonbase::insufficient_device_identity_error);
+}
+
+TEST_CASE("the host name reads as UTF-8")
+{
+    // Strict dump() throws on anything that is not UTF-8, which is how an ANSI code
+    // page reading of a non-ASCII Windows computer name failed every activation.
+    const auto name = moonbase::moonbase_device_id_resolver::read_host_name();
+    INFO("host name: " << name);
+    CHECK_NOTHROW((void)nlohmann::json(name).dump());
+}
+
+TEST_CASE("utf16_to_utf8 transcodes every plane and replaces unpaired surrogates")
+{
+    using moonbase::detail::unicode::utf16_to_utf8;
+
+    // Spelled as code units and bytes: MSVC without /utf-8 reads a raw non-ASCII
+    // literal in the ANSI code page. A literal is split wherever the next
+    // character would otherwise extend a hex escape.
+    CHECK(utf16_to_utf8(u"").empty());
+    CHECK(utf16_to_utf8(u"PC-1") == "PC-1");
+    CHECK(utf16_to_utf8(u"Bj\x00F6rn-PC") == "Bj\xC3\xB6rn-PC");
+    CHECK(utf16_to_utf8(u"\x30B9\x30BF\x30B8\x30AA") == "\xE3\x82\xB9\xE3\x82\xBF\xE3\x82\xB8\xE3\x82\xAA");
+    CHECK(utf16_to_utf8(u"\xD83C\xDFB5") == "\xF0\x9F\x8E\xB5");
+
+    // Each encoded length at both of its edges.
+    CHECK(utf16_to_utf8(u"\x007F") == "\x7F");
+    CHECK(utf16_to_utf8(u"\x0080") == "\xC2\x80");
+    CHECK(utf16_to_utf8(u"\x07FF") == "\xDF\xBF");
+    CHECK(utf16_to_utf8(u"\x0800") == "\xE0\xA0\x80");
+    CHECK(utf16_to_utf8(u"\xFFFF") == "\xEF\xBF\xBF");
+    CHECK(utf16_to_utf8(u"\xD800\xDC00") == "\xF0\x90\x80\x80");
+    CHECK(utf16_to_utf8(u"\xDBFF\xDFFF") == "\xF4\x8F\xBF\xBF");
+
+    // An unpaired surrogate is U+FFFD, and never swallows its neighbour.
+    CHECK(utf16_to_utf8(u"a\xD83C") == "a\xEF\xBF\xBD");
+    CHECK(utf16_to_utf8(u"\xD83C" u"b") == "\xEF\xBF\xBD" "b");
+    CHECK(utf16_to_utf8(u"\xDFB5" u"b") == "\xEF\xBF\xBD" "b");
+    CHECK(utf16_to_utf8(u"\xDFB5\xD83C") == "\xEF\xBF\xBD\xEF\xBF\xBD");
+    CHECK(utf16_to_utf8(u"\xD83C\xD83C\xDFB5") == "\xEF\xBF\xBD\xF0\x9F\x8E\xB5");
 }
 
 TEST_CASE("the host-name fallback is opt-in and separately stamped")

@@ -133,6 +133,8 @@ The screens:
   `onDiagnostic`. If the request can't be started, the welcome screen's message
   says whether Moonbase was unreachable, busy (rate limiting or a server error), or
   refused it for this product, or that the machine has no identity to activate.
+  A failure that is none of those (a bug in a custom device id resolver, say) is
+  shown in its own words rather than passed off as a connection problem.
 - **Success** — animated confirmation with a mini license card.
 - **Offline** — two-step machine-file flow: save the request (`generate_device_token`),
   then load the response file (`read_offline_license`, validated locally).
@@ -386,8 +388,11 @@ builds the module and runs the behavioral suite on macOS.
 
 ## Diagnostics
 
-The UI shows friendly, end-user-facing copy. To see the underlying reason behind a failure
-(bad config, rejected token, unreachable server, persist failure), wire a diagnostic sink:
+The UI shows friendly, end-user-facing copy for every failure it can name. One it can't (an
+exception that is neither Moonbase's answer nor a failed connection) is shown verbatim, so a
+customer's screenshot carries the actual error. To see the underlying reason behind any
+failure (bad config, rejected token, unreachable server, persist failure), wire a diagnostic
+sink:
 
 ```cpp
 config.onDiagnostic = [] (const juce::String& message) {

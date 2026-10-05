@@ -24,6 +24,14 @@ struct http_response {
 class http_transport {
 public:
     virtual ~http_transport() = default;
+
+    /// Perform one exchange and return the response, whatever its status.
+    ///
+    /// When no response arrives at all (DNS, a refused connection, TLS, a timeout,
+    /// cancellation), throw api_error with status code 0, as both bundled
+    /// transports do. That is what tells "Moonbase could not be reached" apart from
+    /// a failure on this machine: the JUCE activation screen asks the user to check
+    /// their connection for the first, and shows any other exception as it is.
     [[nodiscard]] virtual http_response send(const http_request& request) = 0;
 };
 

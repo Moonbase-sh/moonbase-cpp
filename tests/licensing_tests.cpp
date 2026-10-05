@@ -410,6 +410,38 @@ TEST_CASE("generate_device_token emits a base64 JSON descriptor of the device an
     CHECK(fixture.transport->requests.empty());
 }
 
+TEST_CASE("generate_device_token survives a device name that is not UTF-8")
+{
+    facade_fixture fixture;
+    // "Björn-PC" as GetComputerNameExA returned it on a Western code page.
+    const licensing instance(
+        fixture.prepare({}),
+        nullptr,
+        std::make_shared<static_device_id_resolver>("Bj\xF6rn-PC", "device-id"),
+        fixture.transport);
+
+    const auto device_token = instance.generate_device_token();
+    const auto json = nlohmann::json::parse(
+        moonbase::detail::bytes_to_string(moonbase::detail::base64_decode(device_token)));
+
+    CHECK(json.at("name").get<std::string>() == "Bj\xEF\xBF\xBDrn-PC");
+    CHECK(json.at("id").get<std::string>() == "device-id");
+}
+
+TEST_CASE("generate_device_token refuses a device id that is not UTF-8")
+{
+    // The portal would issue a license for the repaired id, which this device's
+    // resolver never returns, so the license file could never be read back here.
+    facade_fixture fixture;
+    const licensing instance(
+        fixture.prepare({}),
+        nullptr,
+        std::make_shared<static_device_id_resolver>("Test Device", "id-\xF6"),
+        fixture.transport);
+
+    CHECK_THROWS_AS((void)instance.generate_device_token(), configuration_error);
+}
+
 TEST_CASE("read_offline_license accepts an offline token for this device")
 {
     facade_fixture fixture;

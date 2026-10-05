@@ -745,6 +745,57 @@ TEST_CASE("request_activation stands in for a blank device name")
     CHECK(body.at("deviceSignature") == "device-id");
 }
 
+TEST_CASE("request_activation sends a device name that is not UTF-8 instead of throwing")
+{
+    client_fixture fixture({
+        http_response{200, {}, R"({"id":"request-123","request":"https://demo.moonbase.sh/r","browser":"https://demo.moonbase.sh/b"})"},
+    });
+    // "Björn-PC" as GetComputerNameExA returned it on a Western code page.
+    const license_client client(
+        fixture.make_options(),
+        std::make_shared<static_device_id_resolver>("Bj\xF6rn-PC", "device-id"),
+        fixture.validator,
+        fixture.transport);
+
+    (void)client.request_activation();
+
+    REQUIRE(fixture.transport->requests.size() == 1);
+    const auto body = nlohmann::json::parse(fixture.transport->requests[0].body);
+    CHECK(body.at("deviceName") == "Bj\xEF\xBF\xBDrn-PC");
+    CHECK(body.at("deviceSignature") == "device-id");
+}
+
+TEST_CASE("request_activation refuses a device id that is not UTF-8 without contacting the API")
+{
+    // Repairing it would have the server bind an id this resolver never returns.
+    client_fixture fixture({});
+    const license_client client(
+        fixture.make_options(),
+        std::make_shared<static_device_id_resolver>("Test Device", "id-\xF6"),
+        fixture.validator,
+        fixture.transport);
+
+    CHECK_THROWS_AS((void)client.request_activation(), configuration_error);
+    CHECK(fixture.transport->requests.empty());
+}
+
+TEST_CASE("replace_invalid_utf8 replaces only what a strict dump rejects")
+{
+    using moonbase::detail::replace_invalid_utf8;
+
+    // Valid text comes back byte for byte, including what JSON has to escape and
+    // a replacement character that was already there.
+    const std::string valid = "Studio \"A\" \\ \x01\t Bj\xC3\xB6rn \xEF\xBF\xBD \xF0\x9F\x8E\xB5";
+    CHECK(replace_invalid_utf8(valid) == valid);
+    CHECK(replace_invalid_utf8("").empty());
+
+    // A lone byte, a truncated sequence, an overlong encoding and a surrogate.
+    CHECK(replace_invalid_utf8("Bj\xF6rn") == "Bj\xEF\xBF\xBDrn");
+    CHECK_NOTHROW((void)nlohmann::json(replace_invalid_utf8("a\xE3\x82")).dump());
+    CHECK_NOTHROW((void)nlohmann::json(replace_invalid_utf8("\xC0\xAF")).dump());
+    CHECK_NOTHROW((void)nlohmann::json(replace_invalid_utf8("\xED\xA0\x80")).dump());
+}
+
 TEST_CASE("request_activation refuses an empty device id without contacting the API")
 {
     client_fixture fixture({});

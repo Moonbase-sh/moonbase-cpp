@@ -864,11 +864,11 @@ TEST_CASE("a failed activation start says what kind of failure it was")
     struct expectation
     {
         const char* name;
-        std::optional<moonbase::http_response> response; // none: the transport throws
+        std::optional<moonbase::http_response> response; // none: the connection fails
         const char* copy;
     };
     const std::vector<expectation> cases{
-        {"unreachable", std::nullopt, "Couldn't reach Moonbase"},
+        {"connection failed", std::nullopt, "Couldn't reach Moonbase"},
         {"server error", moonbase::http_response{500, {}, ""}, "Try again in a minute"},
         {"rate limited", moonbase::http_response{429, {{"Retry-After", "60"}}, ""}, "Try again in a minute"},
         // A 404 or 403 is no verdict: a proxy or misrouted request sends them too.
@@ -891,13 +891,99 @@ TEST_CASE("a failed activation start says what kind of failure it was")
         if (c.response)
             fx.transport->responses.push_back(*c.response);
 
-        ActivationController controller(fx.config, fx.makeLicensing());
+        // A failed connection is an api_error with status 0 from both bundled
+        // transports, which is what hinted_failure_transport throws.
+        auto licensing = c.response ? fx.makeLicensing()
+                                    : std::make_shared<moonbase::licensing>(
+                                          fx.config.toLicensingOptions(), fx.store, fx.fingerprint,
+                                          std::make_shared<hinted_failure_transport>());
+
+        ActivationController controller(fx.config, licensing);
         controller.beginOnlineActivation();
 
         REQUIRE(pumpUntil([&] { return controller.screen() == Screen::Error; }));
         CHECK(controller.statusMessage().contains(c.copy));
         CHECK(diags.joinIntoString(" ").contains("request_activation failed"));
     }
+}
+
+namespace {
+// A resolver with a bug in it: the stand-in for any failure that is neither
+// Moonbase's answer nor the connection's, such as the type_error nlohmann::json
+// threw when a Windows computer name was read in the ANSI code page. The message
+// is UTF-8, to check it is decoded as such on the way to the screen.
+struct broken_resolver : moonbase::device_id_resolver
+{
+    std::string device_name() const override { return "Studio PC"; }
+    std::string device_id() const override
+    {
+        throw std::runtime_error("resolver failed on Bj\xC3\xB6rn-PC");
+    }
+};
+} // namespace
+
+TEST_CASE("an unexpected failure starting activation shows what it was, not a connection problem")
+{
+    controller_fixture fx;
+    juce::StringArray diags;
+    fx.config.onDiagnostic = [&](const juce::String& m) { diags.add(m); };
+    auto licensing = std::make_shared<moonbase::licensing>(
+        fx.config.toLicensingOptions(), fx.store, std::make_shared<broken_resolver>(), fx.transport);
+
+    ActivationController controller(fx.config, licensing);
+    controller.beginOnlineActivation();
+
+    REQUIRE(pumpUntil([&] { return controller.screen() == Screen::Error; }));
+    const auto reason = juce::String::fromUTF8("resolver failed on Bj\xC3\xB6rn-PC");
+    CHECK(controller.statusMessage().contains(reason));
+    CHECK_FALSE(controller.statusMessage().containsIgnoreCase("reach Moonbase"));
+    CHECK_FALSE(controller.statusMessage().containsIgnoreCase("connection"));
+    CHECK(diags.joinIntoString(" ").contains(reason));
+    CHECK(fx.transport->requests.empty());
+}
+
+TEST_CASE("a machine file that can't be generated says why, not that the write failed")
+{
+    const auto requestFile = juce::File::getSpecialLocation(juce::File::tempDirectory)
+                                 .getChildFile("moonbase-juce-tests")
+                                 .getChildFile(juce::Uuid().toString() + ".dt");
+
+    SUBCASE("an unexpected failure shows its own words")
+    {
+        controller_fixture fx;
+        juce::StringArray diags;
+        fx.config.onDiagnostic = [&](const juce::String& m) { diags.add(m); };
+        auto licensing = std::make_shared<moonbase::licensing>(
+            fx.config.toLicensingOptions(), fx.store, std::make_shared<broken_resolver>(), fx.transport);
+        ActivationController controller(fx.config, licensing);
+
+        CHECK_FALSE(controller.saveOfflineRequest(requestFile));
+        const auto reason = juce::String::fromUTF8("resolver failed on Bj\xC3\xB6rn-PC");
+        CHECK(controller.offlineError().contains(reason));
+        CHECK_FALSE(controller.offlineError().containsIgnoreCase("write"));
+        CHECK(diags.joinIntoString(" ").contains(reason));
+    }
+
+    SUBCASE("an unidentifiable machine is told so")
+    {
+        controller_fixture fx;
+        struct no_identity : moonbase::device_id_resolver
+        {
+            std::string device_name() const override { return "Studio Mac"; }
+            std::string device_id() const override
+            {
+                throw moonbase::insufficient_device_identity_error("test");
+            }
+        };
+        auto licensing = std::make_shared<moonbase::licensing>(
+            fx.config.toLicensingOptions(), fx.store, std::make_shared<no_identity>(), fx.transport);
+        ActivationController controller(fx.config, licensing);
+
+        CHECK_FALSE(controller.saveOfflineRequest(requestFile));
+        CHECK(controller.offlineError().contains("can't be identified"));
+    }
+
+    CHECK_FALSE(requestFile.existsAsFile());
 }
 
 TEST_CASE("an unidentifiable machine is not told to check its connection")

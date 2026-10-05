@@ -407,6 +407,26 @@ private:
     clock::time_point hold_until_{};
 };
 
+// `text` with each byte that is not part of valid UTF-8 replaced by U+FFFD.
+// nlohmann::json's own validator decides, so the result is exactly what a strict
+// dump() accepts rather than a second opinion on it.
+[[nodiscard]] inline std::string replace_invalid_utf8(const std::string& text)
+{
+    return nlohmann::json::parse(
+               nlohmann::json(text).dump(-1, ' ', false, nlohmann::json::error_handler_t::replace))
+        .get<std::string>();
+}
+
+// A device id is never repaired the way a device name is. The server would bind
+// the repaired id, which the resolver never returns, so the license would take a
+// seat and then fail to validate on this very device. Refuse it unsent instead.
+inline void require_utf8_device_id(const std::string& device_id)
+{
+    if (replace_invalid_utf8(device_id) != device_id) {
+        throw configuration_error("The device id resolver returned a device id that is not valid UTF-8");
+    }
+}
+
 } // namespace detail
 
 class license_client {
@@ -443,9 +463,11 @@ public:
 
         // The API refuses a blank device name or id outright. The name is only a
         // label, so stand in for one the host could not supply (a failed host
-        // name lookup, a custom resolver). The id is the binding itself, and a
-        // resolver that returns none is misconfigured.
-        auto device_name = device_ids_->device_name();
+        // name lookup, a custom resolver), and let a byte in it that is not UTF-8
+        // cost a replacement character rather than the activation. The id is the
+        // binding itself, and a resolver that returns none, or one that is not
+        // UTF-8, is misconfigured.
+        auto device_name = detail::replace_invalid_utf8(device_ids_->device_name());
         if (detail::trim_ascii_whitespace(device_name).empty()) {
             device_name = "Unknown device";
         }
@@ -453,6 +475,7 @@ public:
         if (detail::trim_ascii_whitespace(device_id).empty()) {
             throw configuration_error("The device id resolver returned an empty device id");
         }
+        detail::require_utf8_device_id(device_id);
 
         const auto payload = nlohmann::json{
             {"deviceName", device_name},
