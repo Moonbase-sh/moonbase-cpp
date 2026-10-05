@@ -2,15 +2,16 @@
 
 // Minimal DER/TLV reader, just enough to normalize an RSA public key into
 // PKCS#1 `RSAPublicKey` form and (for the Windows CNG backend) split it into
-// its modulus and exponent. Shared by the Apple and Windows crypto backends so
-// they accept exactly the same key inputs the OpenSSL backend does: PEM SPKI
+// its modulus and exponent. Accepted inputs: PEM SPKI
 // (`-----BEGIN PUBLIC KEY-----`), PEM PKCS#1 (`-----BEGIN RSA PUBLIC KEY-----`),
 // and raw base64 of either DER encoding.
 //
-// The OpenSSL backend does not use this file — it lets OpenSSL parse the key.
+// Every backend turns the key text into DER with decode_key_bytes, so a key
+// string that works on one platform works on all of them. The OpenSSL backend
+// then hands the DER to OpenSSL; the Apple and Windows backends normalize it
+// with the reader below.
 
 #include <cstddef>
-#include <sstream>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -74,29 +75,33 @@ inline tlv read_tlv(cursor& c)
     return tlv{tag, content, length};
 }
 
-// Strip the PEM armor (if any) and base64-decode to raw DER bytes.
+// Strip the PEM armor (if any) and base64-decode to raw DER bytes. The armor is
+// found by its markers rather than by line, so a key that lost its line breaks
+// on the way (an XML attribute, a JSON string, an environment variable) or
+// picked up indentation still decodes. base64_decode skips the whitespace left
+// inside the body.
 inline std::vector<unsigned char> decode_key_bytes(const std::string& key_material)
 {
-    if (key_material.find("-----BEGIN") != std::string::npos) {
-        std::string body;
-        std::istringstream stream(key_material);
-        std::string line;
-        bool inside = false;
-        while (std::getline(stream, line)) {
-            if (line.find("-----BEGIN") != std::string::npos) {
-                inside = true;
-                continue;
-            }
-            if (line.find("-----END") != std::string::npos) {
-                break;
-            }
-            if (inside) {
-                body += line;
-            }
-        }
-        return base64_decode(body);
+    constexpr std::string_view begin_marker = "-----BEGIN";
+    constexpr std::string_view end_marker = "-----END";
+    constexpr std::string_view dashes = "-----";
+
+    const auto begin = key_material.find(begin_marker);
+    if (begin == std::string::npos) {
+        return base64_decode(key_material);
     }
-    return base64_decode(key_material);
+
+    // The label ("PUBLIC KEY", "RSA PUBLIC KEY") runs up to the next five dashes.
+    const auto label_end = key_material.find(dashes, begin + begin_marker.size());
+    if (label_end == std::string::npos) {
+        return {};
+    }
+
+    const auto body_begin = label_end + dashes.size();
+    const auto body_end = key_material.find(end_marker, body_begin);
+    const std::string_view body = std::string_view(key_material).substr(
+        body_begin, body_end == std::string::npos ? std::string_view::npos : body_end - body_begin);
+    return base64_decode(body);
 }
 
 // Normalize any accepted key shape to PKCS#1 `RSAPublicKey` DER

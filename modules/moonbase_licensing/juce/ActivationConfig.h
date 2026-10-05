@@ -119,7 +119,8 @@ struct ActivationConfig
 
     bool showMoonbaseBadge = true;
     bool enableOffline = true;     // show the offline activation flow
-    bool reduceMotion = false;     // skip transition/spinner/pop animation (a11y + snapshot tests)
+    bool reduceMotion = false;     // skip transitions, the success pop, the appear animation and the glow
+                                   // (a11y + snapshot tests); the activating spinner still turns
     bool overlayBackdrop = false;  // dim the host behind the panel (modal over a plugin) instead of a full opaque backdrop
     int trialLengthDays = 14;      // trial length shown on the Trial / Expired screens (trials are granted by the backend, not started from the UI)
 
@@ -182,6 +183,14 @@ struct ActivationConfig
     // friendly UI text). Wire it to juce::Logger, a file, or your telemetry to
     // debug activation issues in the field. Invoked on the message thread.
     std::function<void(const juce::String& message)> onDiagnostic;
+
+    // Opens the browser link for online activation. Leave it empty for the
+    // system's default browser, or route the link through your own UI where the
+    // plugin can't launch one itself. Return false when the link couldn't be
+    // opened: the controller reports that to onDiagnostic, and
+    // controller().pendingBrowserUrl() still has the link to show or copy.
+    // Invoked on the message thread.
+    std::function<bool(const juce::URL& url)> openBrowser;
 
     //== Telemetry / analytics =================================================
     // Off by default. Set analytics.enabled = true to attach JUCE system/host

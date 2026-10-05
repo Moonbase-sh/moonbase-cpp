@@ -134,7 +134,10 @@ if (! activation->controller().license().has_value())
 
 `controller().license()` is the full `moonbase::license` (`trial`, `expires_at`,
 `issued_to.email`, seat counts, sub-product ownership, custom `properties`, …) for
-richer gating, and `onActivationChanged` fires whenever it changes.
+richer gating, and `onActivationChanged` fires whenever it changes (not on screen
+navigation). The controller re-checks the license by itself: a trial that ends while the
+plugin is open locks then, and an activation in another plugin instance or process is
+picked up within a couple of seconds.
 
 ## Going further
 

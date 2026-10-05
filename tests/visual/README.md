@@ -11,8 +11,9 @@ baseline.
 state, constructs an `ActivationComponent` and uses two module seams to make the
 frame deterministic:
 
-- `ActivationConfig::reduceMotion` — transitions/spinner/pop jump straight to their
-  final frame (also a real accessibility option).
+- `ActivationConfig::reduceMotion`: transitions, the success pop and the glow jump
+  straight to their final frame (also a real accessibility option). The spinner keeps
+  turning under it, but a snapshot is taken before its first tick.
 - `ActivationController::setPreviewState(screen, license, error)` — forces any
   screen with a synthetic license, no network, no stored state.
 

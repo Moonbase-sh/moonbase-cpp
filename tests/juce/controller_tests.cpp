@@ -15,9 +15,14 @@
 
 #include <moonbase_licensing/moonbase_licensing.h>
 
+#include <atomic>
+#include <chrono>
 #include <cmath>
+#include <deque>
 #include <functional>
+#include <mutex>
 #include <optional>
+#include <thread>
 #include <utility>
 #include <vector>
 
@@ -45,6 +50,13 @@ bool pumpUntil(const std::function<bool()>& cond, int timeoutMs = 5000)
             break;
     }
     return cond();
+}
+
+// Keep the message loop running for a while, e.g. to show that something does
+// NOT happen.
+void pumpFor(int ms)
+{
+    pumpUntil([] { return false; }, ms);
 }
 
 bool settled(const ActivationController& c)
@@ -125,6 +137,33 @@ struct controller_fixture
         auto guard = store->lock_for_update();
         store->store_local_license(lic);
     }
+};
+
+// Holds every request at a gate until the test releases it, then answers from
+// the queue (or fails, like a dropped connection, when it runs dry). For
+// arranging what lands while a request is still on its way.
+struct gated_transport : moonbase::http_transport
+{
+    juce::WaitableEvent gate{ true }; // manual reset: once released, stays open
+    std::atomic<bool> entered{ false };
+    std::atomic<int> requests{ 0 };
+    std::mutex mutex;
+    std::deque<moonbase::http_response> responses;
+
+    moonbase::http_response send(const moonbase::http_request&) override
+    {
+        ++requests;
+        entered = true;
+        gate.wait();
+        std::lock_guard<std::mutex> lock(mutex);
+        if (responses.empty())
+            throw moonbase::api_error(0, "no response queued");
+        auto response = responses.front();
+        responses.pop_front();
+        return response;
+    }
+
+    void release() { gate.signal(); }
 };
 
 } // namespace
@@ -1068,6 +1107,33 @@ TEST_CASE("a refresh that lands after the license is cleared does not resurrect 
     CHECK_FALSE(fx.licenseFile.existsAsFile());    // and NOT recreated on disk
 }
 
+TEST_CASE("the module accepts a public key in every common text shape")
+{
+    // Runs on the native backend on Apple and Windows and on OpenSSL on Linux, so
+    // together with the core suite every backend sees the same key strings.
+    controller_fixture fx;
+    fx.seedStored(fx.token(default_claims()));
+
+    const std::vector<std::pair<std::string, std::string>> formats{{"SPKI", fx.key.public_pem},
+                                                                   {"PKCS#1", fx.key.public_pkcs1_pem}};
+    for (const auto& format : formats)
+    {
+        for (const auto& shape : moonbase::tests::key_text_shapes(format.second))
+        {
+            CAPTURE(format.first);
+            CAPTURE(shape.first);
+            auto config = fx.config;
+            config.publicKey = juce::String(shape.second);
+            ActivationController controller(config, std::make_shared<moonbase::licensing>(
+                                                        config.toLicensingOptions(), fx.store, fx.fingerprint,
+                                                        fx.transport));
+            controller.start();
+            REQUIRE(pumpUntil([&] { return settled(controller); }));
+            CHECK(controller.screen() == Screen::Details);
+        }
+    }
+}
+
 TEST_CASE("a public key with an out-of-bounds DER length is rejected cleanly")
 {
     // Outer SEQUENCE(len 5) wrapping an INTEGER whose short-form length (0x7F)
@@ -1175,6 +1241,444 @@ TEST_CASE("refreshLicense keeps the license through what only looks like a verdi
         CHECK(controller.license().has_value());
         CHECK(controller.screen() == Screen::Details);
     }
+}
+
+TEST_CASE("refreshLicense locks once the grace period has run out and Moonbase can't be reached")
+{
+    controller_fixture fx;
+    fx.config.onlineGracePeriod = std::chrono::seconds(20);
+    juce::StringArray diags;
+    fx.config.onDiagnostic = [&](const juce::String& m) { diags.add(m); };
+    auto claims = default_claims();
+    claims["validated"] = now_seconds() - 30; // past the grace period, so start() checks online
+    fx.seedStored(fx.token(claims));
+
+    // Moonbase answers start(), but its clock runs a little behind ours, so the
+    // license it returns is already past the grace period here.
+    auto behind = default_claims();
+    behind["validated"] = now_seconds() - 25;
+    fx.transport->responses.push_back(moonbase::http_response{200, {}, fx.token(behind)});
+
+    ActivationController controller(fx.config, fx.makeLicensing());
+    controller.start();
+    REQUIRE(pumpUntil([&] { return controller.screen() == Screen::Details; }));
+
+    // Nothing queued: the forced re-check can't reach Moonbase.
+    bool done = false, ok = true;
+    controller.refreshLicense(true, [&](bool refreshed) { done = true; ok = refreshed; });
+    REQUIRE(pumpUntil([&] { return done; }));
+
+    CHECK_FALSE(ok);
+    CHECK_FALSE(controller.licensedFlag().load());
+    CHECK(controller.screen() == Screen::Welcome);
+    CHECK(fx.licenseFile.existsAsFile()); // kept for the next launch, as start() keeps it
+    CHECK(diags.joinIntoString(" ").contains("offline grace period"));
+}
+
+//==============================================================================
+// License watch: expiry and other instances, without a restart
+//==============================================================================
+TEST_CASE("a trial that ends while the plugin is open locks without a restart")
+{
+    controller_fixture fx;
+    auto claims = default_claims();
+    claims["trial"] = true;
+    claims["exp"] = now_seconds() + 2;
+    fx.seedStored(fx.token(claims));
+
+    ActivationController controller(fx.config, fx.makeLicensing());
+    controller.start();
+    REQUIRE(pumpUntil([&] { return controller.screen() == Screen::Trial; }));
+    REQUIRE(controller.licensedFlag().load());
+
+    CHECK(pumpUntil([&] { return controller.screen() == Screen::Expired; }, 10000));
+    CHECK_FALSE(controller.licensedFlag().load());
+    REQUIRE(controller.expiredTrial().has_value());
+    CHECK(fx.transport->requests.empty()); // a passed exp is decided locally
+}
+
+TEST_CASE("a license offline past its grace period locks while the plugin is open")
+{
+    controller_fixture fx;
+    fx.config.onlineGracePeriod = std::chrono::seconds(3);
+    juce::StringArray diags;
+    fx.config.onDiagnostic = [&](const juce::String& m) { diags.add(m); };
+    auto claims = default_claims();
+    claims["validated"] = now_seconds(); // fresh, so start() stays local
+    fx.seedStored(fx.token(claims));
+
+    ActivationController controller(fx.config, fx.makeLicensing());
+    controller.start();
+    REQUIRE(pumpUntil([&] { return controller.screen() == Screen::Details; }));
+    CHECK(fx.transport->requests.empty());
+
+    // Nothing queued: once the grace period ends, Moonbase can't be reached.
+    CHECK(pumpUntil([&] { return controller.screen() == Screen::Welcome; }, 10000));
+    CHECK_FALSE(controller.licensedFlag().load());
+    CHECK(fx.transport->requests.size() == 1); // one last attempt, then locked
+    CHECK(diags.joinIntoString(" ").contains("offline grace period"));
+    CHECK(fx.licenseFile.existsAsFile());
+}
+
+TEST_CASE("an activation in another instance unlocks this one without a reload")
+{
+    controller_fixture fx;
+    ActivationController controller(fx.config, fx.makeLicensing());
+    controller.start();
+    REQUIRE(pumpUntil([&] { return controller.screen() == Screen::Welcome; }));
+
+    fx.seedStored(fx.token(default_claims())); // what the other instance writes on activation
+
+    CHECK(pumpUntil([&] { return controller.screen() == Screen::Details; }, 6000));
+    CHECK(controller.licensedFlag().load());
+    CHECK(fx.transport->requests.empty()); // validated locally, no network
+}
+
+TEST_CASE("a sibling's re-validation updates this instance without moving its screen")
+{
+    controller_fixture fx;
+    fx.seedStored(fx.token(default_claims()));
+    ActivationController controller(fx.config, fx.makeLicensing());
+    controller.start();
+    REQUIRE(pumpUntil([&] { return controller.screen() == Screen::Details; }));
+    controller.showOffline(); // somewhere a re-route would move it away from
+
+    auto upgraded = default_claims();
+    upgraded["sp:owned"] = "demo-app-pro,demo-app-extra,demo-app-mega";
+    fx.seedStored(fx.token(upgraded));
+
+    CHECK(pumpUntil([&] { return controller.license()
+                                 && controller.license()->owned_sub_product_ids.size() == 3; },
+                    6000));
+    CHECK(controller.screen() == Screen::Offline);
+}
+
+TEST_CASE("a license file caught mid-write is left alone and read again")
+{
+    controller_fixture fx;
+    fx.seedStored(fx.token(default_claims()));
+    ActivationController controller(fx.config, fx.makeLicensing());
+    controller.start();
+    REQUIRE(pumpUntil([&] { return controller.screen() == Screen::Details; }));
+
+    // Another writer has truncated the file and written only half of it so far.
+    const auto full = fx.licenseFile.loadFileAsString();
+    REQUIRE(fx.licenseFile.replaceWithText(full.substring(0, full.length() / 2)));
+    pumpFor(4500); // two watch ticks
+    CHECK(controller.licensedFlag().load());
+    CHECK(fx.licenseFile.existsAsFile()); // not deleted as corrupt
+
+    // The write completes, with a newer license this instance then picks up.
+    auto upgraded = default_claims();
+    upgraded["sp:owned"] = "demo-app-pro,demo-app-extra,demo-app-mega";
+    fx.seedStored(fx.token(upgraded));
+    CHECK(pumpUntil([&] { return controller.license()
+                                 && controller.license()->owned_sub_product_ids.size() == 3; },
+                    6000));
+}
+
+TEST_CASE("deactivating in another instance locks this one too")
+{
+    controller_fixture fx;
+    fx.seedStored(fx.token(default_claims()));
+    ActivationController controller(fx.config, fx.makeLicensing());
+    ActivationController other(fx.config, fx.makeLicensing());
+    controller.start();
+    other.start();
+    REQUIRE(pumpUntil([&] { return controller.screen() == Screen::Details && other.screen() == Screen::Details; }));
+
+    other.clearLicense(); // removes the shared license file
+
+    CHECK(pumpUntil([&] { return controller.screen() == Screen::Welcome; }, 6000));
+    CHECK_FALSE(controller.licensedFlag().load());
+}
+
+TEST_CASE("a license that couldn't be saved is not locked by the watch")
+{
+    // Activated, but the license file couldn't be written: the license stays
+    // unlocked for the session, and a file that never existed is not mistaken
+    // for one another instance removed.
+    controller_fixture fx;
+    ActivationController controller(fx.config, fx.makeLicensing());
+    controller.start();
+    REQUIRE(pumpUntil([&] { return controller.screen() == Screen::Welcome; }));
+    REQUIRE(fx.licenseFile.createDirectory()); // a folder in the way: every save fails
+
+    auto claims = default_claims();
+    claims["method"] = "Offline";
+    auto responseFile = fx.licenseFile.getParentDirectory().getChildFile(juce::Uuid().toString() + ".mb");
+    responseFile.replaceWithText(fx.token(claims));
+    controller.setOfflineResponse(responseFile);
+    controller.activateOffline();
+    REQUIRE(controller.licensedFlag().load());
+
+    pumpFor(4500); // two watch ticks
+    CHECK(controller.licensedFlag().load());
+    CHECK(controller.screen() == Screen::Success);
+    responseFile.deleteFile();
+    fx.licenseFile.deleteRecursively();
+}
+
+TEST_CASE("a stored license past its grace period is not picked up without a server check")
+{
+    controller_fixture fx;
+    ActivationController controller(fx.config, fx.makeLicensing());
+    controller.start();
+    REQUIRE(pumpUntil([&] { return controller.screen() == Screen::Welcome; }));
+
+    // Signed, for this device and unexpired, but last verified 8 days ago: past
+    // the default 7-day grace period.
+    auto stale = default_claims();
+    stale["validated"] = now_seconds() - 8 * 24 * 3600;
+    fx.seedStored(fx.token(stale));
+
+    // Not even for a moment: two watch ticks, and it must never unlock.
+    CHECK_FALSE(pumpUntil([&] { return controller.licensedFlag().load(); }, 4500));
+    CHECK(controller.screen() == Screen::Welcome);
+    CHECK(fx.transport->requests.empty());
+}
+
+TEST_CASE("a replacement activation from another instance is not undone by an older refresh")
+{
+    controller_fixture fx;
+    fx.seedStored(fx.token(default_claims())); // activation-123
+    auto gated = std::make_shared<gated_transport>();
+    auto licensing = std::make_shared<moonbase::licensing>(
+        fx.config.toLicensingOptions(), fx.store, fx.fingerprint, gated);
+    ActivationController controller(fx.config, licensing, "dev", [gated] { gated->release(); });
+    controller.start();
+    REQUIRE(pumpUntil([&] { return controller.screen() == Screen::Details; }));
+
+    // A refresh of activation-123 is on its way; by the time it answers, that
+    // activation has been revoked...
+    {
+        std::lock_guard<std::mutex> lock(gated->mutex);
+        gated->responses.push_back(moonbase::http_response{
+            400, {}, R"({"title":"Not allowed","detail":"License has been revoked","status":400,"errorType":"LicenseActivationRevoked"})"});
+    }
+    bool done = false, ok = true;
+    controller.refreshLicense(true, [&](bool refreshed) { done = true; ok = refreshed; });
+    REQUIRE(pumpUntil([&] { return gated->entered.load(); }));
+
+    // ...because another instance re-activated this machine as activation-456.
+    auto replacement = default_claims();
+    replacement["id"] = "activation-456";
+    fx.seedStored(fx.token(replacement));
+    REQUIRE(pumpUntil([&] { return controller.license() && controller.license()->activation_id == "activation-456"; },
+                      6000));
+
+    gated->release();
+    REQUIRE(pumpUntil([&] { return done; }));
+    CHECK_FALSE(ok);                           // the old refresh was superseded...
+    CHECK(controller.licensedFlag().load());   // ...and did not lock the replacement
+    REQUIRE(controller.license().has_value());
+    CHECK(controller.license()->activation_id == "activation-456");
+    auto stored = fx.store->load_local_license();
+    REQUIRE(stored.has_value());
+    CHECK(stored->activation_id == "activation-456"); // nor wrote the old one back
+}
+
+TEST_CASE("the license watch does not supersede a refresh the host asked for")
+{
+    controller_fixture fx;
+    fx.config.onlineGracePeriod = std::chrono::seconds(3);
+    auto claims = default_claims();
+    claims["validated"] = now_seconds(); // fresh, so start() stays local
+    fx.seedStored(fx.token(claims));
+    auto gated = std::make_shared<gated_transport>();
+    auto licensing = std::make_shared<moonbase::licensing>(
+        fx.config.toLicensingOptions(), fx.store, fx.fingerprint, gated);
+    ActivationController controller(fx.config, licensing, "dev", [gated] { gated->release(); });
+    controller.start();
+    REQUIRE(pumpUntil([&] { return controller.screen() == Screen::Details; }));
+
+    // The host re-checks after a purchase; the answer takes a while, long
+    // enough for the grace period to run out in the meantime.
+    auto upgraded = default_claims();
+    upgraded["sp:owned"] = "demo-app-pro,demo-app-extra,demo-app-mega";
+    {
+        std::lock_guard<std::mutex> lock(gated->mutex);
+        gated->responses.push_back(moonbase::http_response{200, {}, fx.token(upgraded)});
+    }
+    bool done = false, ok = false;
+    controller.refreshLicense(true, [&](bool refreshed) { done = true; ok = refreshed; });
+    REQUIRE(pumpUntil([&] { return gated->entered.load(); }));
+    pumpFor(5000); // past the grace period, two watch ticks
+
+    gated->release();
+    REQUIRE(pumpUntil([&] { return done; }));
+    CHECK(ok); // the host's refresh landed
+    REQUIRE(controller.license().has_value());
+    CHECK(controller.license()->owned_sub_product_ids.size() == 3);
+    CHECK(gated->requests.load() == 1); // and the watch didn't start a second one over it
+}
+
+TEST_CASE("a license removed elsewhere during an activation locks but leaves the activation running")
+{
+    controller_fixture fx;
+    fx.config.openBrowser = [](const juce::URL&) { return true; };
+    auto claims = default_claims();
+    claims["trial"] = true;
+    fx.seedStored(fx.token(claims));
+    ActivationController controller(fx.config, fx.makeLicensing());
+    controller.start();
+    REQUIRE(pumpUntil([&] { return controller.screen() == Screen::Trial; }));
+
+    fx.transport->responses.push_back(moonbase::http_response{
+        200, {}, R"({"id":"request-123","request":"https://demo.moonbase.sh/api/client/activations/request-123?format=JWT","browser":"https://demo.moonbase.sh/activate?token=request-123"})"});
+    controller.beginOnlineActivation(); // "Unlock"
+    REQUIRE(pumpUntil([&] { return controller.pendingBrowserUrl().isNotEmpty(); }));
+
+    {
+        auto guard = fx.store->lock_for_update(); // another instance forgets the license
+        fx.store->delete_local_license();
+    }
+
+    CHECK(pumpUntil([&] { return ! controller.licensedFlag().load(); }, 6000));
+    CHECK(controller.screen() == Screen::BrowserWait);  // the flow is still on screen...
+    CHECK(controller.pendingBrowserUrl().isNotEmpty()); // ...and still waiting
+    controller.cancelActivation();
+    CHECK(controller.screen() == Screen::Welcome);
+}
+
+TEST_CASE("onLicenseChanged reports the settled state, then only license changes")
+{
+    controller_fixture fx;
+    fx.seedStored(fx.token(default_claims()));
+    ActivationController controller(fx.config, fx.makeLicensing());
+    std::vector<bool> reports;
+    controller.onLicenseChanged = [&](bool licensed) { reports.push_back(licensed); };
+    controller.start();
+    REQUIRE(pumpUntil([&] { return reports.size() == 1; }));
+    CHECK(reports.front());
+
+    // Navigation and a re-check that changes nothing are not license changes.
+    controller.showOffline();
+    controller.showDetails();
+    bool done = false;
+    controller.refreshLicense(false, [&](bool) { done = true; }); // within the throttle: same token
+    REQUIRE(pumpUntil([&] { return done; }));
+    pumpFor(200);
+    CHECK(reports.size() == 1);
+
+    // A refresh that brings a new token is.
+    auto upgraded = default_claims();
+    upgraded["sp:owned"] = "demo-app-pro,demo-app-extra,demo-app-mega";
+    fx.transport->responses.push_back(moonbase::http_response{200, {}, fx.token(upgraded)});
+    done = false;
+    controller.refreshLicense(true, [&](bool) { done = true; });
+    REQUIRE(pumpUntil([&] { return done && reports.size() == 2; }));
+    CHECK(reports.back());
+
+    controller.clearLicense();
+    REQUIRE(pumpUntil([&] { return reports.size() == 3; }));
+    CHECK_FALSE(reports.back());
+}
+
+TEST_CASE("onLicenseChanged reports an unlicensed start once")
+{
+    controller_fixture fx;
+    ActivationController controller(fx.config, fx.makeLicensing());
+    std::vector<bool> reports;
+    controller.onLicenseChanged = [&](bool licensed) { reports.push_back(licensed); };
+    controller.start();
+    REQUIRE(pumpUntil([&] { return ! reports.empty(); }));
+    controller.showOffline();
+    controller.showWelcome();
+    pumpFor(200);
+    CHECK(reports == std::vector<bool>{false});
+}
+
+TEST_CASE("the browser link reaches a custom UI, which is told when it arrives")
+{
+    controller_fixture fx;
+    juce::StringArray opened;
+    fx.config.openBrowser = [&](const juce::URL& url) { opened.add(url.toString(true)); return false; };
+    juce::StringArray diags;
+    fx.config.onDiagnostic = [&](const juce::String& m) { diags.add(m); };
+    ActivationController controller(fx.config, fx.makeLicensing());
+    controller.start();
+    REQUIRE(pumpUntil([&] { return controller.screen() == Screen::Welcome; }));
+    CHECK(controller.pendingBrowserUrl().isEmpty());
+
+    // What a custom UI does: listen for changes and read the link.
+    struct LinkWatcher : juce::ChangeListener
+    {
+        explicit LinkWatcher(ActivationController& c) : controller(c) {}
+        void changeListenerCallback(juce::ChangeBroadcaster*) override { link = controller.pendingBrowserUrl(); }
+        ActivationController& controller;
+        juce::String link;
+    } watcher(controller);
+    controller.addChangeListener(&watcher);
+
+    fx.transport->responses.push_back(moonbase::http_response{
+        200, {}, R"({"id":"request-123","request":"https://demo.moonbase.sh/api/client/activations/request-123?format=JWT","browser":"https://demo.moonbase.sh/activate?token=request-123"})"});
+    controller.beginOnlineActivation();
+
+    CHECK(pumpUntil([&] { return watcher.link.isNotEmpty(); }));
+    CHECK(watcher.link.contains("token=request-123"));
+    CHECK(opened == juce::StringArray{watcher.link}); // through the host's hook, not the system browser
+    CHECK(diags.joinIntoString(" ").contains("pendingBrowserUrl()")); // the hook said it couldn't open it
+
+    controller.cancelActivation();
+    CHECK(controller.pendingBrowserUrl().isEmpty());
+    controller.removeChangeListener(&watcher);
+}
+
+TEST_CASE("a trial that ends while it is being unlocked still locks, and the activation carries on")
+{
+    controller_fixture fx;
+    fx.config.openBrowser = [](const juce::URL&) { return true; };
+    auto claims = default_claims();
+    claims["trial"] = true;
+    claims["exp"] = now_seconds() + 2;
+    fx.seedStored(fx.token(claims));
+
+    ActivationController controller(fx.config, fx.makeLicensing());
+    controller.start();
+    REQUIRE(pumpUntil([&] { return controller.screen() == Screen::Trial; }));
+
+    // "Unlock": start an online activation and leave it waiting (no poll answers).
+    fx.transport->responses.push_back(moonbase::http_response{
+        200, {}, R"({"id":"request-123","request":"https://demo.moonbase.sh/api/client/activations/request-123?format=JWT","browser":"https://demo.moonbase.sh/activate?token=request-123"})"});
+    controller.beginOnlineActivation();
+    REQUIRE(pumpUntil([&] { return controller.pendingBrowserUrl().isNotEmpty(); }));
+    REQUIRE(controller.licensedFlag().load());
+
+    CHECK(pumpUntil([&] { return ! controller.licensedFlag().load(); }, 10000));
+    CHECK(controller.screen() == Screen::BrowserWait);       // the flow was left alone
+    CHECK(controller.pendingBrowserUrl().isNotEmpty());      // and is still waiting
+    CHECK_FALSE(controller.license().has_value());
+
+    controller.cancelActivation();
+    CHECK(controller.screen() == Screen::Welcome);
+}
+
+TEST_CASE("refreshLicense leaves an activation in progress alone")
+{
+    controller_fixture fx;
+    fx.config.openBrowser = [](const juce::URL&) { return true; };
+    auto claims = default_claims();
+    claims["trial"] = true;
+    fx.seedStored(fx.token(claims));
+    ActivationController controller(fx.config, fx.makeLicensing());
+    controller.start();
+    REQUIRE(pumpUntil([&] { return controller.screen() == Screen::Trial; }));
+
+    fx.transport->responses.push_back(moonbase::http_response{
+        200, {}, R"({"id":"request-123","request":"https://demo.moonbase.sh/api/client/activations/request-123?format=JWT","browser":"https://demo.moonbase.sh/activate?token=request-123"})"});
+    controller.beginOnlineActivation();
+
+    // Straight away, before the request has even come back: what a host does
+    // when another editor opens.
+    bool done = false, ok = true;
+    controller.refreshLicense(true, [&](bool refreshed) { done = true; ok = refreshed; });
+    CHECK(done);
+    CHECK_FALSE(ok);
+
+    CHECK(pumpUntil([&] { return controller.pendingBrowserUrl().isNotEmpty(); })); // the request still landed
+    CHECK(controller.screen() == Screen::BrowserWait);
+    controller.cancelActivation();
 }
 
 //==============================================================================
@@ -1324,6 +1828,31 @@ TEST_CASE("ActivationComponent can share an externally-owned controller")
     CHECK(component.controller().licensedFlag().load());
 }
 
+TEST_CASE("a component sharing a settled controller reports its state after construction")
+{
+    controller_fixture fx;
+    fx.seedStored(fx.token(default_claims()));
+    ActivationController shared(fx.config, fx.makeLicensing());
+    shared.start();
+    REQUIRE(pumpUntil([&] { return shared.screen() == Screen::Details; }));
+
+    ActivationComponent component(shared);
+    std::vector<bool> reports;
+    component.onActivationChanged = [&](bool active) { reports.push_back(active); }; // wired after the ctor
+    REQUIRE(pumpUntil([&] { return ! reports.empty(); }));
+    CHECK(reports == std::vector<bool>{true});
+
+    // Navigation is not an activation change.
+    shared.showOffline();
+    shared.showDetails();
+    pumpFor(200);
+    CHECK(reports.size() == 1);
+
+    shared.clearLicense();
+    REQUIRE(pumpUntil([&] { return reports.size() == 2; }));
+    CHECK_FALSE(reports.back());
+}
+
 TEST_CASE("LicenseGate gates click-free: pass-through licensed, ramp to silence unlicensed")
 {
     LicenseGate gate;
@@ -1416,6 +1945,74 @@ TEST_CASE("destroying the controller mid-request cancels and joins without hangi
 
     // Reaching here means the destructor cancelled + drained promptly.
     CHECK(blocking->entered.load());
+}
+
+TEST_CASE("the worker pool runs every job it is given")
+{
+    std::atomic<int> ran{0};
+    {
+        detail::WorkerPool pool(2);
+        for (int i = 0; i < 50; ++i)
+            pool.addJob([&ran] { ++ran; });
+        REQUIRE(pumpUntil([&] { return ran.load() == 50; }));
+    }
+    CHECK(ran.load() == 50);
+}
+
+TEST_CASE("stopping the worker pool waits for running jobs and drops queued ones")
+{
+    std::atomic<bool> started{false}, release{false}, finished{false};
+    std::atomic<int> queuedRan{0};
+
+    detail::WorkerPool pool(1);
+    pool.addJob([&]
+    {
+        started = true;
+        while (! release.load())
+            std::this_thread::sleep_for(std::chrono::milliseconds(1));
+        finished = true;
+    });
+    for (int i = 0; i < 5; ++i)
+        pool.addJob([&queuedRan] { ++queuedRan; }); // behind the busy worker
+    REQUIRE(pumpUntil([&] { return started.load(); }));
+
+    std::thread releaser([&]
+    {
+        std::this_thread::sleep_for(std::chrono::milliseconds(100));
+        release = true;
+    });
+    pool.stop();
+    releaser.join();
+
+    CHECK(finished.load());       // the running job was waited for, however long it took
+    CHECK(queuedRan.load() == 0); // the queued ones never started
+}
+
+TEST_CASE("the worker exit hook runs once on every worker")
+{
+    std::atomic<int> exits{0};
+    {
+        detail::WorkerPool pool(2);
+        pool.setWorkerExitHook([&exits] { ++exits; });
+        pool.stop();
+        CHECK(exits.load() == 2);
+    }
+    CHECK(exits.load() == 2); // and not again from the destructor
+}
+
+TEST_CASE("worker pools come and go without stalling")
+{
+    // The juce::ThreadPool this replaces sometimes killed an idle thread here
+    // on JUCE 6.1.3, and a later teardown could hang.
+    juce::Random random(7);
+    const auto before = std::chrono::steady_clock::now();
+    for (int i = 0; i < 200; ++i)
+    {
+        detail::WorkerPool pool(2);
+        pool.addJob([] {});
+        std::this_thread::sleep_for(std::chrono::milliseconds(random.nextInt(20)));
+    }
+    CHECK(std::chrono::steady_clock::now() - before < std::chrono::seconds(30));
 }
 
 //==============================================================================

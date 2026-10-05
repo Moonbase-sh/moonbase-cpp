@@ -4,6 +4,8 @@
 
 #include <cmath>
 #include <optional>
+#include <string>
+#include <utility>
 
 namespace moonbase::juce_integration {
 
@@ -732,13 +734,15 @@ public:
     ~BrowserWaitView() override { stopTimer(); }
 
     // Self-drive the spinner with a timer so it animates regardless of the
-    // shared animation updater — only while this screen is visible.
-    void visibilityChanged() override
+    // shared animation updater, but only while this screen is up and the panel
+    // around it is visible. It keeps turning under reduceMotion: it is the one
+    // sign that the wait is still alive, not decoration.
+    void visibilityChanged() override { updateSpinner(); }
+
+    void setOwnerVisible(bool visible)
     {
-        if (isVisible())
-            startTimerHz(60);
-        else
-            stopTimer();
+        ownerVisible = visible;
+        updateSpinner();
     }
 
     void timerCallback() override
@@ -790,6 +794,19 @@ public:
     }
 
 private:
+    void updateSpinner()
+    {
+        if (isVisible() && ownerVisible)
+        {
+            if (! isTimerRunning())
+                startTimerHz(60);
+        }
+        else
+        {
+            stopTimer();
+        }
+    }
+
     void drawSpinner(Graphics& g, Rectangle<int> area)
     {
         const float diameter = 58.0f;
@@ -839,6 +856,7 @@ private:
     std::unique_ptr<juce::Drawable> monitorIcon;
     Rectangle<int> spinnerRepaint;
     float spinPhase = 0.0f;
+    bool ownerVisible = false;
 };
 
 //==============================================================================
@@ -1775,7 +1793,7 @@ private:
 //==============================================================================
 // Update available: a valid license, but the backend reports a newer released
 // version (the p:rel claim outranks the app version). Shows release notes and an
-// in-app installer download with progress; "Remind me later" dismisses it.
+// in-app installer download with progress; "Skip this update" dismisses it.
 class UpdateNotesList : public juce::Component
 {
 public:
@@ -2088,9 +2106,30 @@ private:
 };
 
 //==============================================================================
+// Calls back whenever the panel starts or stops being on screen because it, a
+// parent or its window changed. Minimising is the one change it can't see.
+struct ShowingWatcher final : public juce::ComponentMovementWatcher
+{
+    ShowingWatcher(juce::Component& watched, std::function<void()> callback)
+        : juce::ComponentMovementWatcher(&watched), onChange(std::move(callback))
+    {
+    }
+
+    using juce::ComponentMovementWatcher::componentMovedOrResized;
+    using juce::ComponentMovementWatcher::componentVisibilityChanged;
+
+    void componentMovedOrResized(bool, bool) override {}
+    void componentPeerChanged() override { onChange(); }
+    void componentVisibilityChanged() override { onChange(); }
+
+    std::function<void()> onChange;
+};
+
+//==============================================================================
 // Impl
 struct ActivationComponent::Impl : public juce::ChangeListener,
-                                   private juce::Timer
+                                   private juce::Timer,
+                                   private juce::AsyncUpdater
 {
     // Owns a controller built from the config.
     Impl(ActivationComponent& o, ActivationConfig cfg)
@@ -2144,23 +2183,69 @@ struct ActivationComponent::Impl : public juce::ChangeListener,
         owner.addChildComponent(*moonbaseBadge); // shown only when config.showMoonbaseBadge
 
         buildAnimators();
-        // Drive the animations from a timer rather than a VBlankAnimatorUpdater:
-        // the latter did not deliver ticks reliably for a freshly-shown
-        // plugin/app window. update() uses the hi-res clock.
-        startTimerHz(60);
+        showingWatcher = std::make_unique<ShowingWatcher>(owner, [this] { updateTicking(); });
+        updateTicking();
         controller.addChangeListener(this);
 
         if (ownsController)
-            controller.start();              // load any stored license + route
+        {
+            controller.start(); // load any stored license + route
+        }
         else
-            changeListenerCallback(nullptr); // shared + already started: sync to its current state
+        {
+            // Shared + already started: show its current state now, but tell the
+            // host (close button, onActivationChanged, an update auto-present)
+            // only once it has had the chance to wire its callbacks, which it
+            // does after this constructor returns.
+            syncViews();
+            triggerAsyncUpdate();
+        }
     }
 
     ~Impl() override
     {
+        showingWatcher.reset();
+        cancelPendingUpdate();
         stopTimer();
         controller.removeChangeListener(this);
     }
+
+    // Drive the animations from a timer rather than a VBlankAnimatorUpdater:
+    // the latter did not deliver ticks reliably for a freshly-shown plugin/app
+    // window. update() uses the hi-res clock. The timer follows whether the
+    // panel is on screen: 60 Hz while it is and something can animate, off
+    // while the panel or any parent is hidden (showingWatcher reports when that
+    // changes), so an overlay kept hidden in every editor costs nothing. In
+    // between, it looks a few times a second for the one change nothing reports:
+    // a minimised window coming back.
+    void updateTicking()
+    {
+        const bool showing = owner.isShowing();
+        int hz = 0;
+        if (panelAndParentsVisible())
+            hz = showing && ! controller.config().reduceMotion ? 60 : 4;
+
+        if (hz == 0)
+            stopTimer();
+        else if (getTimerInterval() != 1000 / hz)
+            startTimerHz(hz);
+        tickingWhileShowing = showing;
+
+        if (browser != nullptr)
+            browser->setOwnerVisible(showing);
+    }
+
+    // The panel and every parent above it are visible. It can still be off
+    // screen: in a minimised window, or not in a window yet.
+    [[nodiscard]] bool panelAndParentsVisible() const
+    {
+        for (const juce::Component* c = &owner; c != nullptr; c = c->getParentComponent())
+            if (! c->isVisible())
+                return false;
+        return true;
+    }
+
+    void handleAsyncUpdate() override { notifyHost(); }
 
     // Explicitly present the update screen now (host hook). Routes to the update
     // screen as an auto-presentation; the overlay then appears via the change
@@ -2171,7 +2256,18 @@ struct ActivationComponent::Impl : public juce::ChangeListener,
             controller.showUpdate(/*fromLicenseView*/ false);
     }
 
-    void timerCallback() override { updater.update(); }
+    void timerCallback() override
+    {
+        if (owner.isShowing() != tickingWhileShowing)
+        {
+            updateTicking(); // minimised or restored
+            return;
+        }
+
+        // Animations run on the clock, so after time off screen they catch up.
+        if (tickingWhileShowing)
+            updater.update();
+    }
 
     std::vector<ScreenView*> views()
     {
@@ -2198,6 +2294,14 @@ struct ActivationComponent::Impl : public juce::ChangeListener,
     }
 
     void changeListenerCallback(juce::ChangeBroadcaster*) override
+    {
+        cancelPendingUpdate(); // this covers the deferred initial sync too
+        syncViews();
+        notifyHost();
+    }
+
+    // Route the views to the controller's current screen.
+    void syncViews()
     {
         const auto screen = controller.screen();
         auto* next = viewFor(screen);
@@ -2229,7 +2333,7 @@ struct ActivationComponent::Impl : public juce::ChangeListener,
             // open. Not when reached from the license-view badge (already visible).
             if (screen == ActivationController::Screen::UpdateAvailable
                 && ! controller.updateCameFromLicenseView())
-                appear();
+                autoPresentPending = true;
         }
         else if (active != nullptr)
         {
@@ -2239,7 +2343,7 @@ struct ActivationComponent::Impl : public juce::ChangeListener,
 
         if (controller.screen() == ActivationController::Screen::Success)
         {
-            if (controller.config().reduceMotion || ! successAnim)
+            if (! animating() || ! successAnim)
             {
                 success->setPop(1.0f);
             }
@@ -2249,11 +2353,40 @@ struct ActivationComponent::Impl : public juce::ChangeListener,
                 successAnim->start();
             }
         }
+    }
+
+    // The side effects the host sees: the close button (it depends on
+    // owner.onClose), an update auto-present, and onActivationChanged.
+    void notifyHost()
+    {
+        if (std::exchange(autoPresentPending, false))
+            appear();
 
         updateCloseButton();
         owner.repaint();
-        if (owner.onActivationChanged)
-            owner.onActivationChanged(controller.license().has_value());
+
+        // Report the settled state once, then only real license changes: never
+        // screen navigation, busy flips or download progress. Counted as reported
+        // only once a callback has received it, so a late-wired host still hears
+        // the current state on the next change.
+        if (controller.screen() == ActivationController::Screen::Loading || ! owner.onActivationChanged)
+            return;
+
+        const auto& license = controller.license();
+        auto token = license ? std::optional<std::string>(license->token) : std::nullopt;
+        if (activationReported && token == reportedToken)
+            return;
+
+        activationReported = true;
+        reportedToken = std::move(token);
+        owner.onActivationChanged(license.has_value());
+    }
+
+    // Whether motion plays right now: not under reduceMotion, and not while the
+    // panel is off screen (nothing would tick it; it should land on its last frame).
+    [[nodiscard]] bool animating() const
+    {
+        return ! controller.config().reduceMotion && owner.isShowing();
     }
 
     //== Animation ============================================================
@@ -2316,7 +2449,10 @@ struct ActivationComponent::Impl : public juce::ChangeListener,
         updater.addAnimation(*transitionAnim);
         updater.addAnimation(*successAnim);
         updater.addAnimation(*appearAnim);
-        glowAnim->start();
+
+        // Decorative, so reduceMotion leaves the glow still at its first frame.
+        if (! controller.config().reduceMotion)
+            glowAnim->start();
     }
 
     void appear()
@@ -2408,7 +2544,7 @@ struct ActivationComponent::Impl : public juce::ChangeListener,
             return;
         }
 
-        if (controller.config().reduceMotion || ! transitionAnim || w <= 0)
+        if (! animating() || ! transitionAnim || w <= 0)
         {
             finishTransition();
             return;
@@ -2610,6 +2746,14 @@ struct ActivationComponent::Impl : public juce::ChangeListener,
     std::optional<anim::Animation> glowAnim, transitionAnim, successAnim, appearAnim;
     float glowPhase = 0.0f;
 
+    std::unique_ptr<ShowingWatcher> showingWatcher;
+    bool tickingWhileShowing = false;
+
+    // Host-facing state (notifyHost).
+    bool autoPresentPending = false;
+    bool activationReported = false;
+    std::optional<std::string> reportedToken; // nullopt = reported as not activated
+
     // Modal appear/dismiss animation state.
     float appear_ = 1.0f;       // 1 = fully shown, 0 = hidden
     float appearScale_ = 1.0f;  // panel scale derived from appear_
@@ -2644,5 +2788,11 @@ void ActivationComponent::dismiss() { impl->dismiss(); }
 void ActivationComponent::paint(Graphics& g) { impl->paintChrome(g); }
 
 void ActivationComponent::resized() { impl->layout(); }
+
+void ActivationComponent::visibilityChanged()
+{
+    if (impl != nullptr) // not while impl is still being built or torn down
+        impl->updateTicking();
+}
 
 } // namespace moonbase::juce_integration

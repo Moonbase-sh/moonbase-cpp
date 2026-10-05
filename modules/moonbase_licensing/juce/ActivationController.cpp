@@ -4,10 +4,16 @@
 #include "ActivationController.h"
 #include "juce_http_transport.h"
 
+#include <fstream>
+
 namespace moonbase::juce_integration {
 
 namespace {
 constexpr int kPollIntervalMs = 2000;
+// How often the license watch looks at the license file and the clock. Both
+// checks are local (a stat, a small read when the file changed, and a time
+// compare), so this costs next to nothing.
+constexpr int kLicenseWatchIntervalMs = 2000;
 
 // Diagnostic-only error text. For transport failures (moonbase::api_error) the
 // SDK stashes actionable guidance (e.g. the macOS network entitlement hint) in
@@ -115,7 +121,19 @@ ActivationController::ActivationController(ActivationConfig config)
     {
         JavaVM* vm = nullptr;
         if (env->GetJavaVM(&vm) == 0)
+        {
             moonbase::android::set_jni_environment(vm, juce::getAppContext().get());
+
+            // The workers are plain threads. JUCE's networking attaches them to
+            // the VM, and Android aborts a thread that ends still attached, so
+            // detach on the way out, as JUCE's own threads do.
+            threadPool_.setWorkerExitHook([vm]
+            {
+                JNIEnv* attached = nullptr;
+                if (vm->GetEnv(reinterpret_cast<void**>(&attached), JNI_VERSION_1_2) == JNI_OK)
+                    vm->DetachCurrentThread();
+            });
+        }
     }
 #endif
 
@@ -196,6 +214,7 @@ std::optional<moonbase::device_id_description> ActivationController::describeDev
 
 ActivationController::~ActivationController()
 {
+    stopLicenseWatch();
     stopTimer();
     ++updateGeneration_;     // drop any queued update-flow continuations
     updateDownload_.reset(); // cancels + joins the installer download thread
@@ -204,7 +223,7 @@ ActivationController::~ActivationController()
     // plugin binary) are gone. cancelInFlight_ makes the drain near-instant.
     if (cancelInFlight_)
         cancelInFlight_();
-    threadPool_.removeAllJobs(true, 5000);
+    threadPool_.stop();
 }
 
 void ActivationController::setDeviceLabel(juce::String deviceName)
@@ -243,6 +262,17 @@ void ActivationController::start()
         return;
 
     setScreen(Screen::Loading);
+
+    // Watch the license from here on (see the header). Only a file store has a
+    // file another instance can change. The first look is taken before the load,
+    // so a change that lands while it runs is still seen.
+    if (auto* fileStore = dynamic_cast<moonbase::file_license_store*>(&licensing_->store()))
+        watchedFile_ = fileStore->path();
+    watchedStamp_.reset();
+    if (watchedFile_)
+        watchedStamp_ = stampLicenseFile();
+    licenseWatch_.onTick = [this] { watchLicense(); };
+    licenseWatch_.startTimer(kLicenseWatchIntervalMs);
 
     const auto generation = ++generation_;
     juce::WeakReference<ActivationController> safe(this);
@@ -424,8 +454,13 @@ void ActivationController::beginOnlineActivation()
             }
 
             self->pendingRequest_ = request;
-            juce::URL(juce::String(request->browser_url)).launchInDefaultBrowser();
+            const juce::URL link(juce::String(request->browser_url));
+            const bool opened = self->config_.openBrowser ? self->config_.openBrowser(link)
+                                                          : link.launchInDefaultBrowser();
+            if (! opened)
+                self->emitDiagnostic("Couldn't open the browser for activation; pendingBrowserUrl() has the link.");
             self->startTimer(kPollIntervalMs);
+            self->sendChangeMessage(); // pendingBrowserUrl() is set now
         });
     });
 }
@@ -439,10 +474,24 @@ void ActivationController::cancelActivation()
     showWelcome();
 }
 
+juce::String ActivationController::pendingBrowserUrl() const
+{
+    return pendingRequest_ ? juce::String(pendingRequest_->browser_url) : juce::String();
+}
+
 void ActivationController::refreshLicense(bool force, std::function<void(bool)> onComplete)
 {
     if (! ensureReady())
     {
+        if (onComplete) onComplete(false);
+        return;
+    }
+
+    // An activation brings a fresh license of its own, and a re-check now would
+    // supersede its requests (stranding the flow if the request hasn't arrived).
+    if (activationInFlight())
+    {
+        emitDiagnostic("refreshLicense: skipped while an activation is in progress.");
         if (onComplete) onComplete(false);
         return;
     }
@@ -456,18 +505,22 @@ void ActivationController::refreshLicense(bool force, std::function<void(bool)> 
         return;
     }
 
+    ++refreshesInFlight_;
     const auto generation = ++generation_;
     const auto token = license_->token;
     const auto currentLicense = *license_; // for the expired-trial case (re-validation can't return it)
     const bool wasTrial = license_->trial;
+    const auto gracePeriod = config_.onlineGracePeriod;
     juce::WeakReference<ActivationController> safe(this);
     auto licensing = licensing_;
 
-    threadPool_.addJob([safe, generation, token, currentLicense, wasTrial, licensing, force, onComplete]() mutable
+    threadPool_.addJob([safe, generation, token, currentLicense, wasTrial, gracePeriod, licensing, force,
+                        onComplete]() mutable
     {
         std::optional<moonbase::license> refreshed;
         bool expired = false;
         bool rejected = false;
+        bool pastGrace = false;
         juce::String diag;
         try
         {
@@ -503,12 +556,19 @@ void ActivationController::refreshLicense(bool force, std::function<void(bool)> 
         catch (const std::exception& ex)
         {
             diag = describeError(ex);
+            // No answer, or none that counts as a verdict. Within the grace
+            // period that is a network blip; past it the license has gone
+            // unverified for longer than the app allows, which locks, as it
+            // does at launch.
+            pastGrace = std::chrono::system_clock::now() - currentLicense.validated_at > gracePeriod;
         }
 
-        juce::MessageManager::callAsync([safe, generation, refreshed, expired, rejected, currentLicense,
-                                         wasTrial, licensing, diag, onComplete]() mutable
+        juce::MessageManager::callAsync([safe, generation, refreshed, expired, rejected, pastGrace,
+                                         currentLicense, wasTrial, licensing, diag, onComplete]() mutable
         {
             auto* self = safe.get();
+            if (self != nullptr)
+                --self->refreshesInFlight_;
             if (self == nullptr || generation != self->generation_.load())
             {
                 // Superseded (e.g. deactivate / clearLicense bumped the
@@ -545,13 +605,15 @@ void ActivationController::refreshLicense(bool force, std::function<void(bool)> 
                 self->showTrialExpired(currentLicense);
                 if (onComplete) onComplete(false);
             }
-            else if (expired || rejected)
+            else if (expired || rejected || pastGrace)
             {
                 // Lock the way start() does for the same answer: drop the license
                 // but leave the file, so the next launch checks it again. A full
                 // license lands here when its subscription lapsed: the server
                 // says LicenseExpired for that, as it does for an ended trial.
-                self->emitDiagnostic("License rejected on re-validation: " + diag);
+                self->emitDiagnostic(pastGrace
+                                         ? "Couldn't re-validate within the offline grace period: " + diag
+                                         : "License rejected on re-validation: " + diag);
                 self->applyLicense(std::nullopt);
                 if (onComplete) onComplete(false);
             }
@@ -876,6 +938,224 @@ void ActivationController::deleteStoredMatching(const juce::String& activationId
 }
 
 //==============================================================================
+// License watch: local checks only (a stat of the license file, a read when it
+// changed, and a look at the clock), so no request goes out unless a license has
+// actually run out.
+void ActivationController::watchLicense()
+{
+    // Nothing is settled while the stored license is still loading.
+    if (screen_ == Screen::Loading)
+        return;
+
+    checkLicenseFile();
+    checkLicenseDeadlines();
+}
+
+void ActivationController::stopLicenseWatch()
+{
+    licenseWatch_.stopTimer();
+}
+
+ActivationController::FileStamp ActivationController::stampLicenseFile() const
+{
+    std::error_code ec;
+    FileStamp stamp;
+    stamp.exists = std::filesystem::is_regular_file(*watchedFile_, ec);
+    if (stamp.exists)
+    {
+        stamp.size = std::filesystem::file_size(*watchedFile_, ec);
+        stamp.modified = std::filesystem::last_write_time(*watchedFile_, ec);
+    }
+    return stamp;
+}
+
+void ActivationController::checkLicenseFile()
+{
+    if (! watchedFile_)
+        return;
+
+    const auto stamp = stampLicenseFile();
+    if (watchedStamp_ && *watchedStamp_ == stamp)
+        return;
+
+    // Only a file that was there and went away means another instance removed
+    // it. One that never got written (a failed save) must not lock the license
+    // this instance holds in memory.
+    const bool existed = watchedStamp_ && watchedStamp_->exists;
+    watchedStamp_ = stamp;
+
+    if (! stamp.exists)
+    {
+        if (existed)
+            onLicenseFileRemoved();
+        return;
+    }
+
+    // Read the file itself rather than through the store. The store lock can be
+    // held by another process for the length of a network check, and
+    // load_local_license() deletes a file it can't parse, which is exactly what
+    // a file caught mid-write looks like. A torn read just fails to parse; the
+    // write that completes it changes the stamp, so the next tick reads it again.
+    std::optional<moonbase::license> onDisk;
+    try
+    {
+        std::ifstream in(*watchedFile_);
+        onDisk = nlohmann::json::parse(in).get<moonbase::license>();
+    }
+    catch (const std::exception&)
+    {
+        return;
+    }
+
+    if (license_ && onDisk->token == license_->token)
+        return; // our own write, or a sibling's that changed nothing
+
+    std::optional<moonbase::license> stored;
+    try
+    {
+        stored = licensing_->validate_token_local(onDisk->token);
+    }
+    catch (const std::exception&)
+    {
+        // Expired, bound to another device, or tampered with: nothing this
+        // instance can use. Its own checks decide about its own license.
+        return;
+    }
+
+    // Signed and unexpired, but unverified for longer than the grace period:
+    // start() would only take it after an online check, so don't unlock on it
+    // here either. Whoever re-validates it writes a fresh copy.
+    if (stored->method != moonbase::activation_method::offline
+        && std::chrono::system_clock::now() - stored->validated_at > config_.onlineGracePeriod)
+        return;
+
+    adoptStoredLicense(std::move(*stored));
+}
+
+void ActivationController::onLicenseFileRemoved()
+{
+    // Another instance or process deactivated or forgot this machine's license,
+    // so this one locks too.
+    if (! license_)
+        return;
+
+    if (activationInFlight())
+    {
+        // The user is activating here (typically unlocking a trial): lock, but
+        // leave the flow on screen and running, as an expiry does. When it
+        // lands, it brings a license of its own.
+        emitDiagnostic("The license file was removed by another instance or process; locking. "
+                       "The activation in progress carries on.");
+        setLicense(std::nullopt);
+        sendChangeMessage();
+        return;
+    }
+
+    emitDiagnostic("The license file was removed by another instance or process; locking.");
+    endActivationFlows(); // drop in-flight work for the removed license (a refresh, a deactivation)
+    applyLicense(std::nullopt);
+}
+
+void ActivationController::adoptStoredLicense(moonbase::license stored)
+{
+    // Two processes' refreshes can land on disk out of order; never trade the
+    // copy we hold for an older one of the same activation.
+    if (license_ && license_->activation_id == stored.activation_id
+        && stored.validated_at < license_->validated_at)
+        return;
+
+    if (license_ && license_->activation_id == stored.activation_id)
+    {
+        // A newer copy of the activation we hold, typically a sibling's
+        // re-validation: take it without moving the screen, so an open flow or
+        // an update download is never interrupted.
+        setLicense(std::move(stored));
+        sendChangeMessage();
+        return;
+    }
+
+    // A different activation: activated or replaced elsewhere. Anything still
+    // in flight here belongs to the old one, and must not land on top of the
+    // new license (a refresh of a revoked activation would lock it, or write the
+    // old token back over the new file), so drop it all and show the license.
+    emitDiagnostic("Picked up a license stored by another instance or process.");
+    endActivationFlows();
+    applyLicense(std::move(stored));
+}
+
+bool ActivationController::activationInFlight() const noexcept
+{
+    // From the click (the request is still being created) until it completes or
+    // is cancelled.
+    return pendingRequest_.has_value() || screen_ == Screen::BrowserWait;
+}
+
+void ActivationController::checkLicenseDeadlines()
+{
+    // Not while a refresh is already on its way (the host's own, after a
+    // purchase, or an earlier one of ours): starting another would supersede it.
+    if (! license_ || busy_ || refreshesInFlight_ > 0)
+        return;
+
+    const auto now = std::chrono::system_clock::now();
+    const bool expired = license_->expires_at && *license_->expires_at <= now;
+    const bool offline = license_->method == moonbase::activation_method::offline;
+    const bool pastGrace = ! offline && now - license_->validated_at > config_.onlineGracePeriod;
+    if (! expired && ! pastGrace)
+        return;
+
+    if (activationInFlight())
+    {
+        // Typically a trial being unlocked. A re-check would supersede the
+        // activation's own requests, so stop honouring the license right here
+        // and leave the flow alone: the activation replaces it when it lands,
+        // and cancelling it returns to the welcome screen.
+        emitDiagnostic("The license ran out while an activation was in progress; locking.");
+        if (license_->trial)
+            expiredTrial_ = license_;
+        setLicense(std::nullopt);
+        sendChangeMessage();
+        return;
+    }
+
+    if (offline)
+    {
+        // Offline licenses are never re-validated, and one past its `exp` is
+        // dead for good: lock and remove it, as start() does.
+        emitDiagnostic("The offline license has expired; removing it.");
+        ++generation_;
+        deleteStoredLicense();
+        applyLicense(std::nullopt);
+        return;
+    }
+
+    if (! expired)
+    {
+        const auto steadyNow = std::chrono::steady_clock::now();
+        if (lastGraceCheck_ && steadyNow - *lastGraceCheck_ < config_.onlineCheckInterval)
+            return;
+        lastGraceCheck_ = steadyNow;
+    }
+
+    // Re-check it. A passed `exp` locks with no network call (a trial routes to
+    // the Expired screen); past the grace period the server gets one more
+    // chance, and the license locks if it can't be reached.
+    refreshLicense(false);
+}
+
+void ActivationController::endActivationFlows()
+{
+    stopTimer();
+    pendingRequest_.reset();
+    pollInFlight_ = false;
+    ++generation_;   // in-flight continuations no-op from here on...
+    busy_ = false;   // ...including a deactivation's, which would have cleared this
+    offlineResponse_ = juce::File();
+    offlineRequestSaved_ = false;
+    offlineError_.clear();
+}
+
+//==============================================================================
 void ActivationController::showWelcome()
 {
     offlineResponse_ = juce::File();
@@ -901,6 +1181,7 @@ void ActivationController::setPreviewState(Screen screen, std::optional<moonbase
 {
     ++generation_; // drop any in-flight start()/async continuation
     stopTimer();
+    stopLicenseWatch(); // a preview stays exactly as set
     pollInFlight_ = false;
     busy_ = busy;
     if (screen == Screen::Expired)
@@ -967,6 +1248,37 @@ void ActivationController::setLicense(std::optional<moonbase::license> value)
     license_ = std::move(value);
     // Publish for the audio thread (this always runs on the message thread).
     licensed_.store(license_.has_value(), std::memory_order_release);
+    notifyLicenseChange();
+}
+
+void ActivationController::notifyLicenseChange()
+{
+    // Deliver after the current call has finished updating the screen and
+    // status, so the host reads a consistent controller. Several changes in one
+    // go collapse into one delivery, which reports only if the end result moved.
+    if (std::exchange(licenseChangePending_, true))
+        return;
+
+    juce::WeakReference<ActivationController> safe(this);
+    juce::MessageManager::callAsync([safe]
+    {
+        if (auto* self = safe.get())
+            self->deliverLicenseChange();
+    });
+}
+
+void ActivationController::deliverLicenseChange()
+{
+    licenseChangePending_ = false;
+
+    auto token = license_ ? std::optional<std::string>(license_->token) : std::nullopt;
+    if (licenseReported_ && token == reportedToken_)
+        return;
+
+    licenseReported_ = true;
+    reportedToken_ = std::move(token);
+    if (onLicenseChanged)
+        onLicenseChanged(license_.has_value());
 }
 
 ActivationController::Screen ActivationController::screenForCurrentLicense() const
@@ -985,8 +1297,8 @@ void ActivationController::applyLicense(std::optional<moonbase::license> value)
     statusMessage_.clear();
 
     // A validated license that outranks the running app routes to the update
-    // screen first (unless dismissed this session); "Remind me later" then falls
-    // through to the normal Details / Trial screen.
+    // screen first (unless that version was skipped); "Skip this update" then
+    // falls through to the normal Details / Trial screen.
     const auto dest = screenForCurrentLicense();
     if ((dest == Screen::Details || dest == Screen::Trial) && config_.autoPresentUpdate
         && updateAvailable() && ! updateDismissedForCurrentLicense())
@@ -1282,8 +1594,9 @@ void ActivationController::revealUpdateDownload()
 
 void ActivationController::dismissUpdate()
 {
-    // Remember the dismissed version so we don't prompt for it again next session
-    // (a newer release still prompts). Persisted in the JSON state file.
+    // Remember the skipped version so we don't prompt for it again, in this
+    // session or the next (a newer release still prompts). Persisted in the JSON
+    // state file.
     if (state_)
         state_->ignoreUpdate(updateInfo_.newVersion);
 
@@ -1299,6 +1612,7 @@ void ActivationController::setPreviewUpdate(UpdateInfo::Phase phase, moonbase::l
     ++generation_;
     ++updateGeneration_;
     stopTimer();
+    stopLicenseWatch(); // a preview stays exactly as set
     pollInFlight_ = false;
     busy_ = false;
 

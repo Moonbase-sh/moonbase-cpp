@@ -7,14 +7,23 @@
 // can never clobber a newer state (cancel, a fresh activation, deactivate).
 //
 // Observe it as a juce::ChangeBroadcaster: on every change, read screen() and
-// license() and repaint.
+// license() and repaint. To hear only about the license itself, use
+// onLicenseChanged.
+//
+// Once started, it also watches the license on its own, with no network
+// traffic: a license whose `exp` passes or whose offline grace period runs out
+// is re-checked (and locked if it has ended) without a restart, and a license
+// another plugin instance or process activates, refreshes or removes is picked
+// up within a couple of seconds.
 
 #include <atomic>
 #include <chrono>
 #include <cstdint>
+#include <filesystem>
 #include <functional>
 #include <memory>
 #include <optional>
+#include <string>
 
 #include <moonbase/moonbase.hpp>
 
@@ -22,6 +31,7 @@
 
 #include "ActivationConfig.h"
 #include "ActivationState.h"
+#include "WorkerPool.h"
 
 namespace moonbase::juce_integration {
 
@@ -85,22 +95,40 @@ public:
 
     ~ActivationController() override;
 
+    // Fired on the message thread once start() has settled, then whenever the
+    // license itself changes: activated, refreshed into a new token, picked up
+    // from another instance, revoked, expired or cleared. Not fired for screen
+    // changes, progress or a re-check that changed nothing. `licensed` matches
+    // licensedFlag(); read license() for the rest. Assign it before start().
+    std::function<void(bool licensed)> onLicenseChanged;
+
     //== Lifecycle =============================================================
-    // Loads + validates any stored license and routes to the right screen.
+    // Loads + validates any stored license, routes to the right screen and
+    // starts watching the license (see the class comment).
     void start();
 
     //== Online activation =====================================================
     void beginOnlineActivation();          // request + open browser + poll
     void cancelActivation();               // stop polling, back to Welcome
 
+    // The browser link for the online activation in progress, so a custom UI can
+    // show or copy it when the browser didn't open. Empty until the request has
+    // been created (a change is broadcast when it arrives), and again once the
+    // activation completes or is cancelled.
+    [[nodiscard]] juce::String pendingBrowserUrl() const;
+
     //== Re-validation =========================================================
     // Re-check the current license against the server and refresh its entitlements
     // (sub-product ownership, properties, expiry, seats) in place. Call this after
-    // a purchase so newly granted features load without an app restart. Runs async
-    // and silently (no screen change); on success the license updates and
-    // onActivationChanged fires so you can reload features. `force` bypasses the
-    // online-validation throttle (use it right after a purchase). No-op for offline
-    // licenses. The optional callback runs on the message thread with the outcome.
+    // a purchase so newly granted features load without an app restart. Runs async;
+    // on success the license updates, and onLicenseChanged / onActivationChanged
+    // fire when the server sent a new token, so you can reload features. `force`
+    // bypasses the online-validation throttle (use it right after a purchase).
+    // A revoked or lapsed license locks, and so does one that can't be checked
+    // once the offline grace period has run out; within it a network failure
+    // keeps the license. No-op for offline licenses, and while an online
+    // activation is in progress (it brings a fresh license of its own). The
+    // optional callback runs on the message thread with the outcome.
     void refreshLicense(bool force = true, std::function<void(bool refreshed)> onComplete = {});
 
     //== App update flow =======================================================
@@ -128,8 +156,10 @@ public:
     // "Done" state of the update flow).
     void revealUpdateDownload();
 
-    // "Remind me later": leave the update screen for the normal Details / Trial
-    // screen and don't prompt again this session.
+    // "Skip this update": leave the update screen for the normal Details / Trial
+    // screen and don't prompt for this version again. The skipped version is
+    // persisted in the state file, so it holds across restarts; a newer release
+    // still prompts.
     void dismissUpdate();
 
     //== Offline activation ====================================================
@@ -204,6 +234,31 @@ public:
     [[nodiscard]] int trialDaysRemaining() const;
 
 private:
+    // A message-thread timer with a callback. The controller's own Timer base
+    // is the activation poll, so the license watch needs a second one.
+    class CallbackTimer : public juce::Timer
+    {
+    public:
+        std::function<void()> onTick;
+        void timerCallback() override
+        {
+            if (onTick)
+                onTick();
+        }
+    };
+
+    // What the license watch last saw of the license file.
+    struct FileStamp
+    {
+        bool exists = false;
+        std::uintmax_t size = 0;
+        std::filesystem::file_time_type modified{};
+        bool operator==(const FileStamp& other) const
+        {
+            return exists == other.exists && size == other.size && modified == other.modified;
+        }
+    };
+
     void timerCallback() override;
 
     // juce::URL::DownloadTaskListener: both arrive on a background thread and
@@ -231,6 +286,20 @@ private:
     void showTrialExpired(moonbase::license expired); // locks + routes to the Expired screen
     [[nodiscard]] Screen screenForCurrentLicense() const; // Welcome / Trial / Details
     void onActivationFulfilled(moonbase::license value);
+    void endActivationFlows(); // stop polling, forget offline-flow progress, drop in-flight continuations
+
+    //== License watch (no network) ============================================
+    void watchLicense();                 // one tick: file changes, then deadlines
+    [[nodiscard]] FileStamp stampLicenseFile() const; // watchedFile_ must be set
+    void checkLicenseFile();
+    void checkLicenseDeadlines();
+    [[nodiscard]] bool activationInFlight() const noexcept;
+    void onLicenseFileRemoved();
+    void adoptStoredLicense(moonbase::license stored);
+    void stopLicenseWatch();
+
+    void notifyLicenseChange();  // coalesced, async onLicenseChanged
+    void deliverLicenseChange();
     void deleteStoredMatching(const juce::String& activationId);
     void deleteStoredLicense(); // best-effort delete of the local license file
     void setDeviceLabel(juce::String deviceName);
@@ -247,9 +316,10 @@ private:
 
     // Network/file work runs here instead of detached threads, so the destructor
     // can drain workers (after cancelInFlight_ unblocks any in-flight request);
-    // nothing outlives the controller.
+    // nothing outlives the controller. A module-owned pool rather than a
+    // juce::ThreadPool, which can kill a thread at teardown (see WorkerPool.h).
     std::function<void()> cancelInFlight_;
-    juce::ThreadPool threadPool_ { 2 };
+    detail::WorkerPool threadPool_ { 2 };
 
     Screen screen_ = Screen::Loading;
     std::optional<moonbase::license> license_;
@@ -267,6 +337,21 @@ private:
 
     bool busy_ = false;
     bool pollInFlight_ = false;
+
+    //== License watch =========================================================
+    CallbackTimer licenseWatch_;
+    std::optional<std::filesystem::path> watchedFile_; // empty when the store is not a file
+    std::optional<FileStamp> watchedStamp_;            // last look; taken first in start()
+    int refreshesInFlight_ = 0; // refreshLicense() calls whose answer hasn't landed yet
+    // When the watch last asked the server about a license past its grace
+    // period. Spaced by onlineCheckInterval, so a skewed clock can't turn the
+    // watch into a request every tick.
+    std::optional<std::chrono::steady_clock::time_point> lastGraceCheck_;
+
+    // onLicenseChanged bookkeeping: the token last reported (nullopt = no license).
+    bool licenseChangePending_ = false;
+    bool licenseReported_ = false;
+    std::optional<std::string> reportedToken_;
 
     // Bumped by every state-changing entry point; async continuations capture it
     // and no-op if it has moved on by the time they run on the message thread.
