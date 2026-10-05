@@ -1,3 +1,10 @@
+## [4.7.1](https://github.com/Moonbase-sh/moonbase-cpp/compare/v4.7.0...v4.7.1) (2026-10-05)
+
+
+### Bug Fixes
+
+* activate on Windows machines with a non-ASCII computer name ([#37](https://github.com/Moonbase-sh/moonbase-cpp/issues/37)) ([87816c4](https://github.com/Moonbase-sh/moonbase-cpp/commit/87816c4c1bbc14f31a158364d7aeec6cb1d706d6))
+
 # [4.7.0](https://github.com/Moonbase-sh/moonbase-cpp/compare/v4.6.0...v4.7.0) (2026-10-03)
 
 
