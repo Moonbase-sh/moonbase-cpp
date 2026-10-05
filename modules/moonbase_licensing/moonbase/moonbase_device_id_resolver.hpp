@@ -103,6 +103,7 @@
 #endif
 #endif
 
+#include "moonbase/detail/unicode/utf16.hpp"
 #include "moonbase/device_id_resolver.hpp"
 #include "moonbase/errors.hpp"
 #include "moonbase/fingerprint_spec.hpp"
@@ -204,7 +205,7 @@ public:
         }
     }
 
-    /// The host name, with a trailing ".local" removed on macOS.
+    /// The host name as UTF-8, with a trailing ".local" removed on macOS.
     ///
     /// Never throws: a machine with no readable identity still has to be able to
     /// label itself, since activation sends the name alongside the id.
@@ -257,15 +258,24 @@ public:
         return identity;
     }
 
+    /// The host name as UTF-8, with a trailing ".local" removed on macOS.
     [[nodiscard]] static std::string read_host_name()
     {
 #if defined(_WIN32)
-        std::array<char, 256> buffer{};
-        auto size = static_cast<DWORD>(buffer.size()) - 1;
-        if (GetComputerNameExA(ComputerNamePhysicalDnsHostname, buffer.data(), &size)) {
-            return std::string(buffer.data(), size);
+        // The wide API, transcoded. GetComputerNameExA answers in the ANSI code
+        // page, so a name with any non-ASCII letter came back as bytes that are
+        // not UTF-8, and serializing the activation request threw on them.
+        std::array<wchar_t, 256> buffer{};
+        auto size = static_cast<DWORD>(buffer.size());
+        if (!GetComputerNameExW(ComputerNamePhysicalDnsHostname, buffer.data(), &size)) {
+            return {};
         }
-        return {};
+        std::u16string name;
+        name.reserve(size);
+        for (DWORD index = 0; index != size; ++index) {
+            name.push_back(static_cast<char16_t>(buffer[index]));
+        }
+        return detail::unicode::utf16_to_utf8(name);
 #else
         std::array<char, 256> buffer{};
         if (gethostname(buffer.data(), buffer.size() - 1) != 0) {
@@ -340,7 +350,7 @@ private:
                     throw;
                 }
                 description_ = describe(
-                    {{"deviceName", read.device_name}}, fingerprint_spec::device_id_source::device_name);
+                    {{"deviceName", fallback_host_name(read)}}, fingerprint_spec::device_id_source::device_name);
             }
             described_ = true;
         }
@@ -363,6 +373,38 @@ private:
         }
         return described;
     }
+
+    // What the host-name fallback hashes: the name itself, except under the native
+    // Windows read. The fallback has always hashed the ANSI code page reading
+    // there, and still does, so a machine already bound to it keeps its id now
+    // that the name is read as UTF-8. Canonicalization drops non-ASCII either way,
+    // so the two only differ where the ANSI reading turned a letter into ASCII: a
+    // best-fit or "?" substitution, or a double-byte code page's trail byte. In
+    // those cases the reference SDK, which hashes the UTF-8 name, disagrees; moving
+    // to it would rebind those machines, so it needs a migration, not a bug fix.
+    [[nodiscard]] std::string fallback_host_name(const device_identity& read) const
+    {
+#if defined(_WIN32)
+        // An empty name is a failed read, and stays one.
+        if (!options_.reader && !read.device_name.empty()) {
+            return read_ansi_host_name();
+        }
+#endif
+        return read.device_name;
+    }
+
+#if defined(_WIN32)
+    // Fallback material only, never a label: see fallback_host_name.
+    [[nodiscard]] static std::string read_ansi_host_name()
+    {
+        std::array<char, 256> buffer{};
+        auto size = static_cast<DWORD>(buffer.size()) - 1;
+        if (GetComputerNameExA(ComputerNamePhysicalDnsHostname, buffer.data(), &size)) {
+            return std::string(buffer.data(), size);
+        }
+        return {};
+    }
+#endif
 
     [[nodiscard]] static std::string read_file(const char* path)
     {

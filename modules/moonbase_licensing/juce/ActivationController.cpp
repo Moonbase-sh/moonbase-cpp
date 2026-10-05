@@ -15,7 +15,10 @@ constexpr int kPollIntervalMs = 2000;
 // in the friendly, user-facing screen text.
 juce::String describeError(const std::exception& ex)
 {
-    juce::String message = ex.what();
+    // fromUTF8, because the SDK's messages are UTF-8 (a store path under
+    // C:\Users\Björn, a server's own words) and juce::String's const char*
+    // constructor reads ASCII: it asserts on anything else and garbles it.
+    auto message = juce::String::fromUTF8(ex.what());
     if (const auto* api = dynamic_cast<const moonbase::api_error*>(&ex))
         if (! api->detail().empty())
             message << " (" << api->detail() << ")";
@@ -42,6 +45,7 @@ enum class Failure
     Refused,     // Moonbase answered and said no; trying again won't change that
     StoreClosed, // the merchant closed their Moonbase account, for good
     NoIdentity,  // this machine has nothing to bind a license to
+    Unexpected,  // neither Moonbase's answer nor a transport failure: show what it was
 };
 
 Failure classifyFailure(const std::exception& ex)
@@ -67,8 +71,21 @@ Failure classifyFailure(const std::exception& ex)
     if (dynamic_cast<const moonbase::moonbase_error*>(&ex) != nullptr)
         return Failure::Refused;
 
-    // A custom transport's own exception type: treat it like the bundled ones.
-    return Failure::Unreachable;
+    // Not from Moonbase, and not the connection either: a transport reports a
+    // failed connection as api_error (the http_transport::send contract, which
+    // juce_http_transport keeps). So something failed on this machine, such as
+    // building the request, and calling that a connection problem sends the
+    // user and the developer looking in the wrong place.
+    return Failure::Unexpected;
+}
+
+// Screen copy for Failure::Unexpected. Nobody anticipated it, so there is no
+// friendlier way to put it, and the most useful thing the user can do is pass
+// its own words on to the developer.
+juce::String unexpectedFailure(const juce::String& lead, const std::exception& ex)
+{
+    const auto reason = juce::String::fromUTF8(ex.what()).trim();
+    return reason.isEmpty() ? lead + "." : lead + ": " + reason;
 }
 } // namespace
 
@@ -384,6 +401,9 @@ void ActivationController::beginOnlineActivation()
                     userMessage = "This computer can't be identified, so it can't be activated. "
                                   "Contact the developer for help.";
                     break;
+                case Failure::Unexpected:
+                    userMessage = unexpectedFailure("Activation couldn't start", ex);
+                    break;
             }
         }
 
@@ -396,7 +416,8 @@ void ActivationController::beginOnlineActivation()
             if (! request)
             {
                 // Full reason (incl. the entitlement hint) goes to the developer
-                // sink; the user sees friendly, fixed copy for the kind of failure.
+                // sink; the user sees friendly, fixed copy for the kind of failure,
+                // or the reason itself when the failure is of no known kind.
                 self->emitDiagnostic("request_activation failed: " + error);
                 self->setScreen(Screen::Error, userMessage);
                 return;
@@ -469,7 +490,7 @@ void ActivationController::refreshLicense(bool force, std::function<void(bool)> 
             // Re-validation says it has ended (e.g. a trial that was still valid
             // locally). Distinct from a network blip: this should lock.
             expired = true;
-            diag = ex.what();
+            diag = juce::String::fromUTF8(ex.what());
         }
         catch (const moonbase::license_invalid_error& ex)
         {
@@ -477,7 +498,7 @@ void ActivationController::refreshLicense(bool force, std::function<void(bool)> 
             // deleted, or the store has closed. Also not a network blip, so this
             // locks too.
             rejected = true;
-            diag = ex.what();
+            diag = juce::String::fromUTF8(ex.what());
         }
         catch (const std::exception& ex)
         {
@@ -572,13 +593,13 @@ void ActivationController::timerCallback()
             // The server answered 400: the request expired or was cancelled, so
             // it can never complete. The server's reason goes to diagnostics.
             fatal = true;
-            error = ex.what();
+            error = juce::String::fromUTF8(ex.what());
             userMessage = "This activation expired or was cancelled. Activate again to continue.";
         }
         catch (const moonbase::store_closed_error& ex)
         {
             fatal = true;
-            error = ex.what();
+            error = juce::String::fromUTF8(ex.what());
             userMessage = "This store has closed, so activation isn't available.";
         }
         // The reason the SDK gives is written for developers (a device-binding
@@ -587,13 +608,13 @@ void ActivationController::timerCallback()
         catch (const moonbase::license_invalid_error& ex)
         {
             fatal = true;
-            error = ex.what();
+            error = juce::String::fromUTF8(ex.what());
             userMessage = "Activation was rejected. If this keeps happening, contact the developer.";
         }
         catch (const moonbase::license_expired_error& ex)
         {
             fatal = true;
-            error = ex.what();
+            error = juce::String::fromUTF8(ex.what());
             userMessage = "This license has expired, so it can't be activated.";
         }
         catch (const std::exception& ex)
@@ -657,23 +678,32 @@ bool ActivationController::saveOfflineRequest(const juce::File& destination)
     if (! ensureReady())
         return false;
 
+    std::string token;
     try
     {
-        const auto token = licensing_->generate_device_token();
-        if (destination.replaceWithText(juce::String(token)))
-        {
-            offlineRequestSaved_ = true;
-            offlineError_.clear();
-            sendChangeMessage();
-            return true;
-        }
-        emitDiagnostic("Couldn't write the machine file to " + destination.getFullPathName());
+        token = licensing_->generate_device_token();
     }
     catch (const std::exception& ex)
     {
-        emitDiagnostic(juce::String("Generating the machine file failed: ") + ex.what());
+        // Nothing reached the disk, so this is no file problem: say what it was.
+        emitDiagnostic("Generating the machine file failed: " + describeError(ex));
+        offlineError_ = classifyFailure(ex) == Failure::NoIdentity
+                            ? juce::String("This computer can't be identified, so it can't be activated. "
+                                           "Contact the developer for help.")
+                            : unexpectedFailure("Couldn't create the machine file", ex);
+        sendChangeMessage();
+        return false;
     }
 
+    if (destination.replaceWithText(juce::String(token)))
+    {
+        offlineRequestSaved_ = true;
+        offlineError_.clear();
+        sendChangeMessage();
+        return true;
+    }
+
+    emitDiagnostic("Couldn't write the machine file to " + destination.getFullPathName());
     offlineError_ = "Couldn't write the request file.";
     sendChangeMessage();
     return false;
@@ -768,16 +798,20 @@ void ActivationController::deactivate()
         {
             licensing->revoke_activation(token);
         }
-        catch (const moonbase::operation_not_supported_error& ex) { outcome = Outcome::NotRevokable; diag = ex.what(); }
+        catch (const moonbase::operation_not_supported_error& ex) { outcome = Outcome::NotRevokable; diag = juce::String::fromUTF8(ex.what()); }
         catch (const moonbase::license_invalid_error&)            { outcome = Outcome::Revoked; }
         catch (const moonbase::license_expired_error&)            { outcome = Outcome::Revoked; }
         catch (const std::exception& ex)
         {
             outcome = Outcome::Unreachable;
             diag = describeError(ex);
-            userMessage = classifyFailure(ex) == Failure::Busy
-                              ? "Moonbase couldn't deactivate right now. Try again in a minute."
-                              : "Couldn't reach Moonbase to deactivate. Try again when online.";
+            const auto failure = classifyFailure(ex);
+            if (failure == Failure::Busy)
+                userMessage = "Moonbase couldn't deactivate right now. Try again in a minute.";
+            else if (failure == Failure::Unexpected)
+                userMessage = unexpectedFailure("Couldn't deactivate", ex);
+            else
+                userMessage = "Couldn't reach Moonbase to deactivate. Try again when online.";
         }
 
         const int outcomeCode = static_cast<int>(outcome);
@@ -798,7 +832,7 @@ void ActivationController::deactivate()
                     self->clearLicense();
                     break;
                 case Outcome::Unreachable:
-                    self->emitDiagnostic("revoke_activation couldn't reach Moonbase: " + diag);
+                    self->emitDiagnostic("revoke_activation failed, license kept: " + diag);
                     self->setScreen(Screen::Details, userMessage);
                     break;
             }
@@ -1113,6 +1147,8 @@ void ActivationController::startUpdateDownload()
                 userMessage = "There's no download of this update for your system yet.";
             else if (classifyFailure(ex) == Failure::Busy)
                 userMessage = "Moonbase couldn't prepare the download right now. Try again in a minute.";
+            else if (classifyFailure(ex) == Failure::Unexpected)
+                userMessage = unexpectedFailure("Couldn't start the download", ex);
             else
                 userMessage = "Couldn't reach Moonbase to download the update. Try again when online.";
         }
