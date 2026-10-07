@@ -240,6 +240,40 @@ every 2 seconds (a look at the license file and the clock, no network):
 Sandboxed formats (AUv3, Mac App Store builds) each keep the license in their own
 container, so they don't share an activation with the other formats.
 
+### When the plugin locks
+
+Every way of losing a license ends the same way: `licensedFlag()` drops,
+`onLicenseChanged(false)` and `onActivationChanged(false)` fire, and an
+`ActivationComponent` presents itself. That covers expiry, the grace period running
+out, a revoke found on re-validation, and a deactivation in this or another instance.
+It also happens when an editor opens on a plugin that locked while the editor was
+closed. So an overlay the user closed after activating comes back on its own, and one
+you add hidden with `addChildComponent` shows when it is needed.
+
+- **It leaves the host's keyboard focus alone.** The overlay takes focus only when it
+  is already in the plugin's window, so the controls it covers stop getting keys. When
+  the user is working in the host, the plugin window doesn't become the key window,
+  and the host's shortcuts (the space bar, say) keep working. `appear()` follows the
+  same rule, so calling it from a background event is safe too; call
+  `grabKeyboardFocus()` on the component to focus it regardless.
+- **It says why.** The welcome screen swaps its title and body for the reason, from
+  `controller.lockReason()`: `Deactivated` (here or in another instance), `Expired` (a
+  subscription or offline license reached its end date), `Invalid` (Moonbase no longer
+  accepts it: revoked, store closed, or bound to another device) or `Unverified` (not
+  checked online within `onlineGracePeriod`). A trial that ends gets the **Trial
+  expired** screen instead. The copy is in `config.strings` (`deactivatedTitle`,
+  `licenseExpiredBody`, and so on), and `lockReason()` goes back to `None` once a
+  license is loaded. A custom UI can read it from `onLicenseChanged(false)`.
+- **It steps back when the license returns.** If the overlay only opened for the lock
+  and the license comes back from elsewhere (activated again in another instance), it
+  closes itself, without calling `onClose`. One the user opened, or activated in, stays
+  up.
+- **It presents once per lock**, not on every change while the plugin stays locked, and
+  it doesn't replay the appear animation over an overlay that is already up.
+
+Set `config.autoPresentOnLock = false` to present it yourself, for example from
+`onActivationChanged(false)` after your own "license ended" notice.
+
 For a custom UI, `pendingBrowserUrl()` returns the browser link while an online
 activation is waiting, so you can show or copy it when the browser didn't open; a change
 is broadcast when it arrives. To open the link your own way, set `config.openBrowser`
@@ -539,7 +573,8 @@ auto-shows it — closing the update overlay returns the resting screen to the l
 so re-opening lands on the license screen. The license view also keeps a clickable
 **"Update available"** badge next to the "Active" pill (whenever `updateAvailable()` is
 true) that opens it on demand; `ActivationComponent::presentUpdateIfAvailable()` is the
-explicit host hook.
+explicit host hook. The overlay also presents itself when the plugin locks (see
+[When the plugin locks](#when-the-plugin-locks)).
 
 **"Skip this update".** Dismissing records the version in the `ignoredUpdates` list (so it
 won't auto-present again for that version; a newer release still does). Where it goes

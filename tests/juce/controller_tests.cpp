@@ -180,6 +180,7 @@ TEST_CASE("start() with no stored license routes to Welcome")
     REQUIRE(pumpUntil([&] { return settled(controller); }));
     CHECK(controller.screen() == Screen::Welcome);
     CHECK_FALSE(controller.license().has_value());
+    CHECK(controller.lockReason() == LockReason::None); // never licensed: nothing to explain
 }
 
 TEST_CASE("start() with a valid online license routes to Details without calling the API")
@@ -232,6 +233,7 @@ TEST_CASE("an expired trial shows the Expired screen and keeps the plugin locked
     // ...but the ended trial is available for the screen to display.
     REQUIRE(controller.expiredTrial().has_value());
     CHECK(controller.expiredTrial()->trial);
+    CHECK(controller.lockReason() == LockReason::Expired);
     CHECK(fx.transport->requests.empty()); // an expired trial never hits the API
 }
 
@@ -570,6 +572,7 @@ TEST_CASE("start() deletes an expired offline license and locks to Welcome")
     REQUIRE(pumpUntil([&] { return settled(controller); }));
     CHECK(controller.screen() == Screen::Welcome);
     CHECK_FALSE(controller.license().has_value());
+    CHECK(controller.lockReason() == LockReason::Expired);
     // The dead offline license can never be refreshed, so it is removed.
     CHECK_FALSE(fx.licenseFile.existsAsFile());
 }
@@ -587,6 +590,7 @@ TEST_CASE("start() locks but keeps an untrusted token (wrong device) on disk")
     REQUIRE(pumpUntil([&] { return settled(controller); }));
     CHECK(controller.screen() == Screen::Welcome);
     CHECK_FALSE(controller.license().has_value());
+    CHECK(controller.lockReason() == LockReason::Invalid);
     // Not ours to delete - a foreign/tampered token is left untouched.
     CHECK(fx.licenseFile.existsAsFile());
 }
@@ -610,6 +614,7 @@ TEST_CASE("deactivate() on an online license revokes, clears, and removes the fi
     CHECK_FALSE(controller.isBusy());
     CHECK_FALSE(fx.licenseFile.existsAsFile());
     CHECK(fx.transport->requests.size() == 1); // the revoke POST
+    CHECK(controller.lockReason() == LockReason::Deactivated);
 }
 
 TEST_CASE("deactivate() on an offline license forgets locally without the API")
@@ -628,6 +633,7 @@ TEST_CASE("deactivate() on an offline license forgets locally without the API")
     CHECK_FALSE(controller.license().has_value());
     CHECK_FALSE(fx.licenseFile.existsAsFile());
     CHECK(fx.transport->requests.empty());
+    CHECK(controller.lockReason() == LockReason::Deactivated);
 }
 
 TEST_CASE("deactivate() that can't reach the server keeps the license and surfaces an error")
@@ -1209,6 +1215,9 @@ TEST_CASE("refreshLicense locks when the server rejects the license for good")
         CHECK(controller.screen() == Screen::Welcome);
         CHECK(fx.licenseFile.existsAsFile()); // kept, as start() keeps it, for the next launch to re-check
         CHECK(diags.joinIntoString(" ").contains("License rejected on re-validation"));
+        // A lapsed subscription has ended; everything else was refused.
+        CHECK(controller.lockReason()
+              == (juce::String(entry.first) == "subscription lapsed" ? LockReason::Expired : LockReason::Invalid));
     }
 }
 
@@ -1271,6 +1280,7 @@ TEST_CASE("refreshLicense locks once the grace period has run out and Moonbase c
     CHECK_FALSE(ok);
     CHECK_FALSE(controller.licensedFlag().load());
     CHECK(controller.screen() == Screen::Welcome);
+    CHECK(controller.lockReason() == LockReason::Unverified);
     CHECK(fx.licenseFile.existsAsFile()); // kept for the next launch, as start() keeps it
     CHECK(diags.joinIntoString(" ").contains("offline grace period"));
 }
@@ -1294,6 +1304,25 @@ TEST_CASE("a trial that ends while the plugin is open locks without a restart")
     CHECK(pumpUntil([&] { return controller.screen() == Screen::Expired; }, 10000));
     CHECK_FALSE(controller.licensedFlag().load());
     REQUIRE(controller.expiredTrial().has_value());
+    CHECK(controller.lockReason() == LockReason::Expired);
+    CHECK(fx.transport->requests.empty()); // a passed exp is decided locally
+}
+
+TEST_CASE("a subscription that ends while the plugin is open locks and says it expired")
+{
+    controller_fixture fx;
+    auto claims = default_claims();
+    claims["exp"] = now_seconds() + 2; // a full license with an end date
+    fx.seedStored(fx.token(claims));
+
+    ActivationController controller(fx.config, fx.makeLicensing());
+    controller.start();
+    REQUIRE(pumpUntil([&] { return controller.screen() == Screen::Details; }));
+    CHECK(controller.lockReason() == LockReason::None);
+
+    CHECK(pumpUntil([&] { return controller.screen() == Screen::Welcome; }, 10000));
+    CHECK_FALSE(controller.licensedFlag().load());
+    CHECK(controller.lockReason() == LockReason::Expired);
     CHECK(fx.transport->requests.empty()); // a passed exp is decided locally
 }
 
@@ -1315,6 +1344,7 @@ TEST_CASE("a license offline past its grace period locks while the plugin is ope
     // Nothing queued: once the grace period ends, Moonbase can't be reached.
     CHECK(pumpUntil([&] { return controller.screen() == Screen::Welcome; }, 10000));
     CHECK_FALSE(controller.licensedFlag().load());
+    CHECK(controller.lockReason() == LockReason::Unverified);
     CHECK(fx.transport->requests.size() == 1); // one last attempt, then locked
     CHECK(diags.joinIntoString(" ").contains("offline grace period"));
     CHECK(fx.licenseFile.existsAsFile());
@@ -1388,9 +1418,18 @@ TEST_CASE("deactivating in another instance locks this one too")
     REQUIRE(pumpUntil([&] { return controller.screen() == Screen::Details && other.screen() == Screen::Details; }));
 
     other.clearLicense(); // removes the shared license file
+    CHECK(other.lockReason() == LockReason::Deactivated);
 
     CHECK(pumpUntil([&] { return controller.screen() == Screen::Welcome; }, 6000));
     CHECK_FALSE(controller.licensedFlag().load());
+    CHECK(controller.lockReason() == LockReason::Deactivated);
+
+    // Activated again elsewhere: licensed, so nothing left to explain.
+    auto again = default_claims();
+    again["id"] = "activation-456";
+    fx.seedStored(fx.token(again));
+    CHECK(pumpUntil([&] { return controller.screen() == Screen::Details; }, 6000));
+    CHECK(controller.lockReason() == LockReason::None);
 }
 
 TEST_CASE("a license that couldn't be saved is not locked by the watch")
@@ -1851,6 +1890,186 @@ TEST_CASE("a component sharing a settled controller reports its state after cons
     shared.clearLicense();
     REQUIRE(pumpUntil([&] { return reports.size() == 2; }));
     CHECK_FALSE(reports.back());
+}
+
+//==============================================================================
+// ActivationComponent: presenting itself when the plugin locks
+//==============================================================================
+TEST_CASE("a dismissed overlay comes back when the license is lost")
+{
+    controller_fixture fx;
+    fx.config.reduceMotion = true; // appear() and dismiss() take effect at once
+    fx.seedStored(fx.token(default_claims()));
+    ActivationController shared(fx.config, fx.makeLicensing());
+    shared.start();
+    REQUIRE(pumpUntil([&] { return shared.screen() == Screen::Details; }));
+
+    // Hidden, as after the user closed it. No onActivationChanged: presenting
+    // must not depend on the host wiring one.
+    ActivationComponent component(shared);
+    pumpFor(200);
+    CHECK_FALSE(component.isVisible()); // licensed: nothing to present
+
+    shared.clearLicense();
+    CHECK(pumpUntil([&] { return component.isVisible(); }));
+
+    // Once per lock: moving around while still locked leaves the host in charge.
+    component.dismiss();
+    shared.showOffline();
+    shared.showWelcome();
+    pumpFor(200);
+    CHECK_FALSE(component.isVisible());
+}
+
+TEST_CASE("an overlay opened on a locked plugin presents itself")
+{
+    controller_fixture fx;
+    fx.config.reduceMotion = true;
+    ActivationController shared(fx.config, fx.makeLicensing());
+    shared.start();
+    REQUIRE(pumpUntil([&] { return shared.screen() == Screen::Welcome; }));
+
+    ActivationComponent component(shared); // e.g. an editor opened after the lock
+    CHECK_FALSE(component.isVisible());
+    CHECK(pumpUntil([&] { return component.isVisible(); }));
+}
+
+TEST_CASE("a trial that ends while the plugin is open presents the overlay")
+{
+    controller_fixture fx;
+    fx.config.reduceMotion = true;
+    auto claims = default_claims();
+    claims["trial"] = true;
+    claims["exp"] = now_seconds() + 2;
+    fx.seedStored(fx.token(claims));
+    ActivationController shared(fx.config, fx.makeLicensing());
+    shared.start();
+    REQUIRE(pumpUntil([&] { return shared.screen() == Screen::Trial; }));
+
+    ActivationComponent component(shared);
+    pumpFor(200);
+    REQUIRE_FALSE(component.isVisible());
+
+    CHECK(pumpUntil([&] { return component.isVisible(); }, 10000));
+    CHECK(shared.screen() == Screen::Expired);
+}
+
+TEST_CASE("an overlay that opened for a lock closes again when the license comes back")
+{
+    controller_fixture fx;
+    fx.config.reduceMotion = true;
+    fx.seedStored(fx.token(default_claims()));
+    ActivationController shared(fx.config, fx.makeLicensing());
+    ActivationController other(fx.config, fx.makeLicensing()); // another plugin instance
+    shared.start();
+    other.start();
+    REQUIRE(pumpUntil([&] { return shared.screen() == Screen::Details && other.screen() == Screen::Details; }));
+
+    ActivationComponent component(shared);
+    pumpFor(200);
+    REQUIRE_FALSE(component.isVisible());
+
+    other.clearLicense();
+    REQUIRE(pumpUntil([&] { return component.isVisible(); }, 6000));
+    CHECK(shared.lockReason() == LockReason::Deactivated);
+
+    // Activated again in the other instance: nothing left to do here.
+    auto again = default_claims();
+    again["id"] = "activation-456";
+    fx.seedStored(fx.token(again));
+    REQUIRE(pumpUntil([&] { return shared.screen() == Screen::Details; }, 6000));
+    CHECK(pumpUntil([&] { return ! component.isVisible(); }));
+}
+
+TEST_CASE("an overlay the user had open stays up when the license comes back")
+{
+    controller_fixture fx;
+    fx.config.reduceMotion = true;
+    fx.seedStored(fx.token(default_claims()));
+    ActivationController shared(fx.config, fx.makeLicensing());
+    ActivationController other(fx.config, fx.makeLicensing());
+    shared.start();
+    other.start();
+    REQUIRE(pumpUntil([&] { return shared.screen() == Screen::Details && other.screen() == Screen::Details; }));
+
+    ActivationComponent component(shared);
+    component.appear(); // the user opened the license view
+    pumpFor(200);
+
+    other.clearLicense();
+    REQUIRE(pumpUntil([&] { return shared.screen() == Screen::Welcome; }, 6000));
+    CHECK(component.isVisible());
+
+    auto again = default_claims();
+    again["id"] = "activation-456";
+    fx.seedStored(fx.token(again));
+    REQUIRE(pumpUntil([&] { return shared.screen() == Screen::Details; }, 6000));
+    pumpFor(200);
+    CHECK(component.isVisible()); // not ours to close
+}
+
+TEST_CASE("an overlay that opened for a lock keeps the success screen of an activation in it")
+{
+    controller_fixture fx;
+    fx.config.reduceMotion = true;
+    fx.seedStored(fx.token(default_claims()));
+    ActivationController shared(fx.config, fx.makeLicensing());
+    shared.start();
+    REQUIRE(pumpUntil([&] { return shared.screen() == Screen::Details; }));
+
+    ActivationComponent component(shared);
+    pumpFor(200);
+    shared.clearLicense();
+    REQUIRE(pumpUntil([&] { return component.isVisible(); }));
+
+    // The user activates right there (offline, so no network is involved).
+    auto claims = default_claims();
+    claims["method"] = "Offline";
+    auto responseFile = fx.licenseFile.getParentDirectory().getChildFile(juce::Uuid().toString() + ".mb");
+    responseFile.replaceWithText(fx.token(claims));
+    shared.setOfflineResponse(responseFile);
+    shared.activateOffline();
+    REQUIRE(pumpUntil([&] { return shared.screen() == Screen::Success; }));
+    pumpFor(200);
+    CHECK(component.isVisible()); // "Open {product}" is the user's to press
+    responseFile.deleteFile();
+}
+
+TEST_CASE("autoPresentOnLock=false leaves presenting to the host")
+{
+    controller_fixture fx;
+    fx.config.reduceMotion = true;
+    fx.config.autoPresentOnLock = false;
+    fx.seedStored(fx.token(default_claims()));
+    ActivationController shared(fx.config, fx.makeLicensing());
+    shared.start();
+    REQUIRE(pumpUntil([&] { return shared.screen() == Screen::Details; }));
+
+    ActivationComponent component(shared);
+    std::vector<bool> reports;
+    component.onActivationChanged = [&](bool active) { reports.push_back(active); };
+    REQUIRE(pumpUntil([&] { return reports.size() == 1; }));
+
+    shared.clearLicense();
+    REQUIRE(pumpUntil([&] { return reports.size() == 2; }));
+    CHECK_FALSE(reports.back()); // the host still hears about it
+    CHECK_FALSE(component.isVisible());
+}
+
+TEST_CASE("a lock does not replay the appear animation on an overlay already up")
+{
+    controller_fixture fx; // motion on: appear() would restart the fade from 0
+    ActivationController shared(fx.config, fx.makeLicensing());
+    shared.start();
+    REQUIRE(pumpUntil([&] { return shared.screen() == Screen::Welcome; }));
+
+    ActivationComponent component(shared);
+    component.setVisible(true); // as with addAndMakeVisible
+    std::optional<float> alphaAtReport;
+    component.onActivationChanged = [&](bool) { alphaAtReport = component.getAlpha(); };
+    REQUIRE(pumpUntil([&] { return alphaAtReport.has_value(); }));
+    CHECK(*alphaAtReport == doctest::Approx(1.0f));
+    CHECK(component.isVisible());
 }
 
 TEST_CASE("LicenseGate gates click-free: pass-through licensed, ramp to silence unlicensed")

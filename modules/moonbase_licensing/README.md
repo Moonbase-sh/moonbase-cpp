@@ -137,7 +137,10 @@ if (! activation->controller().license().has_value())
 richer gating, and `onActivationChanged` fires whenever it changes (not on screen
 navigation). The controller re-checks the license by itself: a trial that ends while the
 plugin is open locks then, and an activation in another plugin instance or process is
-picked up within a couple of seconds.
+picked up within a couple of seconds. Whenever the plugin locks, the modal presents
+itself again, even if the user closed it earlier (`config.autoPresentOnLock`). It says
+why (deactivated, expired, no longer valid, or not verified in time), leaves the host's
+keyboard focus alone, and closes again if the license comes back from another instance.
 
 ## Going further
 
