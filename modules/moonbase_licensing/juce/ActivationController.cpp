@@ -261,6 +261,7 @@ void ActivationController::start()
     if (! ensureReady())
         return;
 
+    lockReason_ = LockReason::None;
     setScreen(Screen::Loading);
 
     // Watch the license from here on (see the header). Only a file store has a
@@ -283,6 +284,7 @@ void ActivationController::start()
         std::optional<moonbase::license> result;
         std::optional<moonbase::license> expiredTrial;
         bool deleteExpiredOffline = false;
+        auto reason = LockReason::None; // why a stored license didn't load
         juce::String diag;
         try
         {
@@ -306,6 +308,7 @@ void ActivationController::start()
                     // could accept) from a genuinely foreign machine, so quoting
                     // it beats asserting either.
                     diag = juce::String("Stored token is not bound to this device: ") + ex.what();
+                    reason = LockReason::Invalid;
                 }
                 catch (const moonbase::insufficient_device_identity_error& ex)
                 {
@@ -321,6 +324,7 @@ void ActivationController::start()
                 {
                     // Tampered / unparseable -> locked, but left on disk.
                     diag = juce::String("Stored token rejected: ") + ex.what();
+                    reason = LockReason::Invalid;
                 }
 
                 if (peek && peek->method == moonbase::activation_method::offline)
@@ -331,6 +335,7 @@ void ActivationController::start()
                     {
                         deleteExpiredOffline = true; // remove the dead file below
                         diag = "Stored offline license has expired; removing it.";
+                        reason = LockReason::Expired;
                     }
                     else
                         result = std::move(peek);
@@ -350,16 +355,28 @@ void ActivationController::start()
                         // trial routes to the Expired screen (using the token we
                         // have for display); the plugin stays locked either way.
                         diag = juce::String("Stored license has expired: ") + ex.what();
+                        reason = LockReason::Expired;
                         if (peek->trial)
                             expiredTrial = std::move(peek);
                         else
                             result = std::nullopt;
                     }
+                    catch (const moonbase::license_invalid_error& ex)
+                    {
+                        // Refused for good: revoked, store closed -> locked.
+                        diag = juce::String("Re-validating stored license failed: ") + describeError(ex);
+                        reason = LockReason::Invalid;
+                    }
+                    catch (const moonbase::storage_error& ex)
+                    {
+                        // Our own file lock failed; nothing to tell the customer.
+                        diag = juce::String("Re-validating stored license failed: ") + describeError(ex);
+                    }
                     catch (const std::exception& ex)
                     {
-                        // Invalid / unreachable-past-grace -> locked.
+                        // Unreachable past the grace period -> locked.
                         diag = juce::String("Re-validating stored license failed: ") + describeError(ex);
-                        result = std::nullopt;
+                        reason = LockReason::Unverified;
                     }
                 }
             }
@@ -370,7 +387,8 @@ void ActivationController::start()
             result = std::nullopt;
         }
 
-        juce::MessageManager::callAsync([safe, generation, result, expiredTrial, deleteExpiredOffline, diag]() mutable
+        juce::MessageManager::callAsync([safe, generation, result, expiredTrial, deleteExpiredOffline, reason,
+                                         diag]() mutable
         {
             auto* self = safe.get();
             if (self == nullptr || generation != self->generation_.load())
@@ -381,8 +399,10 @@ void ActivationController::start()
                 self->deleteStoredLicense();
             if (expiredTrial)
                 self->showTrialExpired(std::move(*expiredTrial));
-            else
+            else if (result)
                 self->applyLicense(std::move(result));
+            else
+                self->lock(reason);
         });
     });
 }
@@ -614,7 +634,8 @@ void ActivationController::refreshLicense(bool force, std::function<void(bool)> 
                 self->emitDiagnostic(pastGrace
                                          ? "Couldn't re-validate within the offline grace period: " + diag
                                          : "License rejected on re-validation: " + diag);
-                self->applyLicense(std::nullopt);
+                self->lock(expired ? LockReason::Expired
+                                   : rejected ? LockReason::Invalid : LockReason::Unverified);
                 if (onComplete) onComplete(false);
             }
             else
@@ -888,7 +909,7 @@ void ActivationController::deactivate()
             {
                 case Outcome::Revoked:
                     self->deleteStoredMatching(activationId);
-                    self->applyLicense(std::nullopt);
+                    self->lock(LockReason::Deactivated);
                     break;
                 case Outcome::NotRevokable:
                     self->clearLicense();
@@ -906,7 +927,7 @@ void ActivationController::clearLicense()
 {
     ++generation_;
     deleteStoredLicense();
-    applyLicense(std::nullopt);
+    lock(LockReason::Deactivated);
 }
 
 void ActivationController::deleteStoredLicense()
@@ -1046,6 +1067,7 @@ void ActivationController::onLicenseFileRemoved()
         // lands, it brings a license of its own.
         emitDiagnostic("The license file was removed by another instance or process; locking. "
                        "The activation in progress carries on.");
+        lockReason_ = LockReason::Deactivated;
         setLicense(std::nullopt);
         sendChangeMessage();
         return;
@@ -1053,7 +1075,7 @@ void ActivationController::onLicenseFileRemoved()
 
     emitDiagnostic("The license file was removed by another instance or process; locking.");
     endActivationFlows(); // drop in-flight work for the removed license (a refresh, a deactivation)
-    applyLicense(std::nullopt);
+    lock(LockReason::Deactivated);
 }
 
 void ActivationController::adoptStoredLicense(moonbase::license stored)
@@ -1113,6 +1135,7 @@ void ActivationController::checkLicenseDeadlines()
         emitDiagnostic("The license ran out while an activation was in progress; locking.");
         if (license_->trial)
             expiredTrial_ = license_;
+        lockReason_ = expired ? LockReason::Expired : LockReason::Unverified;
         setLicense(std::nullopt);
         sendChangeMessage();
         return;
@@ -1125,7 +1148,7 @@ void ActivationController::checkLicenseDeadlines()
         emitDiagnostic("The offline license has expired; removing it.");
         ++generation_;
         deleteStoredLicense();
-        applyLicense(std::nullopt);
+        lock(LockReason::Expired);
         return;
     }
 
@@ -1177,7 +1200,7 @@ void ActivationController::showDetails()
 }
 
 void ActivationController::setPreviewState(Screen screen, std::optional<moonbase::license> license,
-                                           juce::String previewError, bool busy)
+                                           juce::String previewError, bool busy, LockReason lockReason)
 {
     ++generation_; // drop any in-flight start()/async continuation
     stopTimer();
@@ -1196,6 +1219,7 @@ void ActivationController::setPreviewState(Screen screen, std::optional<moonbase
         setLicense(std::move(license));
         expiredTrial_.reset();
     }
+    lockReason_ = lockReason;
     // Route the preview error to the field the target screen actually shows: the
     // Offline view reads offlineError(); the others (Welcome/Error, Details) read
     // statusMessage().
@@ -1246,6 +1270,8 @@ void ActivationController::setScreen(Screen newScreen, const juce::String& messa
 void ActivationController::setLicense(std::optional<moonbase::license> value)
 {
     license_ = std::move(value);
+    if (license_)
+        lockReason_ = LockReason::None;
     // Publish for the audio thread (this always runs on the message thread).
     licensed_.store(license_.has_value(), std::memory_order_release);
     notifyLicenseChange();
@@ -1311,11 +1337,18 @@ void ActivationController::applyLicense(std::optional<moonbase::license> value)
     setScreen(dest);
 }
 
+void ActivationController::lock(LockReason reason)
+{
+    lockReason_ = reason;
+    applyLicense(std::nullopt);
+}
+
 void ActivationController::showTrialExpired(moonbase::license expired)
 {
     // The plugin must stay locked, so license_ stays empty; the ended trial is
     // held separately for the Expired screen to show the product + end date.
     expiredTrial_ = std::move(expired);
+    lockReason_ = LockReason::Expired;
     setLicense(std::nullopt);
     statusMessage_.clear();
     setScreen(Screen::Expired);

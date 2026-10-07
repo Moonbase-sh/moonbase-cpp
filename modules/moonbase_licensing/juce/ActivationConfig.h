@@ -50,6 +50,30 @@ struct ActivationStrings
     juce::String welcomeBody;      // default: "Unlock the full plugin through your {manufacturerName} account."
     juce::String activateOnline;   // default: "Activate online"
     juce::String activateOffline;  // default: "No internet? Activate offline"
+
+    // Shown on the welcome screen instead of welcomeTitle / welcomeBody when the
+    // plugin has lost its license, one pair per LockReason, so the customer
+    // learns why it locked.
+    juce::String deactivatedTitle;       // default: "Deactivated on this computer"
+    juce::String deactivatedBody;        // default: "{productName} no longer has an active license here. Activate it again to keep using it."
+    juce::String licenseExpiredTitle;    // default: "Your license has expired"
+    juce::String licenseExpiredBody;     // default: "Renew your {productName} license in your {manufacturerName} account, then activate it again."
+    juce::String licenseInvalidTitle;    // default: "Your license is no longer valid"
+    juce::String licenseInvalidBody;     // default: "{manufacturerName} no longer accepts this license on this computer. Activate again, or contact {manufacturerName} if this seems wrong."
+    juce::String licenseUnverifiedTitle; // default: "Couldn't verify your license"
+    juce::String licenseUnverifiedBody;  // default: "{productName} has gone too long without checking its license online. Connect to the internet and activate again."
+};
+
+// Why the plugin lost its license, so a screen can say so. Read it from
+// ActivationController::lockReason(); the built-in welcome screen shows the
+// matching ActivationStrings copy.
+enum class LockReason
+{
+    None,        // licensed, or nothing to explain (never activated here)
+    Deactivated, // deactivated or forgotten on this computer, here or in another instance
+    Expired,     // the license reached its end date (a trial also gets the Expired screen)
+    Invalid,     // Moonbase no longer accepts it: revoked, store closed, or bound to another device
+    Unverified,  // it couldn't be checked online within onlineGracePeriod
 };
 
 struct ActivationConfig
@@ -123,6 +147,12 @@ struct ActivationConfig
                                    // (a11y + snapshot tests); the activating spinner still turns
     bool overlayBackdrop = false;  // dim the host behind the panel (modal over a plugin) instead of a full opaque backdrop
     int trialLengthDays = 14;      // trial length shown on the Trial / Expired screens (trials are granted by the backend, not started from the UI)
+
+    // Present the overlay (ActivationComponent::appear()) whenever the plugin is
+    // locked: when it opens without a license, and whenever the license is lost
+    // while it is open (expired, revoked, or deactivated here or in another
+    // instance). Set false to decide yourself, from onActivationChanged.
+    bool autoPresentOnLock = true;
 
     // When a validated license reports a newer released version than
     // applicationVersion (the p:rel claim), show the "Update available" screen and
@@ -273,6 +303,52 @@ struct ActivationConfig
     {
         return strings.activateOffline.isNotEmpty() ? strings.activateOffline
                                                     : juce::String("No internet? Activate offline");
+    }
+    // The welcome screen's title and body while locked for `reason`; empty for
+    // LockReason::None, where the regular welcome copy applies.
+    [[nodiscard]] juce::String lockTitleText(LockReason reason) const
+    {
+        const auto pick = [](const juce::String& custom, const char* fallback)
+        { return custom.isNotEmpty() ? custom : juce::String(fallback); };
+        switch (reason)
+        {
+            case LockReason::Deactivated: return pick(strings.deactivatedTitle, "Deactivated on this computer");
+            case LockReason::Expired:     return pick(strings.licenseExpiredTitle, "Your license has expired");
+            case LockReason::Invalid:     return pick(strings.licenseInvalidTitle, "Your license is no longer valid");
+            case LockReason::Unverified:  return pick(strings.licenseUnverifiedTitle, "Couldn't verify your license");
+            case LockReason::None:        break;
+        }
+        return {};
+    }
+    [[nodiscard]] juce::String lockBodyText(LockReason reason) const
+    {
+        const auto product = resolvedProductName();
+        const auto account = brandAccountName();
+        switch (reason)
+        {
+            case LockReason::Deactivated:
+                return strings.deactivatedBody.isNotEmpty()
+                           ? strings.deactivatedBody
+                           : product + " no longer has an active license here. Activate it again to keep using it.";
+            case LockReason::Expired:
+                return strings.licenseExpiredBody.isNotEmpty()
+                           ? strings.licenseExpiredBody
+                           : "Renew your " + product + " license in your " + account
+                                 + " account, then activate it again.";
+            case LockReason::Invalid:
+                return strings.licenseInvalidBody.isNotEmpty()
+                           ? strings.licenseInvalidBody
+                           : account + " no longer accepts this license on this computer. Activate again, or contact "
+                                 + account + " if this seems wrong.";
+            case LockReason::Unverified:
+                return strings.licenseUnverifiedBody.isNotEmpty()
+                           ? strings.licenseUnverifiedBody
+                           : product + " has gone too long without checking its license online. "
+                                       "Connect to the internet and activate again.";
+            case LockReason::None:
+                break;
+        }
+        return {};
     }
     [[nodiscard]] juce::URL activationUrlResolved() const
     {

@@ -16,7 +16,6 @@ namespace compat = moonbase::juce_integration::compat;
 
 using moonbase::juce_integration::ActivationComponent;
 using moonbase::juce_integration::ActivationConfig;
-using Screen = moonbase::juce_integration::ActivationController::Screen;
 
 static ActivationConfig makeConfig()
 {
@@ -83,20 +82,11 @@ public:
         licenseButton.onClick = [this] { showActivation(); };
         addAndMakeVisible(licenseButton);
 
+        // Added hidden: the overlay presents itself whenever the app is locked
+        // (at launch, or when the license is lost later), and the License button
+        // opens it on demand.
         activation = std::make_unique<ActivationComponent>(makeConfig());
         activation->onClose = [this] { hideActivation(); }; // "Open {product}", "Continue" and the close (X) dismiss
-        activation->onActivationChanged = [this](bool activated)
-        {
-            // On launch, lock behind the modal only if not already licensed.
-            // Once the initial check settles, the License button drives it.
-            if (! initialCheckSettled
-                && activation->controller().screen() != Screen::Loading)
-            {
-                initialCheckSettled = true;
-                if (! activated)
-                    showActivation();
-            }
-        };
         addChildComponent(*activation);
         setSize(760, 520);
     }
@@ -145,7 +135,6 @@ private:
     std::vector<std::unique_ptr<juce::Label>> labels;
     juce::TextButton licenseButton;
     std::unique_ptr<ActivationComponent> activation;
-    bool initialCheckSettled = false;
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(PluginEditor)
 };

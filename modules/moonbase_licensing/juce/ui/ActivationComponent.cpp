@@ -685,14 +685,20 @@ public:
                   38.0f, 17.0f);
         r.removeFromTop(24);
 
+        // Locked after having a license: say why instead of the first-run copy.
+        const auto reason = controller.lockReason();
+        const bool explain = reason != LockReason::None;
+
         g.setColour(lnf.palette.textPrimary);
         g.setFont(lnf.heading(27.0f));
-        g.drawFittedText(cfg.welcomeTitleText(), r.removeFromTop(34), Justification::topLeft, 1);
+        g.drawFittedText(explain ? cfg.lockTitleText(reason) : cfg.welcomeTitleText(), r.removeFromTop(34),
+                         Justification::topLeft, 1);
         r.removeFromTop(8);
 
         g.setColour(lnf.palette.textSecondary);
         g.setFont(lnf.body(14.0f));
-        g.drawFittedText(cfg.welcomeBodyText(), r.removeFromTop(46), Justification::topLeft, 3, 1.0f);
+        g.drawFittedText(explain ? cfg.lockBodyText(reason) : cfg.welcomeBodyText(), r.removeFromTop(46),
+                         Justification::topLeft, 3, 1.0f);
 
         // Surface activation errors here (the Error screen reuses this view).
         if (controller.statusMessage().isNotEmpty())
@@ -2356,23 +2362,45 @@ struct ActivationComponent::Impl : public juce::ChangeListener,
     }
 
     // The side effects the host sees: the close button (it depends on
-    // owner.onClose), an update auto-present, and onActivationChanged.
+    // owner.onClose), an update or lock auto-present, and onActivationChanged.
     void notifyHost()
     {
         if (std::exchange(autoPresentPending, false))
-            appear();
+            present();
 
         updateCloseButton();
         owner.repaint();
+
+        if (controller.screen() == ActivationController::Screen::Loading)
+            return;
+
+        // Lock the host behind the overlay once the settled state is unlicensed,
+        // then again each time a license is lost, whatever the reason. Not on
+        // every change while still locked, so the host keeps control in between.
+        const auto& license = controller.license();
+        if (controller.config().autoPresentOnLock && ! license && licensedSeen != false)
+            presentedForLock = present() || presentedForLock;
+
+        // A license came back that wasn't activated in this overlay (another
+        // instance, or the host): an overlay that only opened for the lock gets
+        // out of the way again. One the user activated in keeps its success
+        // screen, and an update that just presented itself stays up.
+        if (license && presentedForLock)
+        {
+            presentedForLock = false;
+            const auto screen = controller.screen();
+            if (screen == ActivationController::Screen::Details || screen == ActivationController::Screen::Trial)
+                dismiss();
+        }
+        licensedSeen = license.has_value();
 
         // Report the settled state once, then only real license changes: never
         // screen navigation, busy flips or download progress. Counted as reported
         // only once a callback has received it, so a late-wired host still hears
         // the current state on the next change.
-        if (controller.screen() == ActivationController::Screen::Loading || ! owner.onActivationChanged)
+        if (! owner.onActivationChanged)
             return;
 
-        const auto& license = controller.license();
         auto token = license ? std::optional<std::string>(license->token) : std::nullopt;
         if (activationReported && token == reportedToken)
             return;
@@ -2455,10 +2483,17 @@ struct ActivationComponent::Impl : public juce::ChangeListener,
             glowAnim->start();
     }
 
+    // Keyboard focus moves into the overlay only when it is already in this
+    // window: the user is working in the plugin (or just clicked its License
+    // button), so keys must not reach the controls the overlay now covers. When
+    // it is elsewhere (the DAW), taking it would make this window the key
+    // window and pull the host's shortcuts, like the space bar, away from it.
     void appear()
     {
+        auto* peer = owner.getPeer();
+        const bool focusIsHere = peer != nullptr && peer->isFocused();
         owner.setVisible(true);
-        owner.toFront(true);
+        owner.toFront(focusIsHere);
         if (controller.config().reduceMotion || ! appearAnim)
         {
             appear_ = 1.0f;
@@ -2472,8 +2507,29 @@ struct ActivationComponent::Impl : public juce::ChangeListener,
         appearAnim->start();
     }
 
+    // An auto-present: appear(), but only when the overlay isn't already up
+    // (appear() restarts the fade). Mid-dismiss counts as hidden. Returns
+    // whether it presented.
+    bool present()
+    {
+        if (owner.isVisible() && appearTarget_ > 0.0f)
+            return false;
+        appear();
+        return true;
+    }
+
+    // ActivationComponent::appear(): asked for, so it stays up when a license
+    // comes back.
+    void appearOnRequest()
+    {
+        presentedForLock = false;
+        appear();
+    }
+
     void dismiss()
     {
+        presentedForLock = false;
+
         // Closing the overlay while the update screen is up returns the resting
         // screen to the license view, so re-opening (e.g. the host's License
         // button) never lands back on the update screen.
@@ -2751,6 +2807,8 @@ struct ActivationComponent::Impl : public juce::ChangeListener,
 
     // Host-facing state (notifyHost).
     bool autoPresentPending = false;
+    std::optional<bool> licensedSeen; // the last settled state, for the lock auto-present
+    bool presentedForLock = false;    // up only because the plugin locked (not asked for)
     bool activationReported = false;
     std::optional<std::string> reportedToken; // nullopt = reported as not activated
 
@@ -2779,7 +2837,7 @@ ActivationComponent::~ActivationComponent() = default;
 
 ActivationController& ActivationComponent::controller() { return impl->controller; }
 
-void ActivationComponent::appear() { impl->appear(); }
+void ActivationComponent::appear() { impl->appearOnRequest(); }
 
 void ActivationComponent::presentUpdateIfAvailable() { impl->presentUpdate(); }
 

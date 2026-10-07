@@ -56,6 +56,15 @@ public:
     // A successful activation shows an "Open {product}" button rather than
     // closing by itself; that button and the close button call onClose, so wire
     // onClose to dismiss(). While hidden the panel runs no timers.
+    //
+    // appear() moves keyboard focus into the overlay only when it is already in
+    // this window, so presenting it from a background event never pulls focus
+    // away from the host. To focus it regardless, call grabKeyboardFocus().
+    //
+    // With config.autoPresentOnLock (the default) the component also presents
+    // itself whenever the plugin is locked, so a dismissed overlay comes back
+    // when the license is lost. If the license then comes back from elsewhere
+    // (another instance), the overlay closes again on its own, without onClose.
     void appear();
     void dismiss();
 

@@ -26,6 +26,10 @@ PNG per state:
 | `01b-welcome-error` | Activation request failed (error message) |
 | `01c-welcome-error-long` | The longest error copy the welcome view shows (two lines) |
 | `01d-welcome-error-rejected` | A rejected activation (fixed copy, never the SDK's reason) |
+| `01e-welcome-deactivated` | Locked: deactivated on this computer, here or in another instance |
+| `01f-welcome-license-expired` | Locked: a subscription or offline license reached its end date |
+| `01g-welcome-license-invalid` | Locked: Moonbase no longer accepts the license (the longest lock copy) |
+| `01h-welcome-license-unverified` | Locked: not checked online within the grace period |
 | `02-activating` | Browser activation in progress (spinner + device chip) |
 | `03-success` | Just activated (license card) |
 | `04-offline-empty` | Offline flow, nothing chosen yet |
@@ -47,6 +51,7 @@ PNG per state:
 | `14-update-gated` | Update the license can't download (Unlock CTA) |
 | `15-theme-ember-welcome` | Welcome, "Ember" theme (warm near-black, amber, monospaced) |
 | `15b-theme-ember-welcome-error` | The longest welcome error copy in Ember's monospaced face, where it runs widest |
+| `15c-theme-ember-welcome-license-invalid` | The longest lock-reason copy in Ember's monospaced face |
 | `16-theme-ember-activating` | Browser activation, Ember (spinner arc + track) |
 | `17-theme-ember-trial` | Trial, Ember (pill, progress gradient, feature list) |
 | `18-theme-daylight-success` | Just activated, "Daylight" theme (light) |

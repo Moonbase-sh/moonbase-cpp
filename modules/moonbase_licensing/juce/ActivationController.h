@@ -178,13 +178,14 @@ public:
     void showOffline();
     void showDetails();
 
-    // Force a screen (with an optional synthetic license / offline error) with no
-    // network and no stored state. For previews, design iteration and snapshot
-    // tests — not part of the normal activation flow.
+    // Force a screen (with an optional synthetic license / offline error / lock
+    // reason) with no network and no stored state. For previews, design iteration
+    // and snapshot tests, not part of the normal activation flow.
     void setPreviewState(Screen screen,
                          std::optional<moonbase::license> license = std::nullopt,
                          juce::String previewError = {},
-                         bool busy = false);
+                         bool busy = false,
+                         LockReason lockReason = LockReason::None);
 
     // Pin the wall clock used for trial-countdown math (trialDaysRemaining), so
     // previews and snapshot tests render a fixed number of days regardless of the
@@ -212,6 +213,11 @@ public:
     // The ended trial backing the Expired screen. license() stays empty in this
     // state (the plugin is locked); this is for display only.
     [[nodiscard]] const std::optional<moonbase::license>& expiredTrial() const noexcept { return expiredTrial_; }
+    // Why the license was lost: set when a license is (or a stored one turns out
+    // to be) deactivated, expired, rejected or unverifiable, and back to None as
+    // soon as a license is loaded. The built-in welcome screen explains it; read
+    // it from onLicenseChanged(false) to do the same in a custom UI.
+    [[nodiscard]] LockReason lockReason() const noexcept { return lockReason_; }
     [[nodiscard]] juce::String statusMessage() const { return statusMessage_; }
     [[nodiscard]] juce::String offlineError() const { return offlineError_; }
     [[nodiscard]] juce::String deviceLabel() const { return deviceLabel_; }
@@ -283,6 +289,7 @@ private:
     void setScreen(Screen newScreen, const juce::String& message = {});
     void setLicense(std::optional<moonbase::license> value); // updates license_ + licensedFlag()
     void applyLicense(std::optional<moonbase::license> value);
+    void lock(LockReason reason); // drop the license and route to Welcome, saying why
     void showTrialExpired(moonbase::license expired); // locks + routes to the Expired screen
     [[nodiscard]] Screen screenForCurrentLicense() const; // Welcome / Trial / Details
     void onActivationFulfilled(moonbase::license value);
@@ -325,6 +332,7 @@ private:
     std::optional<moonbase::license> license_;
     std::atomic<bool> licensed_{false}; // mirror of license_.has_value() for the audio thread
     std::optional<moonbase::license> expiredTrial_; // display-only backing for the Expired screen
+    LockReason lockReason_ = LockReason::None;
     std::optional<moonbase::activation_request> pendingRequest_;
     std::optional<std::chrono::system_clock::time_point> previewClock_; // pinned "now" for previews/snapshots (trialDaysRemaining)
 

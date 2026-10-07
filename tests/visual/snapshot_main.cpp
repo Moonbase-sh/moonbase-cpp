@@ -448,6 +448,19 @@ int main(int argc, char* argv[])
                   { c.setPreviewState(Screen::Error, {},
                                       "Activation was rejected. If this keeps happening, contact the developer."); });
 
+    // Locked after having a license: the welcome copy says why, one per reason.
+    writeSnapshot(outDir, "01e-welcome-deactivated", [](ActivationController& c)
+                  { c.setPreviewState(Screen::Welcome, {}, {}, false, LockReason::Deactivated); });
+
+    writeSnapshot(outDir, "01f-welcome-license-expired", [](ActivationController& c)
+                  { c.setPreviewState(Screen::Welcome, {}, {}, false, LockReason::Expired); });
+
+    writeSnapshot(outDir, "01g-welcome-license-invalid", [](ActivationController& c)
+                  { c.setPreviewState(Screen::Welcome, {}, {}, false, LockReason::Invalid); });
+
+    writeSnapshot(outDir, "01h-welcome-license-unverified", [](ActivationController& c)
+                  { c.setPreviewState(Screen::Welcome, {}, {}, false, LockReason::Unverified); });
+
     writeSnapshot(outDir, "02-activating", [](ActivationController& c)
                   { c.setPreviewState(Screen::BrowserWait); });
 
@@ -591,6 +604,12 @@ int main(int argc, char* argv[])
                       { c.setPreviewState(Screen::Error, {},
                                           "Activation isn't available for this product right now. "
                                           "If this keeps happening, contact the developer."); },
+                      emberTheme());
+
+        // The longest lock-reason copy, monospaced.
+        writeSnapshot(outDir, "15c-theme-ember-welcome-license-invalid",
+                      [](ActivationController& c)
+                      { c.setPreviewState(Screen::Welcome, {}, {}, false, LockReason::Invalid); },
                       emberTheme());
 
         writeSnapshot(outDir, "16-theme-ember-activating",
