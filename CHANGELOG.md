@@ -1,3 +1,10 @@
+# [4.9.0](https://github.com/Moonbase-sh/moonbase-cpp/compare/v4.8.0...v4.9.0) (2026-10-07)
+
+
+### Features
+
+* **juce:** present the activation overlay when the plugin locks, and say why ([#39](https://github.com/Moonbase-sh/moonbase-cpp/issues/39)) ([8d29297](https://github.com/Moonbase-sh/moonbase-cpp/commit/8d29297f34b4513d6281b72323f7e6e0c133405a))
+
 # [4.8.0](https://github.com/Moonbase-sh/moonbase-cpp/compare/v4.7.1...v4.8.0) (2026-10-05)
 
 
