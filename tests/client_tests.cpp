@@ -7,6 +7,7 @@
 #include <optional>
 #include <string>
 #include <thread>
+#include <type_traits>
 
 #include <nlohmann/json.hpp>
 
@@ -933,7 +934,12 @@ const http_response store_closed{
 
 } // namespace
 
-TEST_CASE("a closed store is a definitive answer on every endpoint")
+// Says nothing against the license, so code that deletes the stored license on
+// a license_invalid_error must not see it.
+static_assert(!std::is_base_of_v<license_invalid_error, store_closed_error>);
+static_assert(!std::is_base_of_v<api_error, store_closed_error>);
+
+TEST_CASE("every endpoint reports a closed store as store_closed_error")
 {
     const auto expect_store_closed = [](const std::function<void()>& call) {
         try {
@@ -942,8 +948,6 @@ TEST_CASE("a closed store is a definitive answer on every endpoint")
         } catch (const store_closed_error& ex) {
             CHECK(std::string(ex.what()) == "This store has closed.");
             CHECK(ex.type() == error_type::store_closed);
-            // A license_invalid_error, so grace and existing catch sites treat it as final.
-            CHECK(dynamic_cast<const license_invalid_error*>(&ex) != nullptr);
         }
     };
 
@@ -991,8 +995,10 @@ TEST_CASE("a 410 that is not the API's StoreClosed stays retryable")
     try {
         (void)fixture.client.validate_token_online("token");
         FAIL("expected validation to throw");
-    } catch (const license_invalid_error&) {
+    } catch (const store_closed_error&) {
         FAIL("only the API's own StoreClosed answer is final");
+    } catch (const license_invalid_error&) {
+        FAIL("a bare 410 is no verdict on the license");
     } catch (const api_error& ex) {
         CHECK(ex.status_code() == 410);
     }

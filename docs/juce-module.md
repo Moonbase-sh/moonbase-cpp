@@ -259,7 +259,7 @@ you add hidden with `addChildComponent` shows when it is needed.
 - **It says why.** The welcome screen swaps its title and body for the reason, from
   `controller.lockReason()`: `Deactivated` (here or in another instance), `Expired` (a
   subscription or offline license reached its end date), `Invalid` (Moonbase no longer
-  accepts it: revoked, store closed, or bound to another device) or `Unverified` (not
+  accepts it: revoked, or bound to another device) or `Unverified` (not
   checked online within `onlineGracePeriod`). A trial that ends gets the **Trial
   expired** screen instead. The copy is in `config.strings` (`deactivatedTitle`,
   `licenseExpiredBody`, and so on), and `lockReason()` goes back to `None` once a
@@ -507,7 +507,7 @@ non-fatal: the current license is kept and the reason goes to `onDiagnostic`. So
 limiting, a server error, and a response that didn't come from Moonbase (a captive
 portal's sign-in page), as long as the license is within `onlineGracePeriod` of its last
 successful check. A definitive rejection is not: when the server says the license
-was revoked or has lapsed, or that the store has closed, the controller drops it
+was revoked or has lapsed, the controller drops it
 and shows the welcome screen, and `onActivationChanged` fires. The same happens when the
 grace period has run out and Moonbase still can't be reached. The license file stays, as it
 does when `start()` meets the same answer, so the next launch checks it again. Offline

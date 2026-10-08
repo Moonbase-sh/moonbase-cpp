@@ -363,7 +363,7 @@ void ActivationController::start()
                     }
                     catch (const moonbase::license_invalid_error& ex)
                     {
-                        // Refused for good: revoked, store closed -> locked.
+                        // Refused for good, such as revoked -> locked.
                         diag = juce::String("Re-validating stored license failed: ") + describeError(ex);
                         reason = LockReason::Invalid;
                     }
@@ -568,8 +568,7 @@ void ActivationController::refreshLicense(bool force, std::function<void(bool)> 
         catch (const moonbase::license_invalid_error& ex)
         {
             // The server refused the license for good: it was revoked or
-            // deleted, or the store has closed. Also not a network blip, so this
-            // locks too.
+            // deleted. Also not a network blip, so this locks too.
             rejected = true;
             diag = juce::String::fromUTF8(ex.what());
         }
@@ -875,8 +874,9 @@ void ActivationController::deactivate()
         juce::String diag;
         juce::String userMessage;
         // A license_invalid_error here means the server refused the token for good
-        // (it can't be revoked, or the store has closed), so forgetting it locally
-        // is all that is left to do.
+        // (it can't be revoked), so forgetting it locally is all that is left to
+        // do. On a closed store the license stays: this device could never be
+        // activated again.
         try
         {
             licensing->revoke_activation(token);
@@ -889,7 +889,9 @@ void ActivationController::deactivate()
             outcome = Outcome::Unreachable;
             diag = describeError(ex);
             const auto failure = classifyFailure(ex);
-            if (failure == Failure::Busy)
+            if (failure == Failure::StoreClosed)
+                userMessage = "This store has closed, so this computer can't be deactivated.";
+            else if (failure == Failure::Busy)
                 userMessage = "Moonbase couldn't deactivate right now. Try again in a minute.";
             else if (failure == Failure::Unexpected)
                 userMessage = unexpectedFailure("Couldn't deactivate", ex);

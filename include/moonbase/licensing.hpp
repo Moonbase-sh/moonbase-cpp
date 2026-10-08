@@ -218,6 +218,7 @@ public:
         } catch (const license_expired_error&) {
             throw;
         } catch (const std::exception&) {
+            // store_closed_error included: it is not signed, so it relaxes nothing.
             if (age <= options_.online_validation_grace_period) {
                 return freshest;
             }

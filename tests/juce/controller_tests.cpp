@@ -694,6 +694,28 @@ TEST_CASE("deactivate() while Moonbase is rate limiting says to try again shortl
     CHECK(fx.licenseFile.existsAsFile());
 }
 
+TEST_CASE("deactivate() keeps the license when the store has closed")
+{
+    controller_fixture fx;
+    fx.seedStored(fx.token(default_claims()));
+    ActivationController controller(fx.config, fx.makeLicensing());
+    controller.start();
+    REQUIRE(pumpUntil([&] { return controller.screen() == Screen::Details; }));
+
+    // The seat can't be freed, and nothing could be activated again, so
+    // forgetting the license would only take it away from the buyer.
+    fx.transport->responses.push_back(moonbase::http_response{
+        410, {}, R"({"title":"Store closed","status":410,"detail":"This store has closed.","errorType":"StoreClosed"})"});
+    controller.deactivate();
+
+    REQUIRE(pumpUntil([&] { return ! controller.isBusy(); }));
+    CHECK(controller.screen() == Screen::Details);
+    REQUIRE(controller.license().has_value());
+    CHECK(controller.licensedFlag().load());
+    CHECK(controller.statusMessage().contains("This store has closed"));
+    CHECK(fx.licenseFile.existsAsFile());
+}
+
 //==============================================================================
 // Offline activation flow (machine file out, license file in)
 //==============================================================================
@@ -1187,8 +1209,6 @@ TEST_CASE("refreshLicense locks when the server rejects the license for good")
          moonbase::http_response{400, {}, R"({"title":"Invalid state","detail":"License has expired","status":400,"errorType":"LicenseExpired"})"}},
         {"license no longer active",
          moonbase::http_response{400, {}, R"({"title":"Invalid state","detail":"License is no longer active","status":400})"}},
-        {"store closed",
-         moonbase::http_response{410, {}, R"({"title":"Store closed","status":410,"detail":"This store has closed.","errorType":"StoreClosed"})"}},
         {"activation revoked",
          moonbase::http_response{400, {}, R"({"title":"Not allowed","detail":"License has been revoked","status":400,"errorType":"LicenseActivationRevoked"})"}},
     };
@@ -1218,6 +1238,88 @@ TEST_CASE("refreshLicense locks when the server rejects the license for good")
         // A lapsed subscription has ended; everything else was refused.
         CHECK(controller.lockReason()
               == (juce::String(entry.first) == "subscription lapsed" ? LockReason::Expired : LockReason::Invalid));
+    }
+}
+
+namespace {
+const moonbase::http_response storeClosed{
+    410, {}, R"({"title":"Store closed","status":410,"detail":"This store has closed.","errorType":"StoreClosed"})"};
+} // namespace
+
+TEST_CASE("start() takes the offline license a closed store answers with, and never asks again")
+{
+    controller_fixture fx;
+    auto online = default_claims();
+    online.erase("exp");                                    // bought outright
+    online["validated"] = now_seconds() - 60 * 60 * 24 * 365; // far past the grace period
+    fx.seedStored(fx.token(online));
+
+    // The same license as an offline one for this device, signed with the store's key.
+    auto offline = online;
+    offline["method"] = "Offline";
+    offline["validated"] = now_seconds();
+    offline.erase("p:rel");
+    const auto offlineToken = fx.token(offline);
+    fx.transport->responses.push_back(moonbase::http_response{200, {}, offlineToken});
+
+    ActivationController controller(fx.config, fx.makeLicensing());
+    controller.start();
+
+    REQUIRE(pumpUntil([&] { return settled(controller); }));
+    CHECK(controller.screen() == Screen::Details);
+    REQUIRE(controller.license().has_value());
+    CHECK(controller.license()->method == moonbase::activation_method::offline);
+    CHECK(controller.lockReason() == LockReason::None);
+    CHECK(fx.store->load_local_license()->token == offlineToken);
+
+    bool done = false;
+    controller.refreshLicense(true, [&](bool) { done = true; });
+    REQUIRE(pumpUntil([&] { return done; }));
+    CHECK(controller.license().has_value());
+    CHECK(fx.transport->requests.size() == 1); // offline licenses are not re-validated
+}
+
+TEST_CASE("a closed store's StoreClosed reads like being offline")
+{
+    SUBCASE("within the grace period, refreshLicense keeps the license")
+    {
+        controller_fixture fx;
+        auto claims = default_claims();
+        claims["trial"] = true; // a trial's validation is one of the calls a closed store refuses
+        fx.seedStored(fx.token(claims));
+        ActivationController controller(fx.config, fx.makeLicensing());
+        controller.start();
+        REQUIRE(pumpUntil([&] { return controller.screen() == Screen::Trial; }));
+
+        fx.transport->responses.push_back(storeClosed);
+        bool done = false, ok = true;
+        controller.refreshLicense(true, [&](bool refreshed) { done = true; ok = refreshed; });
+
+        REQUIRE(pumpUntil([&] { return done; }));
+        CHECK_FALSE(ok);
+        CHECK(controller.license().has_value());
+        CHECK(controller.screen() == Screen::Trial);
+        CHECK(fx.licenseFile.existsAsFile());
+    }
+
+    SUBCASE("past it, start() locks as unverified and keeps the file")
+    {
+        controller_fixture fx;
+        fx.config.onlineGracePeriod = std::chrono::seconds(20);
+        auto claims = default_claims();
+        claims["trial"] = true;
+        claims["validated"] = now_seconds() - 60;
+        fx.seedStored(fx.token(claims));
+        fx.transport->responses.push_back(storeClosed);
+
+        ActivationController controller(fx.config, fx.makeLicensing());
+        controller.start();
+
+        REQUIRE(pumpUntil([&] { return settled(controller); }));
+        CHECK(controller.screen() == Screen::Welcome);
+        CHECK_FALSE(controller.license().has_value());
+        CHECK(controller.lockReason() == LockReason::Unverified);
+        CHECK(fx.licenseFile.existsAsFile());
     }
 }
 

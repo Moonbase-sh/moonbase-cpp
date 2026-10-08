@@ -149,23 +149,81 @@ TEST_CASE("validate_token_online propagates definitive license errors regardless
     }
 }
 
-TEST_CASE("a closed store is not kept alive by the grace period")
+namespace {
+
+const http_response store_closed_response{
+    410,
+    {},
+    R"({"title":"Store closed","status":410,"detail":"This store has closed.","errorType":"StoreClosed"})"};
+
+constexpr long long one_year = 365LL * 24 * 60 * 60;
+
+} // namespace
+
+TEST_CASE("a closed store's offline license replaces the online one and is never sent again")
 {
     licensing_options options;
-    options.online_validation_grace_period = std::chrono::hours(24 * 365);
+    options.online_validation_grace_period = std::chrono::hours(1);
     facade_fixture fixture(options);
 
-    auto stale = moonbase::tests::default_claims();
-    stale["validated"] = moonbase::tests::now_seconds() - (10 * 60);
-    const auto stale_token = fixture.make_token(stale);
+    // Bought outright (no exp), and last checked a year ago.
+    auto online = moonbase::tests::default_claims();
+    online.erase("exp");
+    online["validated"] = moonbase::tests::now_seconds() - one_year;
+    const auto online_token = fixture.make_token(online);
 
-    fixture.transport->responses.push_back(http_response{
-        410,
-        {},
-        R"({"title":"Store closed","status":410,"detail":"This store has closed.","errorType":"StoreClosed"})"});
-    CHECK_THROWS_AS(
-        (void)fixture.instance.validate_token_online(stale_token),
-        store_closed_error);
+    // What a closed store answers: the same license, offline, signed with its key.
+    auto offline = online;
+    offline["method"] = "Offline";
+    offline["validated"] = moonbase::tests::now_seconds();
+    offline.erase("p:rel");
+    const auto offline_token = fixture.make_token(offline);
+    fixture.transport->responses.push_back(http_response{200, {}, offline_token});
+
+    const auto result = fixture.instance.validate_token_online(online_token);
+
+    CHECK(result.method == activation_method::offline);
+    CHECK(result.token == offline_token);
+    CHECK_FALSE(result.expires_at.has_value());
+    const auto stored = fixture.instance.store().load_local_license();
+    REQUIRE(stored.has_value());
+    CHECK(stored->token == offline_token);
+
+    // From here on it is checked on the device alone.
+    CHECK(fixture.instance.validate_token_online(offline_token).token == offline_token);
+    // An instance still holding the online token picks up the stored offline one.
+    CHECK(fixture.instance.validate_token_online(online_token).token == offline_token);
+    CHECK(fixture.transport->requests.size() == 1);
+}
+
+TEST_CASE("a closed store's StoreClosed reads like being offline")
+{
+    licensing_options options;
+    options.online_validation_grace_period = std::chrono::hours(1);
+    facade_fixture fixture(options);
+
+    SUBCASE("within the grace period, the license is kept")
+    {
+        auto claims = moonbase::tests::default_claims();
+        claims["validated"] = moonbase::tests::now_seconds() - (10 * 60);
+        const auto token = fixture.make_token(claims);
+        fixture.transport->responses.push_back(store_closed_response);
+
+        const auto result = fixture.instance.validate_token_online(token);
+
+        CHECK(result.token == token);
+        CHECK(fixture.transport->requests.size() == 1);
+    }
+
+    SUBCASE("past it, the closed store is reported, and nothing is relaxed")
+    {
+        auto claims = moonbase::tests::default_claims();
+        claims["validated"] = moonbase::tests::now_seconds() - (2 * 60 * 60);
+        const auto token = fixture.make_token(claims);
+        fixture.transport->responses.push_back(store_closed_response);
+
+        CHECK_THROWS_AS((void)fixture.instance.validate_token_online(token), store_closed_error);
+    }
 }
 
 TEST_CASE("validate_token_online rides out what only looks like a verdict within grace")

@@ -231,7 +231,7 @@ trying again can help:
 | `api_error` | No definitive answer. The API was unreachable (`status_code()` is 0), rate limited (429), failing (5xx, including the gateway's own 502 and 504), or something other than the API answered, such as a captive portal | Retry later; `retry_after()` says when, if the server did |
 | `license_invalid_error` | The API refused the license for good: a bad signature or product, or a revoked license or activation | Lock, and offer to activate again |
 | `license_expired_error` | The license has expired: a trial ended, or a subscription lapsed | Lock, and offer to buy |
-| `store_closed_error` | The merchant closed their Moonbase account, so the store answers 410 to everything. A `license_invalid_error`, as in the .NET SDK. Offline licenses keep working | Lock; nothing can be checked online again |
+| `store_closed_error` | The merchant closed their Moonbase account. No verdict on the license | Treat it like being offline |
 | `activation_request_error` | A browser activation request can never complete | Start a new request |
 | `configuration_error` | Bad options, or a device id resolver that returned an empty id | Fix the setup |
 
