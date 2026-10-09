@@ -72,7 +72,7 @@ enum class LockReason
     None,        // licensed, or nothing to explain (never activated here)
     Deactivated, // deactivated or forgotten on this computer, here or in another instance
     Expired,     // the license reached its end date (a trial also gets the Expired screen)
-    Invalid,     // Moonbase no longer accepts it: revoked, store closed, or bound to another device
+    Invalid,     // Moonbase no longer accepts it: revoked, or bound to another device
     Unverified,  // it couldn't be checked online within onlineGracePeriod
 };
 

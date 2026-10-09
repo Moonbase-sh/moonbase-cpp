@@ -117,18 +117,14 @@ public:
     }
 };
 
-// The merchant has closed their Moonbase account, so their store answers every
-// request with 410 StoreClosed: nothing about a license can be checked, activated
-// or renewed online again. Not transient, so it must not ride the offline grace
-// period. An offline license keeps working, since it never asks the server.
-//
-// Derives from license_invalid_error, as the .NET SDK's StoreClosedException
-// does, so existing catch sites and the grace-period logic treat it as the
-// definitive answer it is. Code switching on type() must add the new case.
-class store_closed_error : public license_invalid_error {
+// The merchant has closed their Moonbase account (410 StoreClosed). Not a
+// license_invalid_error: it says nothing against the license, so treat it like
+// being offline. An activated device's validation gets a signed offline license
+// from the closed store instead.
+class store_closed_error : public moonbase_error {
 public:
     explicit store_closed_error(const std::string& message)
-        : license_invalid_error(error_type::store_closed, message)
+        : moonbase_error(error_type::store_closed, message)
     {
     }
 };
