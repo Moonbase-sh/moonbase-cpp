@@ -1,3 +1,10 @@
+## [4.9.1](https://github.com/Moonbase-sh/moonbase-cpp/compare/v4.9.0...v4.9.1) (2026-10-09)
+
+
+### Bug Fixes
+
+* stop treating a closed store as an invalid license ([#40](https://github.com/Moonbase-sh/moonbase-cpp/issues/40)) ([f9d8e09](https://github.com/Moonbase-sh/moonbase-cpp/commit/f9d8e0946313702ab44f927337f53fa807637161))
+
 # [4.9.0](https://github.com/Moonbase-sh/moonbase-cpp/compare/v4.8.0...v4.9.0) (2026-10-07)
 
 
