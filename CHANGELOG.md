@@ -1,3 +1,10 @@
+## [4.9.2](https://github.com/Moonbase-sh/moonbase-cpp/compare/v4.9.1...v4.9.2) (2026-10-12)
+
+
+### Bug Fixes
+
+* cancel license lock waits on teardown and write the license atomically ([#41](https://github.com/Moonbase-sh/moonbase-cpp/issues/41)) ([afec538](https://github.com/Moonbase-sh/moonbase-cpp/commit/afec538d0d1385c5bdc51314369d022216d61e61))
+
 ## [4.9.1](https://github.com/Moonbase-sh/moonbase-cpp/compare/v4.9.0...v4.9.1) (2026-10-09)
 
 
