@@ -86,8 +86,9 @@ public:
     // with fake store / transport / fingerprint. The primary constructor builds
     // the real dependencies from the config; this one takes them ready-made.
     // cancelInFlight (optional) is invoked on teardown to interrupt a blocking
-    // request so workers can't outlive the controller (the real path wires it to
-    // the HTTP transport's cancel()).
+    // request or lock wait so workers can't outlive the controller (the real path
+    // wires it to the HTTP transports' cancel() and the store's
+    // cancel_lock_waits()).
     ActivationController(ActivationConfig config,
                          std::shared_ptr<moonbase::licensing> licensing,
                          juce::String deviceName = "Test Device",

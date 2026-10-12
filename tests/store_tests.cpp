@@ -143,6 +143,86 @@ TEST_CASE("file_license_store removes an unparseable license file and reports no
     std::filesystem::remove(path, ec);
 }
 
+TEST_CASE("file_license_store readers never catch the license half-written")
+{
+    // Readers don't take the lock (an instance loading its license at startup
+    // doesn't), and load_local_license deletes a file it can't parse. So a reader
+    // that caught a write half done would delete the license, and the customer
+    // would have to activate again.
+    const auto dir = std::filesystem::temp_directory_path() / ("moonbase-cpp-torn-" + unique_suffix());
+    std::filesystem::create_directories(dir);
+    const auto path = dir / "license.mb";
+
+    auto small = sample_license();
+    auto large = sample_license();
+    large.token = std::string(64 * 1024, 'x'); // takes several writes, so a wide window
+
+    file_license_store writer(path);
+    writer.store_local_license(small);
+
+    std::atomic<bool> done{false};
+    std::atomic<int> reads{0};
+    std::atomic<int> misses{0};
+    std::thread reading([&] {
+        file_license_store reader(path);
+        while (!done.load()) {
+            try {
+                if (!reader.load_local_license()) {
+                    ++misses;
+                }
+            } catch (const storage_error&) {
+                ++misses;
+            }
+            ++reads;
+            std::this_thread::sleep_for(std::chrono::milliseconds(2));
+        }
+    });
+
+    for (int i = 0; reads.load() < 100 && i < 100000; ++i) {
+        writer.store_local_license(i % 2 == 0 ? large : small);
+    }
+    done = true;
+    reading.join();
+
+    CHECK(reads.load() > 0);
+    CHECK(misses.load() == 0);
+    CHECK(std::filesystem::exists(path));
+
+    // Nothing left beside it but the license itself.
+    int entries = 0;
+    for (const auto& entry : std::filesystem::directory_iterator(dir)) {
+        (void) entry;
+        ++entries;
+    }
+    CHECK(entries == 1);
+
+    std::error_code ec;
+    std::filesystem::remove_all(dir, ec);
+}
+
+TEST_CASE("file_license_store keeps a hard-linked license shared")
+{
+    // Writing a new file and renaming it into place would replace only the name
+    // written through, leaving the other name on the old license.
+    const auto dir = std::filesystem::temp_directory_path() / ("moonbase-cpp-hardlink-" + unique_suffix());
+    std::filesystem::create_directories(dir);
+    const auto path = dir / "license.mb";
+    const auto alias = dir / "alias.mb";
+    file_license_store(path).store_local_license(sample_license());
+    std::filesystem::create_hard_link(path, alias);
+
+    auto updated = sample_license();
+    updated.id = "license-456";
+    file_license_store(alias).store_local_license(updated);
+
+    const auto loaded = file_license_store(path).load_local_license();
+    REQUIRE(loaded.has_value());
+    CHECK(loaded->id == "license-456");
+
+    std::error_code ec;
+    std::filesystem::remove_all(dir, ec);
+}
+
 TEST_CASE("file_license_store::lock_for_update serializes concurrent acquirers")
 {
     const auto path = std::filesystem::temp_directory_path() /
@@ -282,6 +362,52 @@ TEST_CASE("file_license_store::lock_for_update survives delete_local_license")
 
     CHECK(worker_exceptions.load() == 0);
     CHECK(max_inside.load() == 1);
+
+    std::error_code ec;
+    std::filesystem::remove(path, ec);
+    auto lock_path = path;
+    lock_path += ".lock";
+    std::filesystem::remove(lock_path, ec);
+}
+
+TEST_CASE("file_license_store::cancel_lock_waits ends a wait for a lock held elsewhere")
+{
+    const auto path = std::filesystem::temp_directory_path() /
+        ("moonbase-cpp-lock-cancel-" + unique_suffix() + ".json");
+
+    // Another instance holds the lock, as it does for its whole online check.
+    file_license_store sibling(path);
+    file_license_store store(path);
+    auto held = sibling.lock_for_update();
+
+    std::atomic<bool> finished{false};
+    std::atomic<bool> gave_up{false};
+    std::thread waiting([&] {
+        try {
+            auto guard = store.lock_for_update();
+        } catch (const storage_error&) {
+            gave_up = true;
+        }
+        finished = true;
+    });
+    std::this_thread::sleep_for(std::chrono::milliseconds(100)); // waiting by now
+
+    store.cancel_lock_waits();
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
+    while (!finished.load() && std::chrono::steady_clock::now() < deadline) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+    CHECK(finished.load());
+    CHECK(gave_up.load());
+    held.reset(); // a waiter that ignored the cancel finishes now, rather than hang the run
+    waiting.join();
+
+    // Later calls don't wait for a lock that is taken either...
+    held = sibling.lock_for_update();
+    CHECK_THROWS_AS((void) store.lock_for_update(), storage_error);
+    // ...but still take one that is free.
+    held.reset();
+    CHECK(store.lock_for_update() != nullptr);
 
     std::error_code ec;
     std::filesystem::remove(path, ec);
@@ -476,6 +602,90 @@ TEST_CASE("file_license_store reports a storage_error with the path when the dir
     CHECK(message.find(path.string()) != std::string::npos);
 
     ::chmod(dir.c_str(), 0700); // restore so cleanup can recurse
+    std::error_code ec;
+    std::filesystem::remove_all(dir, ec);
+}
+
+TEST_CASE("file_license_store keeps a license restricted to its owner that way")
+{
+    const auto dir = std::filesystem::temp_directory_path() / ("moonbase-cpp-mode-" + unique_suffix());
+    std::filesystem::create_directories(dir);
+    const auto path = dir / "license.mb";
+
+    // A umask that leaves new files readable by everyone, as most do.
+    const auto previous_umask = ::umask(022);
+    file_license_store store(path);
+    store.store_local_license(sample_license());
+    REQUIRE(::chmod(path.c_str(), 0600) == 0);
+
+    store.store_local_license(sample_license());
+    ::umask(previous_umask);
+
+    struct stat info {};
+    REQUIRE(::stat(path.c_str(), &info) == 0);
+    CHECK((info.st_mode & 0777) == 0600);
+
+    std::error_code ec;
+    std::filesystem::remove_all(dir, ec);
+}
+
+TEST_CASE("file_license_store writes through a symlinked license path")
+{
+    // The link must keep pointing at the license, not be replaced by a copy
+    // while what it pointed at keeps the old one.
+    const auto dir = std::filesystem::temp_directory_path() / ("moonbase-cpp-symlink-" + unique_suffix());
+    std::filesystem::create_directories(dir);
+    const auto target = dir / "target.mb";
+    const auto link = dir / "license.mb";
+    file_license_store(target).store_local_license(sample_license());
+    std::filesystem::create_symlink("target.mb", link); // relative, as links often are
+
+    auto updated = sample_license();
+    updated.id = "license-456";
+    file_license_store(link).store_local_license(updated);
+
+    CHECK(std::filesystem::is_symlink(link));
+    const auto loaded = file_license_store(target).load_local_license();
+    REQUIRE(loaded.has_value());
+    CHECK(loaded->id == "license-456");
+
+    int entries = 0;
+    for (const auto& entry : std::filesystem::directory_iterator(dir)) {
+        (void) entry;
+        ++entries;
+    }
+    CHECK(entries == 2); // the link and its target, no leftovers
+
+    std::error_code ec;
+    std::filesystem::remove_all(dir, ec);
+}
+
+TEST_CASE("file_license_store rewrites the license in place in a folder that takes no new files")
+{
+    if (::geteuid() == 0)
+        return;
+
+    const auto dir = std::filesystem::temp_directory_path() /
+        ("moonbase-cpp-fixed-dir-" + unique_suffix());
+    std::filesystem::create_directories(dir);
+    const auto path = dir / "license.mb";
+    {
+        file_license_store seed(path);
+        seed.store_local_license(sample_license());
+    }
+    // The license stays writable, but nothing new can be created beside it, so
+    // there is nowhere to write a replacement first.
+    REQUIRE(::chmod(dir.c_str(), 0500) == 0);
+
+    file_license_store store(path);
+    auto updated = sample_license();
+    updated.id = "license-456";
+    CHECK_NOTHROW(store.store_local_license(updated));
+    const auto loaded = store.load_local_license();
+    REQUIRE(loaded.has_value());
+    CHECK(loaded->id == "license-456");
+
+    ::chmod(dir.c_str(), 0700);
     std::error_code ec;
     std::filesystem::remove_all(dir, ec);
 }
