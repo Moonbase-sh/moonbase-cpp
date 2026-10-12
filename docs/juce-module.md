@@ -119,7 +119,8 @@ ActivationDialog::show(config, [](bool wasActivated) { /* … */ });
 `moonbase::licensing`. Network calls run on a controller-owned thread pool; all state
 changes and repaints happen on the message thread, gated by a generation counter so a
 slow request can never clobber a newer state. Destroying the controller cancels any
-in-flight request and joins its workers, so nothing keeps running after teardown — you
+in-flight request, stops waiting on another instance's license check, and joins its
+workers, so nothing keeps running after teardown: you
 can call `start()` straight from the editor constructor and destroy the editor at any
 time (plugin scanning, pluginval, rapid open/close) without deferring or guarding it.
 The screens:

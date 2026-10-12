@@ -146,7 +146,7 @@ ActivationController::ActivationController(ActivationConfig config)
     try
     {
         licensing_ = std::make_shared<moonbase::licensing>(
-            config_.toLicensingOptions(), std::move(store), deviceIds, transport);
+            config_.toLicensingOptions(), store, deviceIds, transport);
     }
     catch (const std::exception& ex)
     {
@@ -159,10 +159,14 @@ ActivationController::ActivationController(ActivationConfig config)
 
     inventory_.emplace(config_.toLicensingOptions(), inventoryTransport);
 
-    cancelInFlight_ = [transport, inventoryTransport]
+    cancelInFlight_ = [transport, inventoryTransport, store]
     {
         transport->cancel();
         inventoryTransport->cancel();
+        // A worker waiting its turn on the license lock while another instance
+        // re-validates stops waiting, rather than hold up the host until that
+        // check is done.
+        store->cancel_lock_waits();
     };
     // A custom resolver's device_name() is arbitrary consumer code, and this
     // constructor runs inside a plugin editor's constructor, where an escaping
@@ -218,9 +222,10 @@ ActivationController::~ActivationController()
     stopTimer();
     ++updateGeneration_;     // drop any queued update-flow continuations
     updateDownload_.reset(); // cancels + joins the installer download thread
-    // Unblock any in-flight request, then wait for the workers to finish, so no
-    // detached thread keeps running module code after we (and possibly the
-    // plugin binary) are gone. cancelInFlight_ makes the drain near-instant.
+    // Unblock any in-flight request or wait for the license lock, then wait for
+    // the workers to finish, so no detached thread keeps running module code
+    // after we (and possibly the plugin binary) are gone. cancelInFlight_ makes
+    // the drain near-instant.
     if (cancelInFlight_)
         cancelInFlight_();
     threadPool_.stop();

@@ -72,11 +72,10 @@ public:
 
     // Drops the jobs that haven't started, then waits for the running ones and
     // joins the workers. Callers cancel what they can first (the controller
-    // cancels its HTTP requests), so this is normally instant. It never gives up
-    // on a worker, because one left running could still be executing module code
-    // after the plugin binary is unloaded. The longest it waits is a job blocked
-    // on the license lock while another process holds it for its own network
-    // check, which that process's request timeouts bound. Safe to call twice.
+    // cancels its HTTP requests and any wait for the license lock), so this is
+    // normally instant. It never gives up on a worker, because one left running
+    // could still be executing module code after the plugin binary is unloaded.
+    // Safe to call twice.
     void stop()
     {
         if (threads_.empty())

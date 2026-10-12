@@ -2268,6 +2268,40 @@ TEST_CASE("destroying the controller mid-request cancels and joins without hangi
     CHECK(blocking->entered.load());
 }
 
+TEST_CASE("destroying the controller while another instance holds the license lock does not wait for it")
+{
+    controller_fixture fx;
+    auto claims = default_claims();
+    claims["validated"] = now_seconds() - 3600; // past the throttle -> start() checks online, under the lock
+    fx.seedStored(fx.token(claims));
+    fx.config.deviceIdResolver = fx.fingerprint;
+
+    // Another instance holds the lock for its own online check, which offline
+    // can run until its request times out. Released after 3 s at the latest, so
+    // a controller that waits for it fails this test instead of hanging it.
+    moonbase::file_license_store sibling(compat::toFilesystemPath(fx.licenseFile));
+    auto held = sibling.lock_for_update();
+    juce::WaitableEvent tornDown;
+    std::thread releaser([&held, &tornDown]
+    {
+        tornDown.wait(3000);
+        held.reset();
+    });
+
+    // The primary constructor, so the teardown runs exactly as in a plugin.
+    auto controller = std::make_unique<ActivationController>(fx.config);
+    controller->start();
+    pumpFor(300); // the worker is waiting for the lock by now
+
+    const auto before = std::chrono::steady_clock::now();
+    controller.reset();
+    const auto teardown = std::chrono::steady_clock::now() - before;
+    tornDown.signal();
+    releaser.join();
+
+    CHECK(teardown < std::chrono::milliseconds(1500));
+}
+
 TEST_CASE("the worker pool runs every job it is given")
 {
     std::atomic<int> ran{0};

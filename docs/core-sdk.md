@@ -336,7 +336,11 @@ auto resolver = std::make_shared<my_resolver>();
 moonbase::licensing licensing(options, store, resolver);
 ```
 
-The default store is in-memory. `file_license_store` persists a JSON representation of the validated license.
+The default store is in-memory. `file_license_store` persists a JSON representation of the
+validated license, replacing the file in one step so a reader never finds half of one.
+Instances that share the file take turns in `validate_token_online`, so one may wait for
+another's network check. When shutting down, call `cancel_lock_waits()` on the store and a
+waiting call throws `storage_error` instead.
 
 A custom resolver's id is compared literally, so it does not need to follow the
 [`mbd2_` stamp format](device-identity.md), and it gives up cross-SDK compatibility by

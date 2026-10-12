@@ -1,6 +1,9 @@
 #pragma once
 
+#include <algorithm>
+#include <atomic>
 #include <cerrno>
+#include <chrono>
 #include <filesystem>
 #include <fstream>
 #include <memory>
@@ -8,6 +11,13 @@
 #include <optional>
 #include <string>
 #include <system_error>
+#include <thread>
+
+#if defined(_WIN32)
+#include <process.h>
+#else
+#include <unistd.h>
+#endif
 
 #include <nlohmann/json.hpp>
 
@@ -143,6 +153,18 @@ public:
             }
         }
 
+        const auto contents = nlohmann::json(value).dump(2);
+
+        // Write the new license beside the old one and rename it into place, so
+        // a reader sees one or the other and never a half-written file, which
+        // load_local_license would delete as corrupt. That holds for readers
+        // that don't take the lock, such as an instance loading at startup.
+        if (replace_with_temp_file(contents)) {
+            return;
+        }
+
+        // Where that fails, as in a folder that takes no new files but lets the
+        // license itself be rewritten, write it in place.
         errno = 0;
         std::ofstream file(path_, std::ios::trunc);
         if (!file) {
@@ -150,7 +172,7 @@ public:
             throw storage_error("Could not open local license file for writing: " + utf8_path(path_)
                                 + errno_suffix(err));
         }
-        file << nlohmann::json(value).dump(2);
+        file << contents;
         file.flush();
         if (!file) {
             throw storage_error("Could not write local license file: " + utf8_path(path_));
@@ -178,10 +200,115 @@ public:
         // process tree.
         auto lock_path = path_;
         lock_path += ".lock";
-        return std::make_unique<file_store_lock>(lock_path);
+        return std::make_unique<file_store_lock>(lock_path, *lock_waits_cancelled_);
+    }
+
+    // For shutting down: from here on lock_for_update() throws storage_error
+    // instead of waiting for a lock that another instance or process holds, and
+    // a call already waiting gives up the same way. A free lock is still taken.
+    // Without this, an instance closing while a sibling re-validates waits for
+    // that check, which offline can run until its request times out. Callable
+    // from any thread; it cannot be undone.
+    void cancel_lock_waits() noexcept
+    {
+        lock_waits_cancelled_->store(true, std::memory_order_release);
     }
 
 private:
+    // Writes contents to a new file beside the license and renames it over the
+    // license. False, with the new file removed again, if any step fails or the
+    // rename would change more than the contents.
+    bool replace_with_temp_file(const std::string& contents) const
+    {
+        // Follow a symlinked license path to the file itself, so the link keeps
+        // pointing at the license instead of being replaced by a copy of it.
+        auto target = path_;
+        std::error_code link_error;
+        if (std::filesystem::is_symlink(path_, link_error)) {
+            target = std::filesystem::canonical(path_, link_error);
+            if (link_error) {
+                return false; // a dangling link: writing in place creates its target
+            }
+        }
+
+        // No license yet is fine (status reports that as an error too). One also
+        // known by another name, a hard link, would keep the old contents there.
+        std::error_code status_error;
+        const auto existing = std::filesystem::status(target, status_error);
+        const bool exists = std::filesystem::exists(existing);
+        std::error_code links_error;
+        if (exists && std::filesystem::hard_link_count(target, links_error) != 1) {
+            return false;
+        }
+
+        auto temp = target;
+        temp += temp_suffix();
+        {
+            std::ofstream file(temp, std::ios::trunc);
+            if (!file) {
+                return false;
+            }
+            // Keep the license's permissions, so one restricted to its owner
+            // stays that way, and set them before the contents land. Only on
+            // POSIX: on Windows these are just the read-only flag.
+            std::error_code mode_error;
+#if !defined(_WIN32)
+            if (exists) {
+                std::filesystem::permissions(temp, existing.permissions(), mode_error);
+            }
+#endif
+            if (!mode_error) {
+                file << contents;
+            }
+            file.close();
+            if (mode_error || !file) {
+                std::error_code ignored;
+                std::filesystem::remove(temp, ignored);
+                return false;
+            }
+        }
+
+        // Windows won't replace a file that another handle has open, as a
+        // sibling reading the license does for a moment (and a virus scanner
+        // may for longer), so try a few times there before giving up.
+#if defined(_WIN32)
+        constexpr int attempts = 10;
+#else
+        constexpr int attempts = 1;
+#endif
+        std::error_code ec;
+        auto pause = std::chrono::milliseconds(1);
+        for (int attempt = 1;; ++attempt) {
+            std::filesystem::rename(temp, target, ec);
+            if (!ec) {
+                return true;
+            }
+            if (attempt == attempts) {
+                break;
+            }
+            std::this_thread::sleep_for(pause);
+            pause = std::min(pause * 2, std::chrono::milliseconds(100));
+        }
+        std::filesystem::remove(temp, ec);
+        return false;
+    }
+
+    // Unique to one write, so writers never share a temporary file, whether in
+    // different processes, on different threads, or in two plugin binaries
+    // loaded into the same host.
+    static std::string temp_suffix()
+    {
+#if defined(_WIN32)
+        const auto process = static_cast<long long>(::_getpid());
+#else
+        const auto process = static_cast<long long>(::getpid());
+#endif
+        static std::atomic<unsigned long long> sequence{0};
+        const auto ticks = std::chrono::steady_clock::now().time_since_epoch().count();
+        return "." + std::to_string(process) + "-" + std::to_string(ticks) + "-"
+            + std::to_string(sequence.fetch_add(1)) + ".tmp";
+    }
+
     // Best-effort OS reason for a failed std::fstream open. Stream failures don't
     // portably set errno, so callers reset errno to 0 first and we only append a
     // reason when something was actually recorded.
@@ -205,13 +332,18 @@ private:
 
     class file_store_lock : public store_lock_guard {
     public:
-        explicit file_store_lock(const std::filesystem::path& path) : lock_(path) {}
+        file_store_lock(const std::filesystem::path& path, const std::atomic<bool>& give_up)
+            : lock_(path, give_up)
+        {
+        }
 
     private:
         detail::file_lock lock_;
     };
 
     std::filesystem::path path_;
+    // Shared so the store stays copyable; copies cancel together.
+    std::shared_ptr<std::atomic<bool>> lock_waits_cancelled_ = std::make_shared<std::atomic<bool>>(false);
 };
 
 } // namespace moonbase
