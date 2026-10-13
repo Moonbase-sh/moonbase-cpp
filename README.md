@@ -5,6 +5,7 @@ License activation for desktop apps and audio plugins, in C++.
 [![CI](https://img.shields.io/github/actions/workflow/status/Moonbase-sh/moonbase-cpp/ci.yml?branch=main&label=CI&style=flat-square)](https://github.com/Moonbase-sh/moonbase-cpp/actions/workflows/ci.yml)
 [![JUCE module](https://img.shields.io/github/actions/workflow/status/Moonbase-sh/moonbase-cpp/juce.yml?branch=main&label=JUCE%20module&style=flat-square)](https://github.com/Moonbase-sh/moonbase-cpp/actions/workflows/juce.yml)
 [![Release](https://img.shields.io/github/v/release/Moonbase-sh/moonbase-cpp?sort=semver&display_name=tag&label=release&style=flat-square)](https://github.com/Moonbase-sh/moonbase-cpp/releases/latest)
+[![JUCE Marketplace](https://img.shields.io/badge/JUCE%20Marketplace-listed-8DC63F?style=flat-square&logo=juce&logoColor=white)](https://marketplace.juce.com/products/moonbase-cpp)
 [![C++17](https://img.shields.io/badge/C%2B%2B-17-00599C?style=flat-square)](https://en.cppreference.com/w/cpp/17)
 [![Header-only](https://img.shields.io/badge/header--only-yes-success?style=flat-square)](docs/core-sdk.md)
 [![Platforms](https://img.shields.io/badge/platforms-macOS%20%7C%20Windows%20%7C%20Linux%20%7C%20iOS%20%7C%20Android-lightgrey?style=flat-square)](#pick-your-path)
