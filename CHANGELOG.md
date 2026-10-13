@@ -1,3 +1,10 @@
+# [4.10.0](https://github.com/Moonbase-sh/moonbase-cpp/compare/v4.9.2...v4.10.0) (2026-10-13)
+
+
+### Features
+
+* **juce:** show endless trials without a countdown ([#42](https://github.com/Moonbase-sh/moonbase-cpp/issues/42)) ([a664cda](https://github.com/Moonbase-sh/moonbase-cpp/commit/a664cda884b28e29a2671f6a4e159efb370ea72a))
+
 ## [4.9.2](https://github.com/Moonbase-sh/moonbase-cpp/compare/v4.9.1...v4.9.2) (2026-10-12)
 
 
