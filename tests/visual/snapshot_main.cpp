@@ -299,6 +299,14 @@ moonbase::license makeExpiredTrial()
     return lic;
 }
 
+// A trial on a product whose trials never expire: no exp, so no countdown.
+moonbase::license makeEndlessTrial()
+{
+    auto lic = makeLicense(true);
+    lic.expires_at.reset();
+    return lic;
+}
+
 // A full (non-trial) license that renews — i.e. a subscription with an expiry
 // date, so the details screen shows "Expires" with a real date rather than "Never".
 moonbase::license makeSubscriptionLicense()
@@ -508,6 +516,12 @@ int main(int argc, char* argv[])
                       [](ActivationController& c) { c.setPreviewState(Screen::Trial, makeLicense(true)); },
                       cfg);
     }
+
+    writeSnapshot(outDir, "06d-trial-endless", [](ActivationController& c)
+                  { c.setPreviewState(Screen::Trial, makeEndlessTrial()); });
+
+    writeSnapshot(outDir, "06e-trial-endless-ended", [](ActivationController& c)
+                  { c.setPreviewState(Screen::Expired, makeEndlessTrial()); });
 
     writeSnapshot(outDir, "07-details", [](ActivationController& c)
                   { c.setPreviewState(Screen::Details, makeLicense(false)); });

@@ -239,6 +239,10 @@ public:
 
     // Trial display helpers (valid only when a trial license is loaded).
     [[nodiscard]] int trialDaysRemaining() const;
+    // True when the loaded trial has no end date: the product's trials never
+    // expire, so its token carries no expiry. trialDaysRemaining() is 0 then, so
+    // show no countdown.
+    [[nodiscard]] bool trialIsEndless() const;
 
 private:
     // A message-thread timer with a callback. The controller's own Timer base

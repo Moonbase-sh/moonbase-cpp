@@ -148,7 +148,8 @@ TEST_CASE("file_license_store readers never catch the license half-written")
     // Readers don't take the lock (an instance loading its license at startup
     // doesn't), and load_local_license deletes a file it can't parse. So a reader
     // that caught a write half done would delete the license, and the customer
-    // would have to activate again.
+    // would have to activate again. Nor may a reader fail to open it while a
+    // write lands, which Windows refuses for a moment after the rename.
     const auto dir = std::filesystem::temp_directory_path() / ("moonbase-cpp-torn-" + unique_suffix());
     std::filesystem::create_directories(dir);
     const auto path = dir / "license.mb";
