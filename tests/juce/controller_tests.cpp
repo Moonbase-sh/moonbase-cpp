@@ -213,6 +213,56 @@ TEST_CASE("start() with a valid trial license routes to Trial")
     CHECK(controller.screen() == Screen::Trial);
     REQUIRE(controller.license().has_value());
     CHECK(controller.license()->trial);
+    CHECK_FALSE(controller.trialIsEndless());
+    CHECK(controller.trialDaysRemaining() == 1); // exp is an hour out, rounded up to a day
+}
+
+TEST_CASE("an endless trial routes to Trial with no countdown and stays unlocked")
+{
+    controller_fixture fx;
+    auto claims = default_claims();
+    claims["trial"] = true;
+    claims.erase("exp"); // the product's trials never expire
+    fx.seedStored(fx.token(claims));
+
+    ActivationController controller(fx.config, fx.makeLicensing());
+    controller.start();
+
+    REQUIRE(pumpUntil([&] { return settled(controller); }));
+    CHECK(controller.screen() == Screen::Trial);
+    REQUIRE(controller.license().has_value());
+    CHECK_FALSE(controller.license()->expires_at.has_value());
+    CHECK(controller.trialIsEndless());
+    CHECK(controller.trialDaysRemaining() == 0);
+
+    // The license watch has nothing to count down to, so a tick leaves it unlocked
+    pumpUntil([] { return false; }, 2500);
+    CHECK(controller.screen() == Screen::Trial);
+    CHECK(controller.licensedFlag().load());
+    CHECK(controller.lockReason() == LockReason::None);
+}
+
+TEST_CASE("an endless trial the vendor ends shows Expired")
+{
+    controller_fixture fx;
+    auto claims = default_claims();
+    claims["trial"] = true;
+    claims.erase("exp");
+    claims["validated"] = now_seconds() - 3600; // past the throttle -> start() re-checks online
+    fx.seedStored(fx.token(claims));
+
+    fx.transport->responses.push_back(
+        moonbase::http_response{400, {}, R"({"errorType":"LicenseExpired","detail":"trial ended"})"});
+
+    ActivationController controller(fx.config, fx.makeLicensing());
+    controller.start();
+
+    REQUIRE(pumpUntil([&] { return settled(controller); }));
+    CHECK(controller.screen() == Screen::Expired);
+    CHECK_FALSE(controller.license().has_value());
+    REQUIRE(controller.expiredTrial().has_value());
+    CHECK_FALSE(controller.expiredTrial()->expires_at.has_value());
+    CHECK(controller.lockReason() == LockReason::Expired);
 }
 
 TEST_CASE("an expired trial shows the Expired screen and keeps the plugin locked")

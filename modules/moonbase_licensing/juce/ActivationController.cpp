@@ -1266,6 +1266,11 @@ int ActivationController::trialDaysRemaining() const
     return static_cast<int>((seconds + 86399) / 86400); // ceil to whole days
 }
 
+bool ActivationController::trialIsEndless() const
+{
+    return license_ && license_->trial && ! license_->expires_at;
+}
+
 //==============================================================================
 void ActivationController::setScreen(Screen newScreen, const juce::String& message)
 {

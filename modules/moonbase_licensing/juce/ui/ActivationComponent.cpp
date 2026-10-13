@@ -79,8 +79,8 @@ int drawBrand(Graphics& g, const ActivationLookAndFeel& lnf, const juce::Drawabl
     return row.getHeight();
 }
 
-// Shared geometry for the small header pills ("TRIAL · N DAYS LEFT", "TRIAL
-// EXPIRED", "Active", "Update available"). One set of pads so they read as one
+// Shared geometry for the small header pills ("TRIAL · N DAYS LEFT", "TRIAL",
+// "TRIAL EXPIRED", "Active", "Update available"). One set of pads so they read as one
 // family, and one measure path that takes the label exactly as it will be drawn
 // (case included), so the padding can't be eaten by the glyphs.
 // An inline error: the warning icon on the row's left edge, a gap, then up to
@@ -1233,9 +1233,12 @@ public:
 
         // Uppercase before measuring: the pill is drawn in caps, which are wider
         // than mixed case, so measuring the mixed-case string would eat the pads.
+        // An endless trial has no days to count, so its pill just says "Trial".
+        const bool endless = controller.trialIsEndless();
         const int days = controller.trialDaysRemaining();
-        const auto pillText = (u8("Trial") + kMidDot + juce::String(days)
-                               + (days == 1 ? " day left" : " days left")).toUpperCase();
+        const auto pillText = (endless ? juce::String("Trial")
+                                       : u8("Trial") + kMidDot + juce::String(days)
+                                             + (days == 1 ? " day left" : " days left")).toUpperCase();
         auto pf = lnf.heading(10.5f);
         const float pw = pill::width(pf, pillText);
 
@@ -1262,15 +1265,18 @@ public:
         g.drawFittedText(subtitleText(), layout.subtitle.getX(), layout.subtitle.getY(),
                          layout.subtitle.getWidth(), layout.subtitle.getHeight(), Justification::topLeft, 4, 1.0f);
 
-        const auto bar = layout.bar;
-        g.setColour(lnf.palette.trackFill);
-        g.fillRoundedRectangle(bar.toFloat(), 3.0f);
-        const int total = controller.config().trialLengthDays;
-        const float frac = total > 0 ? juce::jlimit(0.0f, 1.0f, (float) days / (float) total) : 0.0f;
-        auto fill = bar.toFloat().withWidth((float) bar.getWidth() * frac);
-        g.setGradientFill(juce::ColourGradient(lnf.palette.trial, fill.getX(), 0,
-                                               lnf.palette.trialBright, fill.getRight(), 0, false));
-        g.fillRoundedRectangle(fill, 3.0f);
+        // The countdown bar; computeLayout() leaves it empty for an endless trial.
+        if (const auto bar = layout.bar; ! bar.isEmpty())
+        {
+            g.setColour(lnf.palette.trackFill);
+            g.fillRoundedRectangle(bar.toFloat(), 3.0f);
+            const int total = controller.config().trialLengthDays;
+            const float frac = total > 0 ? juce::jlimit(0.0f, 1.0f, (float) days / (float) total) : 0.0f;
+            auto fill = bar.toFloat().withWidth((float) bar.getWidth() * frac);
+            g.setGradientFill(juce::ColourGradient(lnf.palette.trial, fill.getX(), 0,
+                                                   lnf.palette.trialBright, fill.getRight(), 0, false));
+            g.fillRoundedRectangle(fill, 3.0f);
+        }
 
         // When the list is longer than the band, frame it as a bounded, scrollable
         // field so the scroll affordance is unmistakable (resized() insets the
@@ -1309,6 +1315,9 @@ private:
 
     [[nodiscard]] juce::String subtitleText() const
     {
+        if (controller.trialIsEndless())
+            return "Your trial has no time limit. Unlock the full version any time to get everything.";
+
         return juce::String(controller.trialDaysRemaining()) + " of "
              + juce::String(controller.config().trialLengthDays)
              + " days remaining. Unlock the full version any time to keep everything.";
@@ -1337,8 +1346,11 @@ private:
         l.heading = r.removeFromTop(30);
         r.removeFromTop(6);                               // gap below the heading
         l.subtitle = r.removeFromTop(subtitleHeight(r.getWidth()));
-        r.removeFromTop(8);                               // tight gap above the bar
-        l.bar = r.removeFromTop(6);
+        if (! controller.trialIsEndless())                // nothing to count down, so no bar
+        {
+            r.removeFromTop(8);                           // tight gap above the bar
+            l.bar = r.removeFromTop(6);
+        }
         r.removeFromTop(16);                             // gap below the bar
         l.features = r;
         return l;
@@ -1451,9 +1463,11 @@ public:
 private:
     juce::String bodyText() const
     {
-        const int len = controller.config().trialLengthDays;
+        // An endless trial the vendor ended had no length, so leave the "N-day" out
+        auto& lic = controller.expiredTrial();
+        const int len = lic && ! lic->expires_at ? 0 : controller.config().trialLengthDays;
         juce::String date;
-        if (auto& lic = controller.expiredTrial(); lic && lic->expires_at)
+        if (lic && lic->expires_at)
         {
             const auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(
                                 lic->expires_at->time_since_epoch()).count();
@@ -1463,8 +1477,7 @@ private:
         if (len > 0)
             s << len << "-day ";
         s << "trial of " << controller.config().resolvedProductName();
-        if (date.isNotEmpty())
-            s << " ended on " << date;
+        s << (date.isNotEmpty() ? " ended on " + date : juce::String(" has ended"));
         s << ". Unlock the full version to keep using the plugin.";
         return s;
     }

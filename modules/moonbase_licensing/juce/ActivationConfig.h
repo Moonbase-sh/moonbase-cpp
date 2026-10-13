@@ -146,7 +146,8 @@ struct ActivationConfig
     bool reduceMotion = false;     // skip transitions, the success pop, the appear animation and the glow
                                    // (a11y + snapshot tests); the activating spinner still turns
     bool overlayBackdrop = false;  // dim the host behind the panel (modal over a plugin) instead of a full opaque backdrop
-    int trialLengthDays = 14;      // trial length shown on the Trial / Expired screens (trials are granted by the backend, not started from the UI)
+    int trialLengthDays = 14;      // trial length shown on the Trial / Expired screens (trials are granted by the backend, not started from the UI);
+                                   // unused for an endless trial, whose token has no expiry
 
     // Present the overlay (ActivationComponent::appear()) whenever the plugin is
     // locked: when it opens without a license, and whenever the license is lost

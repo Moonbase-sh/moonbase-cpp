@@ -140,7 +140,9 @@ The screens:
 - **Offline** — two-step machine-file flow: save the request (`generate_device_token`),
   then load the response file (`read_offline_license`, validated locally).
 - **Trial** — days-left badge, progress bar, included/excluded feature list, and an
-  Unlock action that routes into online activation.
+  Unlock action that routes into online activation. An endless trial (a product whose
+  trials never expire, so the token has no `exp`) shows a plain "Trial" badge and no
+  progress bar; `trialIsEndless()` tells you which one is loaded.
 - **License details** — issued-to / email / plan / activation / expiry, a seat counter,
   and a Deactivate action (server-side `revoke_activation`, with a local-forget fallback
   for offline or trial licenses).
@@ -284,7 +286,8 @@ is broadcast when it arrives. To open the link your own way, set `config.openBro
 
 Everything in `ActivationConfig` after the connection fields is brand/UI: product +
 manufacturer name, `accent` colour, the Moonbase co-brand badge (`showMoonbaseBadge`), the
-`trialLengthDays` + `trialFeatures` list (shown on the Trial / Expired screens),
+`trialLengthDays` + `trialFeatures` list (shown on the Trial / Expired screens;
+an endless trial ignores `trialLengthDays`),
 `enableOffline`, and the `activationUrl`.
 
 For a deeper re-skin, `config.palette` holds every other colour in the UI as its own
