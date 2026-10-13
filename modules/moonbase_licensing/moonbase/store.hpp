@@ -117,10 +117,15 @@ public:
             return std::nullopt;
         }
 
-        errno = 0;
-        std::ifstream file(path_);
-        if (!file) {
-            const int err = errno;
+        std::ifstream file;
+        int err = 0;
+        const bool opened = retry_while_in_use([&] {
+            errno = 0;
+            file.open(path_);
+            err = errno;
+            return file.is_open();
+        });
+        if (!opened) {
             throw storage_error("Could not open local license file for reading: " + utf8_path(path_)
                                 + errno_suffix(err));
         }
@@ -268,29 +273,41 @@ private:
             }
         }
 
-        // Windows won't replace a file that another handle has open, as a
-        // sibling reading the license does for a moment (and a virus scanner
-        // may for longer), so try a few times there before giving up.
+        std::error_code ec;
+        if (retry_while_in_use([&] {
+                std::filesystem::rename(temp, target, ec);
+                return !ec;
+            })) {
+            return true;
+        }
+        std::filesystem::remove(temp, ec);
+        return false;
+    }
+
+    // Windows won't open or replace a file while another handle holds it in a
+    // conflicting way. A sibling reading the license holds it like that for a
+    // moment, so does a rename that just put a new license in place, and a virus
+    // scanner may for longer. So there, a failed attempt is tried a few more
+    // times before giving up; elsewhere it runs once.
+    template <typename Attempt>
+    static bool retry_while_in_use(Attempt&& attempt)
+    {
 #if defined(_WIN32)
         constexpr int attempts = 10;
 #else
         constexpr int attempts = 1;
 #endif
-        std::error_code ec;
         auto pause = std::chrono::milliseconds(1);
-        for (int attempt = 1;; ++attempt) {
-            std::filesystem::rename(temp, target, ec);
-            if (!ec) {
+        for (int tried = 1;; ++tried) {
+            if (attempt()) {
                 return true;
             }
-            if (attempt == attempts) {
-                break;
+            if (tried == attempts) {
+                return false;
             }
             std::this_thread::sleep_for(pause);
             pause = std::min(pause * 2, std::chrono::milliseconds(100));
         }
-        std::filesystem::remove(temp, ec);
-        return false;
     }
 
     // Unique to one write, so writers never share a temporary file, whether in
