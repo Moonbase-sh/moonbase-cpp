@@ -1,3 +1,10 @@
+## [4.10.1](https://github.com/Moonbase-sh/moonbase-cpp/compare/v4.10.0...v4.10.1) (2026-10-17)
+
+
+### Bug Fixes
+
+* **juce:** offer the activation link when the browser can't be opened ([#44](https://github.com/Moonbase-sh/moonbase-cpp/issues/44)) ([e5b2dc9](https://github.com/Moonbase-sh/moonbase-cpp/commit/e5b2dc9bbbc219144d2afd14ad232932d2cc6ebd))
+
 # [4.10.0](https://github.com/Moonbase-sh/moonbase-cpp/compare/v4.9.2...v4.10.0) (2026-10-13)
 
 
