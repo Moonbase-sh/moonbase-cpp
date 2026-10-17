@@ -30,7 +30,8 @@ PNG per state:
 | `01f-welcome-license-expired` | Locked: a subscription or offline license reached its end date |
 | `01g-welcome-license-invalid` | Locked: Moonbase no longer accepts the license (the longest lock copy) |
 | `01h-welcome-license-unverified` | Locked: not checked online within the grace period |
-| `02-activating` | Browser activation in progress (spinner + device chip) |
+| `02-activating` | Browser activation in progress (spinner, copy-link fallback, device chip) |
+| `02b-activating-no-browser` | Browser activation whose browser couldn't be opened (copy the link instead) |
 | `03-success` | Just activated (license card) |
 | `04-offline-empty` | Offline flow, nothing chosen yet |
 | `05-offline-ready` | Offline flow with a response file selected |
@@ -52,7 +53,7 @@ PNG per state:
 | `15-theme-ember-welcome` | Welcome, "Ember" theme (warm near-black, amber, monospaced) |
 | `15b-theme-ember-welcome-error` | The longest welcome error copy in Ember's monospaced face, where it runs widest |
 | `15c-theme-ember-welcome-license-invalid` | The longest lock-reason copy in Ember's monospaced face |
-| `16-theme-ember-activating` | Browser activation, Ember (spinner arc + track) |
+| `16-theme-ember-activating` | Browser activation with no browser, Ember (spinner arc + track, copy button) |
 | `17-theme-ember-trial` | Trial, Ember (pill, progress gradient, feature list) |
 | `18-theme-daylight-success` | Just activated, "Daylight" theme (light) |
 | `19-theme-daylight-details` | License details, Daylight (cards, seat pips) |

@@ -480,8 +480,11 @@ void ActivationController::beginOnlineActivation()
 
             self->pendingRequest_ = request;
             const juce::URL link(juce::String(request->browser_url));
+            // On Windows this is ShellExecute, which fails when no default
+            // browser is set; the screen then offers the link to copy.
             const bool opened = self->config_.openBrowser ? self->config_.openBrowser(link)
                                                           : link.launchInDefaultBrowser();
+            self->browserOpenFailed_ = ! opened;
             if (! opened)
                 self->emitDiagnostic("Couldn't open the browser for activation; pendingBrowserUrl() has the link.");
             self->startTimer(kPollIntervalMs);
@@ -1227,6 +1230,7 @@ void ActivationController::setPreviewState(Screen screen, std::optional<moonbase
         expiredTrial_.reset();
     }
     lockReason_ = lockReason;
+    pendingRequest_.reset();
     // Route the preview error to the field the target screen actually shows: the
     // Offline view reads offlineError(); the others (Welcome/Error, Details) read
     // statusMessage().
@@ -1243,6 +1247,16 @@ void ActivationController::setPreviewState(Screen screen, std::optional<moonbase
     screen_ = screen;
     // Synchronous so a snapshot harness sees the new screen immediately without
     // pumping the message loop. Must be called on the message thread.
+    sendSynchronousChangeMessage();
+}
+
+void ActivationController::setPreviewBrowserLink(juce::String browserUrl, bool opened)
+{
+    moonbase::activation_request request;
+    request.id = "preview";
+    request.browser_url = browserUrl.toStdString();
+    pendingRequest_ = std::move(request);
+    browserOpenFailed_ = ! opened;
     sendSynchronousChangeMessage();
 }
 
