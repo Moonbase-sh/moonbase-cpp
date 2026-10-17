@@ -186,6 +186,12 @@ public:
 
     ~StyledButton() override { stopTimer(); }
 
+    void setIcon(std::unique_ptr<juce::Drawable> ic)
+    {
+        icon = std::move(ic);
+        repaint();
+    }
+
     // Cross-fade the label out and a small inline spinner in (or back out) while
     // an async action runs. Clicks are gated while busy so the work can't refire.
     void setBusy(bool shouldBeBusy)
@@ -329,6 +335,14 @@ public:
                std::unique_ptr<juce::Drawable> ic = {}, Justification just = Justification::centred)
         : juce::Button(buttonText), lnf(l), label(buttonText), colour(c), icon(std::move(ic)), justification(just)
     {
+    }
+
+    void setLabel(const juce::String& text, std::unique_ptr<juce::Drawable> ic)
+    {
+        label = text;
+        setButtonText(text);
+        icon = std::move(ic);
+        repaint();
     }
 
     void paintButton(Graphics& g, bool over, bool /*down*/) override
@@ -735,9 +749,41 @@ public:
         cancel->onClick = [this] { controller.cancelActivation(); };
         addAndMakeVisible(*cancel);
         monitorIcon = icons::fromStroke(icons::monitor, l.palette.textSecondary, 1.6f);
+
+        // The way through when the browser didn't open: a quiet link while it
+        // probably did, a button when the launch failed (no default browser, say).
+        // Either copies the link for any browser, on this computer or another.
+        copyLink = std::make_unique<LinkButton>(l, juce::String(), l.palette.link);
+        copyLink->onClick = [this] { copyBrowserLink(); };
+        copyLink->setMouseCursor(juce::MouseCursor::PointingHandCursor);
+        addChildComponent(*copyLink);
+
+        copyButton = std::make_unique<StyledButton>(l, StyledButton::Style::accent, juce::String());
+        copyButton->onClick = [this] { copyBrowserLink(); };
+        addChildComponent(*copyButton);
+
+        refresh();
     }
 
     ~BrowserWaitView() override { stopTimer(); }
+
+    void refresh() override
+    {
+        const auto link = controller.pendingBrowserUrl();
+        const bool failed = controller.browserOpenFailed();
+        const bool copied = link.isNotEmpty() && link == copiedLink;
+
+        copyLink->setVisible(link.isNotEmpty() && ! failed);
+        copyLink->setLabel(copied ? "Link copied" : "Browser didn't open? Copy the link",
+                           icons::fromStroke(copied ? icons::check : icons::copy,
+                                             copied ? lnf.palette.success : lnf.palette.link, 1.6f));
+        copyButton->setVisible(failed);
+        copyButton->setButtonText(copied ? "Link copied" : "Copy activation link");
+        copyButton->setIcon(icons::fromStroke(copied ? icons::check : icons::copy, lnf.palette.onAccent, 1.6f));
+
+        resized();
+        repaint();
+    }
 
     // Self-drive the spinner with a timer so it animates regardless of the
     // shared animation updater, but only while this screen is up and the panel
@@ -756,50 +802,128 @@ public:
         spinPhase += 1.0f / 72.0f; // ~1.2s per revolution
         if (spinPhase >= 1.0f)
             spinPhase -= 1.0f;
-        if (! spinnerRepaint.isEmpty())
+        if (! spinnerRepaint.isEmpty()) // empty until painted, and while a short window hides it
             repaint(spinnerRepaint);
-        else
-            repaint();
     }
 
     void paint(Graphics& g) override
     {
-        auto r = getLocalBounds();
+        const auto l = computeLayout();
 
-        // Reserve the bottom for the cancel button (placed in resized) and the
-        // device chip above it, so they never overlap on a shorter window.
-        r.removeFromBottom(46); // cancel button row
-        r.removeFromBottom(14);
-        auto chipRow = r.removeFromBottom(34);
-        r.removeFromBottom(18);
+        if (l.spinner.isEmpty())
+            spinnerRepaint = {};
+        else
+            drawSpinner(g, l.spinner);
 
-        // Spinner at the top of the remaining space.
-        drawSpinner(g, r.removeFromTop(juce::jmin(116, juce::jmax(86, r.getHeight() / 2))));
-
-        // Heading + wrapping subtitle fill the middle.
         g.setColour(lnf.palette.textPrimary);
         g.setFont(lnf.heading(22.0f));
-        g.drawText("Waiting for activation", r.removeFromTop(30), Justification::centred);
-        r.removeFromTop(8);
+        g.drawText("Waiting for activation", l.heading, Justification::centred);
+
         g.setColour(lnf.palette.textSecondary);
         g.setFont(lnf.body(14.0f));
-        auto sub = r.reduced(4, 0);
         // minimumHorizontalScale = 1.0f forces wrapping instead of squashing glyphs.
-        g.drawFittedText("We opened your browser to finish activation. Sign in and confirm this "
-                         "device, then we'll pick it up automatically.",
-                         sub.getX(), sub.getY(), sub.getWidth(), sub.getHeight(),
-                         Justification::centredTop, 5, 1.0f);
+        g.drawFittedText(subtitleText(), l.subtitle, Justification::centredTop, 6, 1.0f);
 
-        drawChip(g, chipRow);
+        drawChip(g, l.chip);
     }
 
     void resized() override
     {
-        cancel->setBounds(getLocalBounds().removeFromBottom(46)
-                              .withSizeKeepingCentre(juce::jmin(getWidth(), 320), 46));
+        const auto l = computeLayout();
+        cancel->setBounds(l.cancel);
+        copyLink->setBounds(l.copy);
+        copyButton->setBounds(l.copy);
     }
 
 private:
+    struct Layout { Rectangle<int> spinner, heading, subtitle, copy, chip, cancel; };
+
+    [[nodiscard]] juce::String subtitleText() const
+    {
+        if (controller.browserOpenFailed())
+            return "We couldn't open your browser. Copy the activation link, open it in any browser on "
+                   "this computer or another, then sign in and confirm this device.";
+
+        return "We opened your browser to finish activation. Sign in and confirm this device, then "
+               "we'll pick it up automatically.";
+    }
+
+    // Measure the subtitle's wrapped height so the copy action can sit right
+    // under it, however many lines the copy takes at this width.
+    [[nodiscard]] int subtitleHeight(int width) const
+    {
+        juce::AttributedString as(subtitleText());
+        as.setFont(lnf.body(14.0f));
+        juce::TextLayout text;
+        text.createLayout(as, (float) juce::jmax(1, width));
+        return juce::jlimit(20, 120, (int) std::ceil(text.getHeight()) + 4);
+    }
+
+    // One source of truth for the vertical layout (used by paint() + resized()).
+    [[nodiscard]] Layout computeLayout() const
+    {
+        Layout l;
+        auto r = getLocalBounds();
+
+        // The cancel button and the device chip above it hold the bottom, so they
+        // never overlap on a shorter window.
+        l.cancel = r.removeFromBottom(46).withSizeKeepingCentre(juce::jmin(getWidth(), 320), 46);
+        r.removeFromBottom(14);
+        l.chip = r.removeFromBottom(34);
+        r.removeFromBottom(18);
+
+        // Heading, subtitle and the copy action under it; the spinner takes the
+        // room left above them, and gives it up first when the window is short.
+        const auto textArea = r.reduced(4, 0);
+        const int subtitleH = subtitleHeight(textArea.getWidth());
+        const bool failed = controller.browserOpenFailed();
+        const bool hasLink = controller.pendingBrowserUrl().isNotEmpty();
+        const int copyH = failed ? 14 + 46 : (hasLink ? 10 + 20 : 0);
+        const int room = r.getHeight() - (30 + 8 + subtitleH + copyH);
+        const int spinnerH = juce::jmin(116, room);
+        if (spinnerH >= 60)
+            l.spinner = r.removeFromTop(spinnerH);
+        else
+            r.removeFromTop(juce::jmax(0, room) / 2); // centre what's left instead
+
+        l.heading = r.removeFromTop(30);
+        r.removeFromTop(8);
+        l.subtitle = r.removeFromTop(subtitleH).reduced(4, 0);
+        if (failed)
+        {
+            r.removeFromTop(14);
+            l.copy = r.removeFromTop(46).withSizeKeepingCentre(juce::jmin(getWidth(), 320), 46);
+        }
+        else if (hasLink)
+        {
+            r.removeFromTop(10);
+            l.copy = r.removeFromTop(20).withSizeKeepingCentre(juce::jmin(getWidth(), 320), 20);
+        }
+        return l;
+    }
+
+    void copyBrowserLink()
+    {
+        const auto link = controller.pendingBrowserUrl();
+        if (link.isEmpty())
+            return;
+
+        juce::SystemClipboard::copyTextToClipboard(link);
+        copiedLink = link;
+        refresh();
+
+        // Back to the copy action after a moment, unless it was copied again since.
+        const auto token = ++copyToken;
+        juce::Timer::callAfterDelay(2000, [safe = juce::Component::SafePointer<BrowserWaitView>(this), token]
+        {
+            if (safe != nullptr && safe->copyToken == token)
+            {
+                safe->copiedLink.clear();
+                safe->refresh();
+            }
+        });
+    }
+
     void updateSpinner()
     {
         if (isVisible() && ownerVisible)
@@ -859,8 +983,12 @@ private:
     }
 
     std::unique_ptr<StyledButton> cancel;
+    std::unique_ptr<LinkButton> copyLink;
+    std::unique_ptr<StyledButton> copyButton;
     std::unique_ptr<juce::Drawable> monitorIcon;
     Rectangle<int> spinnerRepaint;
+    juce::String copiedLink; // the link just copied, while "Link copied" shows
+    int copyToken = 0;
     float spinPhase = 0.0f;
     bool ownerVisible = false;
 };

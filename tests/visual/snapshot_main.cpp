@@ -257,6 +257,9 @@ ActivationConfig forestTheme()
 // the same instant the license timestamps are built from. 2026-01-01 12:00:00 UTC.
 const std::chrono::system_clock::time_point kPreviewNow{ std::chrono::seconds(1767268800) };
 
+// The browser link a previewed online activation waits on.
+const juce::String kPreviewBrowserUrl = "https://demo.moonbase.sh/activate?token=preview";
+
 moonbase::license makeLicense(bool trial)
 {
     moonbase::license lic;
@@ -470,7 +473,17 @@ int main(int argc, char* argv[])
                   { c.setPreviewState(Screen::Welcome, {}, {}, false, LockReason::Unverified); });
 
     writeSnapshot(outDir, "02-activating", [](ActivationController& c)
-                  { c.setPreviewState(Screen::BrowserWait); });
+                  {
+                      c.setPreviewState(Screen::BrowserWait);
+                      c.setPreviewBrowserLink(kPreviewBrowserUrl);
+                  });
+
+    // The browser couldn't be opened (no default browser): copy the link instead.
+    writeSnapshot(outDir, "02b-activating-no-browser", [](ActivationController& c)
+                  {
+                      c.setPreviewState(Screen::BrowserWait);
+                      c.setPreviewBrowserLink(kPreviewBrowserUrl, /*opened*/ false);
+                  });
 
     writeSnapshot(outDir, "03-success", [](ActivationController& c)
                   { c.setPreviewState(Screen::Success, makeLicense(false)); });
@@ -626,8 +639,13 @@ int main(int argc, char* argv[])
                       { c.setPreviewState(Screen::Welcome, {}, {}, false, LockReason::Invalid); },
                       emberTheme());
 
+        // Monospaced, so the no-browser copy runs widest here.
         writeSnapshot(outDir, "16-theme-ember-activating",
-                      [](ActivationController& c) { c.setPreviewState(Screen::BrowserWait); },
+                      [](ActivationController& c)
+                      {
+                          c.setPreviewState(Screen::BrowserWait);
+                          c.setPreviewBrowserLink(kPreviewBrowserUrl, /*opened*/ false);
+                      },
                       emberTheme());
 
         writeSnapshot(outDir, "17-theme-ember-trial",

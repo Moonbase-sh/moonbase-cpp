@@ -218,8 +218,9 @@ struct ActivationConfig
     // Opens the browser link for online activation. Leave it empty for the
     // system's default browser, or route the link through your own UI where the
     // plugin can't launch one itself. Return false when the link couldn't be
-    // opened: the controller reports that to onDiagnostic, and
-    // controller().pendingBrowserUrl() still has the link to show or copy.
+    // opened: the controller reports that to onDiagnostic and sets
+    // browserOpenFailed(), the built-in screen asks the user to copy the link,
+    // and controller().pendingBrowserUrl() has it for a custom UI to show or copy.
     // Invoked on the message thread.
     std::function<bool(const juce::URL& url)> openBrowser;
 

@@ -92,6 +92,7 @@ extern const char* const monitor;
 extern const char* const check;
 extern const char* const cross;
 extern const char* const downloadTray; // arrow into a tray (update / download)
+extern const char* const copy;         // two stacked squares (copy to clipboard)
 
 } // namespace icons
 

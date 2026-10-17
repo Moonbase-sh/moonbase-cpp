@@ -118,6 +118,11 @@ public:
     // activation completes or is cancelled.
     [[nodiscard]] juce::String pendingBrowserUrl() const;
 
+    // True while that link is waiting but the browser couldn't be opened for it:
+    // the system has no default browser, say, or config.openBrowser returned
+    // false. The built-in screen then asks the user to copy the link instead.
+    [[nodiscard]] bool browserOpenFailed() const noexcept { return pendingRequest_.has_value() && browserOpenFailed_; }
+
     //== Re-validation =========================================================
     // Re-check the current license against the server and refresh its entitlements
     // (sub-product ownership, properties, expiry, seats) in place. Call this after
@@ -187,6 +192,11 @@ public:
                          juce::String previewError = {},
                          bool busy = false,
                          LockReason lockReason = LockReason::None);
+
+    // Give a previewed BrowserWait screen its browser link, as if the activation
+    // request had arrived, and say whether the browser opened for it. Call after
+    // setPreviewState(Screen::BrowserWait).
+    void setPreviewBrowserLink(juce::String browserUrl, bool opened = true);
 
     // Pin the wall clock used for trial-countdown math (trialDaysRemaining), so
     // previews and snapshot tests render a fixed number of days regardless of the
@@ -339,6 +349,7 @@ private:
     std::optional<moonbase::license> expiredTrial_; // display-only backing for the Expired screen
     LockReason lockReason_ = LockReason::None;
     std::optional<moonbase::activation_request> pendingRequest_;
+    bool browserOpenFailed_ = false; // for pendingRequest_; set with it
     std::optional<std::chrono::system_clock::time_point> previewClock_; // pinned "now" for previews/snapshots (trialDaysRemaining)
 
     juce::String statusMessage_;

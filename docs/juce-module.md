@@ -128,6 +128,10 @@ The screens:
 - **Welcome** — Activate online (browser flow) or Activate offline.
 - **Activating** — opens the browser and polls `get_requested_activation()` every
   2 seconds; the device chip shows the local fingerprint + platform; Cancel aborts.
+  A "Copy the link" action is always there for a browser that didn't show up. When
+  the browser can't be opened at all (Windows with no default browser set, say), the
+  screen says so and makes copying the link its main action, so the user can finish
+  in any browser, on this computer or another.
   If the request expires (after an hour) or is cancelled, the server answers 400,
   polling stops and the welcome screen returns with "This activation expired or
   was cancelled. Activate again to continue."; the server's reason goes to
@@ -279,8 +283,9 @@ Set `config.autoPresentOnLock = false` to present it yourself, for example from
 
 For a custom UI, `pendingBrowserUrl()` returns the browser link while an online
 activation is waiting, so you can show or copy it when the browser didn't open; a change
-is broadcast when it arrives. To open the link your own way, set `config.openBrowser`
-(return `false` when it couldn't be opened).
+is broadcast when it arrives. `browserOpenFailed()` tells you the launch failed, so you
+can put the link front and centre. To open the link your own way, set
+`config.openBrowser` (return `false` when it couldn't be opened).
 
 ## Branding / theming
 

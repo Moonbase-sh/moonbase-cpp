@@ -1810,10 +1810,69 @@ TEST_CASE("the browser link reaches a custom UI, which is told when it arrives")
     CHECK(watcher.link.contains("token=request-123"));
     CHECK(opened == juce::StringArray{watcher.link}); // through the host's hook, not the system browser
     CHECK(diags.joinIntoString(" ").contains("pendingBrowserUrl()")); // the hook said it couldn't open it
+    CHECK(controller.browserOpenFailed()); // so the screen offers the link to copy
 
     controller.cancelActivation();
     CHECK(controller.pendingBrowserUrl().isEmpty());
+    CHECK_FALSE(controller.browserOpenFailed());
     controller.removeChangeListener(&watcher);
+}
+
+TEST_CASE("browserOpenFailed is only set while a link the browser couldn't open is waiting")
+{
+    controller_fixture fx;
+    bool canOpen = true;
+    fx.config.openBrowser = [&](const juce::URL&) { return canOpen; };
+    ActivationController controller(fx.config, fx.makeLicensing());
+    controller.start();
+    REQUIRE(pumpUntil([&] { return controller.screen() == Screen::Welcome; }));
+    CHECK_FALSE(controller.browserOpenFailed());
+
+    const auto requestResponse = [] {
+        return moonbase::http_response{
+            200, {}, R"({"id":"request-123","request":"https://demo.moonbase.sh/api/client/activations/request-123?format=JWT","browser":"https://demo.moonbase.sh/activate?token=request-123"})"};
+    };
+
+    // The browser opened: nothing to flag.
+    fx.transport->responses.push_back(requestResponse());
+    controller.beginOnlineActivation();
+    REQUIRE(pumpUntil([&] { return controller.pendingBrowserUrl().isNotEmpty(); }));
+    CHECK_FALSE(controller.browserOpenFailed());
+    controller.cancelActivation();
+
+    // It didn't (no default browser): flagged until the activation ends.
+    canOpen = false;
+    fx.transport->responses.push_back(requestResponse());
+    controller.beginOnlineActivation();
+    REQUIRE(pumpUntil([&] { return controller.pendingBrowserUrl().isNotEmpty(); }));
+    CHECK(controller.browserOpenFailed());
+    controller.cancelActivation();
+    CHECK_FALSE(controller.browserOpenFailed());
+
+    // A later attempt that opens clears it.
+    canOpen = true;
+    fx.transport->responses.push_back(requestResponse());
+    controller.beginOnlineActivation();
+    REQUIRE(pumpUntil([&] { return controller.pendingBrowserUrl().isNotEmpty(); }));
+    CHECK_FALSE(controller.browserOpenFailed());
+    controller.cancelActivation();
+}
+
+TEST_CASE("a previewed browser wait carries its link, and the next preview drops it")
+{
+    controller_fixture fx;
+    ActivationController controller(fx.config, fx.makeLicensing());
+    controller.setPreviewState(Screen::BrowserWait);
+    CHECK(controller.pendingBrowserUrl().isEmpty());
+
+    controller.setPreviewBrowserLink("https://demo.moonbase.sh/activate?token=preview", false);
+    CHECK(controller.screen() == Screen::BrowserWait);
+    CHECK(controller.pendingBrowserUrl() == "https://demo.moonbase.sh/activate?token=preview");
+    CHECK(controller.browserOpenFailed());
+
+    controller.setPreviewState(Screen::Welcome);
+    CHECK(controller.pendingBrowserUrl().isEmpty());
+    CHECK_FALSE(controller.browserOpenFailed());
 }
 
 TEST_CASE("a trial that ends while it is being unlocked still locks, and the activation carries on")
