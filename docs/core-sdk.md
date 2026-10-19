@@ -201,6 +201,87 @@ even when calling `validate_token_online` — the SDK never contacts the API for
 them. Use `validate_token_local` directly when you want the local-only check
 explicitly.
 
+## Licenses that cover some versions
+
+A license bought outright can cover only some versions of your app: the releases
+published while its updates lasted ("12 months of updates"), or every version up to
+a major ("versions up to 2.x"). It never expires because of it; it just doesn't cover
+the versions after that. `license::release_access` says what it covers, and is empty
+for a license that covers every version:
+
+- `updates_until`: releases published until then are covered, and every version while
+  it has not passed.
+- `up_to_major`: every version whose major is at most this is covered.
+- `up_to_version`: once updates have ended, the last version published before they
+  did, covered along with every older one. Empty while updates last, and when nothing
+  was published before they ended (then every version is covered).
+
+The limits add up: a license with both covers a version that either one covers.
+
+Set `application_version` to the version that has to be covered. A license that
+doesn't cover it throws `release_not_covered_error` (`error_type::release_not_covered`).
+For an online license, `validate_token_online` leaves that to Moonbase when it asks
+it, since Moonbase knows of an upgrade bought since the token was issued. The device
+judges it by its own clock when Moonbase isn't asked: for an offline license, within
+`online_validation_min_interval`, and when Moonbase can't be reached within the grace
+period. `validate_token_local` and `read_offline_license` check it too, but
+`get_requested_activation` does not: Moonbase activates only a license that covers the
+version the request named, and the seat is taken by then. Set
+`enforce_release_access = false` to turn the check on the device off; Moonbase checks
+either way. A version that can't be read is not checked. `parse_app_version` reads one
+the way Moonbase does: an optional leading `v`, then two to four numbers (a fourth is
+ignored), with any `-beta` or `+build` suffix dropped, so `3.0.0-beta.2` is judged as
+3.0.0.
+
+An offline license is never checked online, so it is judged by what its token said when
+the license file was made. A version limit ("up to 2.x") holds for good, and so does a
+time limit in a file made after updates ended, which names the last version covered. A
+file made while updates last can't name it, so once they end it keeps covering later
+versions until the customer downloads a new license file, which does. Downloading a
+later release is still refused when the product's downloads are limited to owners.
+
+`release_not_covered_error` derives from `license_invalid_error`, so code that refuses
+to run on an invalid license refuses here too. But don't delete the stored license for
+it: it still covers the versions it did, so the customer can go back to one of them,
+or upgrade and keep going. Catch it first and offer the upgrade:
+
+```cpp
+try {
+    auto validated = licensing.validate_token_online(local->token);
+    // unlock
+} catch (const moonbase::release_not_covered_error& ex) {
+    // Keep the license. validate_token_online already stored the copy Moonbase
+    // sent along with the refusal (ex.license()).
+    offer_upgrade(ex.app_version(), ex.release_access(), ex.upgrade_url());
+} catch (const moonbase::license_invalid_error&) {
+    licensing.store().delete_local_license(); // revoked, or not for this device
+}
+```
+
+`upgrade_url()` is where the customer buys the upgrade or renewal. Only Moonbase knows
+it, so it is empty when the device refused, and when the store sells none. Moonbase's
+browser activation page offers the upgrade as well, to a signed-in customer, and then
+activates the device, so starting a `request_activation` works without a link.
+
+To check another version, such as an update before offering to download it, use
+`covers_version`:
+
+```cpp
+if (!moonbase::covers_version(license, latest_version)) {
+    // offer the upgrade along with the update
+}
+```
+
+`covers_version(license, version, now)` applies the same rule as Moonbase and every
+other Moonbase SDK. The vendored
+[`release-access-vectors.json`](../tests/vectors/release-access-vectors.json) pins it
+down case by case. For downloads, `inventory_client::get_release` says whether the
+customer's licenses cover a release (`release_covered`, with `release_access` and
+`upgrade_url`), `can_download` takes that into account, and `get_download_url` throws
+`release_not_covered_error` for a release they don't cover. `revoke_activation` and
+the add-on calls never judge the version, so a license can always be deactivated and
+its add-ons managed.
+
 ## Revoking an Activation
 
 To free up the activation seat for the current device — typically wired to a
@@ -319,6 +400,7 @@ trying again can help:
 | --- | --- | --- |
 | `api_error` | No definitive answer. The API was unreachable (`status_code()` is 0), rate limited (429), failing (5xx, including the gateway's own 502 and 504), or something other than the API answered, such as a captive portal | Retry later; `retry_after()` says when, if the server did |
 | `license_invalid_error` | The API refused the license for good: a bad signature or product, or a revoked license or activation | Lock, and offer to activate again |
+| `release_not_covered_error` | The license is valid, but doesn't cover `application_version`. A `license_invalid_error` | Lock, keep the license, and [offer the upgrade](#licenses-that-cover-some-versions) |
 | `license_expired_error` | The license has expired: a trial ended, or a subscription lapsed | Lock, and offer to buy |
 | `store_closed_error` | The merchant closed their Moonbase account. No verdict on the license | Treat it like being offline |
 | `activation_request_error` | A browser activation request can never complete | Start a new request |
@@ -334,13 +416,14 @@ How each call maps what the API returns:
 | | 404 (no such product or account) | `api_error` |
 | `get_requested_activation` | 204 or 404 | `std::nullopt` |
 | | 400 | `activation_request_error` |
-| `validate_token_online`, `revoke_activation` | 400 | `license_invalid_error` (`license_expired_error` when `errorType` is `LicenseExpired`) |
+| `validate_token_online`, `revoke_activation` | 400 | `license_invalid_error` (`license_expired_error` when `errorType` is `LicenseExpired`, `release_not_covered_error` when it is `ReleaseNotCovered`) |
 | | 403 or 404 | `api_error`, covered by the grace period |
 | `activate_sub_product`, `request_sub_product_trial`, `list_sub_products` | 400 with `errorType` `LicenseInvalid`, `LicenseRevoked` or `LicenseActivationRevoked` | `license_invalid_error` (`license_expired_error` for `LicenseExpired`) |
 | | 400 with `errorType: NoEligibleLicense` | `no_eligible_license_error` |
 | | any other 400 | `operation_not_supported_error` with the server's reason |
 | | 404 | `api_error` |
-| `inventory_client` | any failure but a closed store | `api_error` with the status; these endpoints never judge the license |
+| `inventory_client` | 403 with `errorType: ReleaseNotCovered` | `release_not_covered_error` with the upgrade link: the customer's licenses don't cover the release |
+| | any other failure but a closed store | `api_error` with the status; these endpoints never judge the license |
 | any | 410 with `errorType: StoreClosed` | `store_closed_error`, read before the status |
 | any | 429, 5xx, a transport failure | `api_error` |
 

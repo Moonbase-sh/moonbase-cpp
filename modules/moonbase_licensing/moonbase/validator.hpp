@@ -4,6 +4,7 @@
 #include <chrono>
 #include <cctype>
 #include <cstring>
+#include <limits>
 #include <memory>
 #include <optional>
 #include <sstream>
@@ -19,6 +20,7 @@
 #include "moonbase/detail/time.hpp"
 #include "moonbase/device_id_resolver.hpp"
 #include "moonbase/errors.hpp"
+#include "moonbase/release_access.hpp"
 #include "moonbase/types.hpp"
 
 namespace moonbase {
@@ -139,6 +141,89 @@ inline std::optional<long long> optional_integer(const nlohmann::json& json, con
         throw license_invalid_error(std::string("License token claim is not an integer: ") + key);
     }
     return json.at(key).get<long long>();
+}
+
+// An integer claim, or a string holding one. Anything else reads as absent
+// rather than failing the license, since a later release may change its shape.
+inline std::optional<long long> lenient_integer(const nlohmann::json& payload, const char* key)
+{
+    if (!payload.contains(key)) {
+        return std::nullopt;
+    }
+    const auto& value = payload.at(key);
+    if (value.is_number_unsigned()) {
+        const auto number = value.get<unsigned long long>();
+        if (number > static_cast<unsigned long long>((std::numeric_limits<long long>::max)())) {
+            return std::nullopt;
+        }
+        return static_cast<long long>(number);
+    }
+    if (value.is_number_integer()) {
+        return value.get<long long>();
+    }
+    if (!value.is_string()) {
+        return std::nullopt;
+    }
+    const auto& text = value.get_ref<const std::string&>();
+    std::size_t index = !text.empty() && text.front() == '-' ? 1 : 0;
+    // Eighteen digits cannot overflow, and no claim this reads needs more.
+    if (index == text.size() || text.size() - index > 18) {
+        return std::nullopt;
+    }
+    long long number = 0;
+    for (; index < text.size(); ++index) {
+        if (text[index] < '0' || text[index] > '9') {
+            return std::nullopt;
+        }
+        number = number * 10 + (text[index] - '0');
+    }
+    return text.front() == '-' ? -number : number;
+}
+
+// Which versions the license covers, from its l:rel:until (seconds since the
+// epoch), l:rel:major and l:rel:upto claims, or empty when it covers every
+// version. Read leniently: a claim that can't be read is left out rather than
+// failing the license, and Moonbase refuses a version it doesn't cover anyway.
+inline std::optional<license_release_access> read_release_access(const nlohmann::json& payload)
+{
+    license_release_access access;
+
+    // Held to the years 1 to 9999, and to what this platform's clock reaches:
+    // system_clock counts in nanoseconds on some standard libraries, which ends
+    // in the year 2262. Clamped rather than dropped, since dropping the end of
+    // updates would leave a major limit alone, covering fewer versions than
+    // Moonbase does. Parenthesised so <windows.h>'s min/max macros cannot expand.
+    if (const auto until = lenient_integer(payload, "l:rel:until")) {
+        // seconds::rep is long on some standard libraries, so it is converted
+        // for std::min and std::max, which take one type.
+        constexpr long long first_second_of_1 = -62135596800;
+        constexpr long long last_second_of_9999 = 253402300799;
+        const auto clock_min = static_cast<long long>(std::chrono::duration_cast<std::chrono::seconds>(
+            (std::chrono::system_clock::time_point::min)().time_since_epoch()).count()) + 1;
+        const auto clock_max = static_cast<long long>(std::chrono::duration_cast<std::chrono::seconds>(
+            (std::chrono::system_clock::time_point::max)().time_since_epoch()).count()) - 1;
+        const auto lowest = (std::max)(first_second_of_1, clock_min);
+        const auto highest = (std::min)(last_second_of_9999, clock_max);
+        access.updates_until = from_epoch_seconds((std::min)((std::max)(*until, lowest), highest));
+    }
+
+    if (const auto major = lenient_integer(payload, "l:rel:major"); major && *major >= 0) {
+        access.up_to_major = major;
+    }
+
+    if (!access.updates_until && !access.up_to_major) {
+        // As Moonbase reads a token: without an end to updates or a highest
+        // major, it covers every release, so an l:rel:upto alone means nothing.
+        return std::nullopt;
+    }
+
+    if (payload.contains("l:rel:upto") && payload.at("l:rel:upto").is_string()) {
+        auto version = payload.at("l:rel:upto").get<std::string>();
+        if (parse_app_version(version)) {
+            access.up_to_version = std::move(version);
+        }
+    }
+    return access;
 }
 
 inline std::vector<std::string> split_claim_list(const std::optional<std::string>& value)
@@ -348,18 +433,54 @@ public:
         }
     }
 
+    // Checks a token on the device, with no network: its signature, audience,
+    // issuer, expiry, that it is bound to this device, and that it covers
+    // application_version (unless enforce_release_access is off), throwing
+    // release_not_covered_error when it doesn't.
     [[nodiscard]] license validate_token(std::string_view token) const
+    {
+        auto result = validate_token_internal(token, false);
+        ensure_covers_application_version(result);
+        return result;
+    }
+
+    // Same as validate_token, but does not throw on a past `exp`, nor for a
+    // version the license doesn't cover. Intended for operations like revoke
+    // where the seat may still be allocated server-side even after the local
+    // token has aged out. All other checks (signature, audience, issuer, device
+    // match) still apply.
+    [[nodiscard]] license validate_token_allow_expired(std::string_view token) const
+    {
+        return validate_token_internal(token, true);
+    }
+
+    // Same as validate_token, but without the release access check: for a
+    // license Moonbase is about to judge itself, which may answer with a token
+    // that covers more, such as after the customer bought an upgrade.
+    [[nodiscard]] license validate_token_ignoring_release_access(std::string_view token) const
     {
         return validate_token_internal(token, false);
     }
 
-    // Same as validate_token, but does not throw on a past `exp`. Intended for
-    // operations like revoke where the seat may still be allocated server-side
-    // even after the local token has aged out. All other checks (signature,
-    // audience, issuer, device match) still apply.
-    [[nodiscard]] license validate_token_allow_expired(std::string_view token) const
+    // Throws release_not_covered_error when the license doesn't cover
+    // application_version, judged by the device clock. Does nothing when
+    // enforce_release_access is off, when no application_version is set, and
+    // when it can't be read as a version.
+    void ensure_covers_application_version(const license& value) const
     {
-        return validate_token_internal(token, true);
+        if (!options_.enforce_release_access || !options_.application_version) {
+            return;
+        }
+        const auto version = parse_app_version(*options_.application_version);
+        if (!version || covers_version(value, *options_.application_version)) {
+            return;
+        }
+        auto app_version = std::to_string(version->major) + "." + std::to_string(version->minor) + "."
+            + std::to_string(version->patch);
+        // Built first: arguments are evaluated in no set order, so the move
+        // below could otherwise empty app_version before it is read.
+        const auto message = "The license doesn't cover version " + app_version;
+        throw release_not_covered_error(message, value, std::move(app_version));
     }
 
 private:
@@ -416,6 +537,7 @@ private:
         result.owned_sub_product_ids = detail::split_claim_list(detail::optional_string(payload, "sp:owned"));
         result.sub_products = detail::read_sub_products_claim(payload);
         result.subscription_id = detail::optional_string(payload, "s:id");
+        result.release_access = detail::read_release_access(payload);
 
         result.issued_to.id = detail::require_string(payload, "u:id");
         result.issued_to.name = detail::require_string(payload, "u:name");

@@ -179,6 +179,7 @@ if(NOT MOONBASE_JUCE_MODULE_ONLY)
             tests/inventory_tests.cpp
             tests/licensing_tests.cpp
             tests/process_dedup_tests.cpp
+            tests/release_access_tests.cpp
             tests/store_tests.cpp
             tests/sub_product_tests.cpp
             tests/validator_tests.cpp
@@ -191,7 +192,8 @@ if(NOT MOONBASE_JUCE_MODULE_ONLY)
         # generator puts the binary. CMAKE_CURRENT_SOURCE_DIR is forward-slashed on
         # every platform, so this needs no escaping.
         target_compile_definitions(moonbase_tests PRIVATE
-            MOONBASE_FINGERPRINT_VECTORS_PATH="${CMAKE_CURRENT_SOURCE_DIR}/tests/vectors/fingerprint-vectors.json")
+            MOONBASE_FINGERPRINT_VECTORS_PATH="${CMAKE_CURRENT_SOURCE_DIR}/tests/vectors/fingerprint-vectors.json"
+            MOONBASE_RELEASE_ACCESS_VECTORS_PATH="${CMAKE_CURRENT_SOURCE_DIR}/tests/vectors/release-access-vectors.json")
         moonbase_apply_sanitizer(moonbase_tests)
         include(doctest)
         doctest_discover_tests(moonbase_tests)
