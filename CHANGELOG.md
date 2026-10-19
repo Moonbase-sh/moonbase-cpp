@@ -1,3 +1,10 @@
+# [4.11.0](https://github.com/Moonbase-sh/moonbase-cpp/compare/v4.10.1...v4.11.0) (2026-10-19)
+
+
+### Features
+
+* **juce:** support JUCE 9 ([#47](https://github.com/Moonbase-sh/moonbase-cpp/issues/47)) ([6229287](https://github.com/Moonbase-sh/moonbase-cpp/commit/6229287beedc02473fca6e01fac7303cec717f2b))
+
 ## [4.10.1](https://github.com/Moonbase-sh/moonbase-cpp/compare/v4.10.0...v4.10.1) (2026-10-17)
 
 
