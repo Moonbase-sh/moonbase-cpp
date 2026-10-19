@@ -436,6 +436,30 @@ ActivationController::AddOnsInfo makeShortAddOns()
     return info;
 }
 
+// A license bought with 12 months of updates that ended before 3.0.0 came out:
+// it covers releases up to 2.3.0. The NotCovered snapshots run as 3.0.0.
+moonbase::license makeUpdatesEndedLicense()
+{
+    auto lic = makeLicense(false);
+    lic.licensed_product.current_release_version = "3.0.0";
+    lic.release_access = moonbase::license_release_access{};
+    lic.release_access->updates_until = kPreviewNow - std::chrono::hours(24 * 200);
+    lic.release_access->up_to_version = "2.3.0";
+    return lic;
+}
+
+// A license for every version up to 2.x.
+moonbase::license makeUpToMajorLicense()
+{
+    auto lic = makeLicense(false);
+    lic.licensed_product.current_release_version = "3.0.0";
+    lic.release_access = moonbase::license_release_access{};
+    lic.release_access->up_to_major = 2;
+    return lic;
+}
+
+const juce::String kPreviewUpgradeUrl = "https://demo.moonbase.sh/buy/demo-app?variation=v1&license=license-7Q2X";
+
 int gSnapW = ActivationComponent::defaultWidth;
 int gSnapH = ActivationComponent::defaultHeight;
 
@@ -635,6 +659,31 @@ int main(int argc, char* argv[])
     writeSnapshot(outDir, "06e-trial-endless-ended", [](ActivationController& c)
                   { c.setPreviewState(Screen::Expired, makeEndlessTrial()); });
 
+    {
+        // A license that doesn't cover the version that runs.
+        auto cfg = demoConfig();
+        cfg.applicationVersion = "3.0.0";
+        writeSnapshot(outDir, "06f-not-covered-updates-ended",
+                      [](ActivationController& c)
+                      { c.setPreviewNotCovered(makeUpdatesEndedLicense(), kPreviewUpgradeUrl); },
+                      cfg);
+
+        // Refused on this computer, so no upgrade link: the button starts an
+        // online activation, which offers the upgrade.
+        writeSnapshot(outDir, "06g-not-covered-up-to-major",
+                      [](ActivationController& c) { c.setPreviewNotCovered(makeUpToMajorLicense()); },
+                      cfg);
+
+        writeSnapshot(outDir, "06h-not-covered-offline",
+                      [](ActivationController& c)
+                      {
+                          auto lic = makeUpToMajorLicense();
+                          lic.method = moonbase::activation_method::offline;
+                          c.setPreviewNotCovered(lic);
+                      },
+                      cfg);
+    }
+
     writeSnapshot(outDir, "07-details", [](ActivationController& c)
                   { c.setPreviewState(Screen::Details, makeLicense(false)); });
 
@@ -710,6 +759,18 @@ int main(int argc, char* argv[])
                       [notes](ActivationController& c)
                       { c.setPreviewUpdate(UpdatePhase::Ready, makeUpdateTrialLicense(), notes, 0.0,
                                            {}, /*canDownload*/ false); },
+                      cfg);
+
+        // 2.4.0 came out after this license's updates ended.
+        writeSnapshot(outDir, "14b-update-not-covered",
+                      [notes](ActivationController& c)
+                      {
+                          auto lic = makeUpdatesEndedLicense();
+                          lic.licensed_product.current_release_version = "2.4.0";
+                          lic.release_access->up_to_version = "2.3.1";
+                          c.setPreviewUpdate(UpdatePhase::Ready, lic, notes, 0.0, {}, true,
+                                             /*covered*/ false, kPreviewUpgradeUrl);
+                      },
                       cfg);
     }
 
@@ -909,6 +970,18 @@ int main(int argc, char* argv[])
                       [](ActivationController& c)
                       { c.setPreviewState(Screen::Trial, makeLicense(true)); },
                       emberTheme());
+
+        // Monospaced, so the NotCovered copy runs widest here.
+        auto notCoveredCfg = emberTheme();
+        notCoveredCfg.applicationVersion = "3.0.0";
+        writeSnapshot(outDir, "17b-theme-ember-not-covered",
+                      [](ActivationController& c)
+                      {
+                          auto lic = makeUpdatesEndedLicense();
+                          lic.release_access->up_to_major = 2;
+                          c.setPreviewNotCovered(lic, kPreviewUpgradeUrl);
+                      },
+                      notCoveredCfg);
 
         writeSnapshot(outDir, "18-theme-daylight-success",
                       [](ActivationController& c)

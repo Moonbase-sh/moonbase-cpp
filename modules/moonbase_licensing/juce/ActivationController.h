@@ -54,6 +54,7 @@ public:
         Offline,        // offline request/response file flow
         Trial,          // a valid trial license is loaded
         Expired,        // a trial license that has ended (plugin locked; see expiredTrial())
+        NotCovered,     // a license that doesn't cover this version of the app (plugin locked; see notCovered())
         Details,        // a valid full license is loaded
         UpdateAvailable,// a valid license, but a newer app version has been released
         Error,          // an operation failed; statusMessage() has detail
@@ -84,6 +85,28 @@ public:
         // product's release access-control level. False e.g. for a trial when the
         // product restricts downloads to owners. Known once notes have loaded.
         bool canDownload = true;
+        // False when Moonbase says the customer's licenses don't cover the new
+        // version (canDownload is false then too): it needs an upgrade, bought
+        // at upgradeUrl (empty when the store sells none). Known once notes
+        // have loaded.
+        bool covered = true;
+        std::optional<moonbase::license_release_access> releaseAccess; // what the licenses cover
+        juce::String upgradeUrl;
+    };
+
+    // State backing the NotCovered screen: a license that is valid, but doesn't
+    // cover the version of the app that runs, such as one with 12 months of
+    // updates that ended before this version came out. The plugin is locked,
+    // but the license stays stored, since it still covers the versions it did.
+    struct NotCoveredInfo
+    {
+        moonbase::license license; // for display; the stored license
+        juce::String appVersion;   // the version it doesn't cover, MAJOR.MINOR.PATCH (empty when unknown)
+        std::optional<moonbase::license_release_access> releaseAccess; // what it covers
+        // Where the customer buys the upgrade or renewal. Only Moonbase knows it,
+        // so it is empty when the license was refused on this computer (offline,
+        // or checked online moments ago), and when the store sells none.
+        juce::String upgradeUrl;
     };
 
     // State backing the add-ons screen: the product's add-ons the customer can do
@@ -161,7 +184,23 @@ public:
     // keeps the license. No-op for offline licenses, and while an online
     // activation is in progress (it brings a fresh license of its own). The
     // optional callback runs on the message thread with the outcome.
+    //
+    // On the NotCovered screen it re-checks the license that doesn't cover this
+    // version, so once the customer has bought the upgrade it unlocks. While it
+    // runs, isRefreshing() is true.
     void refreshLicense(bool force = true, std::function<void(bool refreshed)> onComplete = {});
+
+    // True while a refreshLicense() call is waiting for its answer.
+    [[nodiscard]] bool isRefreshing() const noexcept { return refreshesInFlight_ > 0; }
+
+    //== Licenses that cover only some versions =================================
+    // Offer the upgrade the screen calls for. On the NotCovered screen: open the
+    // upgrade page Moonbase named, or, without one, start an online activation,
+    // whose browser page offers the upgrade where the store sells one and
+    // activates this computer once a license covers this version. On the update
+    // screen for a version the license doesn't cover: open its upgrade page.
+    // After the purchase, refreshLicense() picks up the upgraded license.
+    void upgradeLicense();
 
     //== App update flow =======================================================
     // True when a valid license is loaded, enableUpdatePrompt is set, and the
@@ -277,7 +316,8 @@ public:
     void activateOffline();                // validate response locally + persist
 
     //== Deactivate / forget ===================================================
-    void deactivate();   // server-side revoke (async); local forget fallback
+    void deactivate();   // server-side revoke (async); local forget fallback. Also hands
+                         // back the seat of a license that doesn't cover this version
     void clearLicense(); // local-only forget
 
     //== Navigation (screens not driven purely by license state) ===============
@@ -301,21 +341,35 @@ public:
     void setPreviewBrowserLink(juce::String browserUrl, bool opened = true);
 
     // Pin the wall clock used for trial-countdown math (trialDaysRemaining,
-    // daysUntil) and add-on expiry (hasSubProduct, activeSubProducts), so previews
-    // and snapshot tests render a fixed number of days regardless of the real
-    // date. For previews only, which stop the license watch; validation keeps the
-    // real clock. Pass nullopt to unpin and fall back to the system clock.
+    // daysUntil), add-on expiry (hasSubProduct, activeSubProducts) and the dates
+    // the built-in screens describe (displayClock), so previews and snapshot tests
+    // render a fixed number of days regardless of the real date. For previews
+    // only, which stop the license watch; validation keeps the real clock. Pass
+    // nullopt to unpin and fall back to the system clock.
     void setPreviewClock(std::optional<std::chrono::system_clock::time_point> now);
+
+    // The clock the built-in screens judge dates by: the pinned preview clock,
+    // else the system clock.
+    [[nodiscard]] std::chrono::system_clock::time_point displayClock() const { return clockNow(); }
 
     // Force the UpdateAvailable screen with synthetic update state (no network),
     // for previews + snapshot tests. newVersion is read from the license's
     // current_release_version; currentVersion from the config's app version.
+    // covered = false previews a new version the license doesn't cover (its
+    // release access comes from the license).
     void setPreviewUpdate(UpdateInfo::Phase phase,
                           moonbase::license license,
                           juce::String releaseNotes = {},
                           double progress = 0.0,
                           juce::String error = {},
-                          bool canDownload = true);
+                          bool canDownload = true,
+                          bool covered = true,
+                          juce::String upgradeUrl = {});
+
+    // Force the NotCovered screen for a license that doesn't cover the config's
+    // app version (no network), for previews + snapshot tests. Its release
+    // access comes from the license.
+    void setPreviewNotCovered(moonbase::license license, juce::String upgradeUrl = {});
 
     // Force the AddOns screen with a synthetic license and add-on list (no
     // network), for previews + snapshot tests.
@@ -336,6 +390,11 @@ public:
     // The ended trial backing the Expired screen. license() stays empty in this
     // state (the plugin is locked); this is for display only.
     [[nodiscard]] const std::optional<moonbase::license>& expiredTrial() const noexcept { return expiredTrial_; }
+    // The license backing the NotCovered screen, and what it covers. license()
+    // stays empty in this state (the plugin is locked). Set from the moment a
+    // license turns out not to cover this version until a license is loaded or
+    // the plugin locks for another reason.
+    [[nodiscard]] const std::optional<NotCoveredInfo>& notCovered() const noexcept { return notCovered_; }
     // Why the license was lost: set when a license is (or a stored one turns out
     // to be) deactivated, expired, rejected or unverifiable, and back to None as
     // soon as a license is loaded. The built-in welcome screen explains it; read
@@ -422,6 +481,11 @@ private:
     void applyLicense(std::optional<moonbase::license> value);
     void lock(LockReason reason); // drop the license and route to Welcome, saying why
     void showTrialExpired(moonbase::license expired); // locks + routes to the Expired screen
+    void showNotCovered(NotCoveredInfo info);          // locks, keeps the license stored + routes to NotCovered
+    [[nodiscard]] static NotCoveredInfo notCoveredFrom(const moonbase::release_not_covered_error& error,
+                                                       const moonbase::license& fallback);
+    void storeLicense(const moonbase::license& value, const char* context); // best-effort persist under the lock
+    bool openBrowser(const juce::URL& url); // config.openBrowser, else the default browser
     [[nodiscard]] Screen screenForCurrentLicense() const; // Welcome / Trial / Details
     void onActivationFulfilled(moonbase::license value);
     void endActivationFlows(); // stop polling, forget offline-flow progress, drop in-flight continuations
@@ -435,6 +499,9 @@ private:
     [[nodiscard]] bool activationInFlight() const noexcept;
     void onLicenseFileRemoved();
     void adoptStoredLicense(moonbase::license stored);
+    void adoptNotCovered(NotCoveredInfo info); // a stored license that doesn't cover this version: locks
+    // True when `copy` is an older copy of the activation held (licensed or not covered).
+    [[nodiscard]] bool isOlderThanHeld(const moonbase::license& copy) const;
     void stopLicenseWatch();
 
     void resetAddOns(); // the license they were for went or was replaced
@@ -475,6 +542,7 @@ private:
     std::optional<moonbase::license> license_;
     std::atomic<bool> licensed_{false}; // mirror of license_.has_value() for the audio thread
     std::optional<moonbase::license> expiredTrial_; // display-only backing for the Expired screen
+    std::optional<NotCoveredInfo> notCovered_;      // display-only backing for the NotCovered screen
     LockReason lockReason_ = LockReason::None;
     std::optional<moonbase::activation_request> pendingRequest_;
     bool browserOpenFailed_ = false; // for pendingRequest_; set with it

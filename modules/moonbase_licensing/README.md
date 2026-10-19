@@ -36,9 +36,9 @@ Add the module, fill in three fields, show one component.
   **Changed in 4.0.0**: see [Upgrading from 3.x](#upgrading-from-3x) if you have
   already shipped.
 - **Built-in UI.** A configurable, themeable `ActivationComponent` (and one-call
-  `ActivationDialog`) covering every state — welcome, activating, success, offline,
-  trial, trial expired, license details, and update-available — with animated
-  transitions and drag-and-drop for offline license files. Designed to sit as a modal
+  `ActivationDialog`) covering every state (welcome, activating, success, offline,
+  trial, trial expired, upgrade needed, license details, and update-available), with
+  animated transitions and drag-and-drop for offline license files. Designed to sit as a modal
   over your plugin and lock it until activated.
 - **Add-ons.** `controller.hasSubProduct("drum-kit")` says, on the message thread, whether
   to unlock an add-on the merchant includes in the license, `subProductFlag("drum-kit")`
@@ -153,6 +153,8 @@ picked up within a couple of seconds. Whenever the plugin locks, the modal prese
 itself again, even if the user closed it earlier (`config.autoPresentOnLock`). It says
 why (deactivated, expired, no longer valid, or not verified in time), leaves the host's
 keyboard focus alone, and closes again if the license comes back from another instance.
+A license that doesn't cover the running version (one whose updates ended before it came
+out, say) locks too, but stays stored, and the modal offers the upgrade.
 
 ## Going further
 

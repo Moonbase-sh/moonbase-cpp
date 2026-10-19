@@ -1629,6 +1629,149 @@ private:
     std::unique_ptr<juce::Drawable> warnIcon;
 };
 
+namespace {
+// "Renew updates" for a license whose updates ran out, "Upgrade license" for
+// one limited to some majors, as the customer portal words it.
+juce::String upgradeLabel(const std::optional<moonbase::license_release_access>& access)
+{
+    return access && access->updates_until ? juce::String("Renew updates") : juce::String("Upgrade license");
+}
+} // namespace
+
+//==============================================================================
+// Not covered: a valid license that doesn't cover this version of the app, such
+// as one whose updates ended before this version came out. Locked like an ended
+// trial, but the license stays: an upgrade or renewal makes it cover this one.
+class NotCoveredView : public ScreenView
+{
+public:
+    NotCoveredView(ActivationController& c, ActivationLookAndFeel& l) : ScreenView(c, l)
+    {
+        // Opens the browser either way: the upgrade page, or the activation page
+        // that offers it.
+        upgrade = std::make_unique<StyledButton>(l, StyledButton::Style::accent, upgradeLabel(std::nullopt),
+                                                 icons::fromStroke(icons::externalLink, l.palette.onAccent, 1.8f));
+        upgrade->onClick = [this] { controller.upgradeLicense(); };
+        addAndMakeVisible(*upgrade);
+
+        recheck = std::make_unique<LinkButton>(l, "Already upgraded? Check again", l.palette.textSecondary);
+        recheck->onClick = [this] { controller.refreshLicense(true); };
+        addChildComponent(*recheck); // visibility set in refresh()
+
+        // An offline license is never checked online: the upgraded one comes as
+        // a new license file.
+        offline = std::make_unique<LinkButton>(l, "Load an upgraded license file", l.palette.textSecondary);
+        offline->onClick = [this] { controller.showOffline(); };
+        addChildComponent(*offline);
+
+        warnIcon = icons::fromStroke(icons::warning, l.palette.trial, 1.8f);
+    }
+
+    void refresh() override
+    {
+        const auto& info = controller.notCovered();
+        const bool offlineLicense = info && info->license.method == moonbase::activation_method::offline;
+        recheck->setVisible(! offlineLicense);
+        offline->setVisible(offlineLicense && controller.config().enableOffline);
+
+        const bool renewal = info && info->releaseAccess && info->releaseAccess->updates_until;
+        const bool checking = controller.isRefreshing();
+        recheck->setLabel(checking  ? juce::String("Checking your license...")
+                          : renewal ? juce::String("Already renewed? Check again")
+                                    : juce::String("Already upgraded? Check again"),
+                          nullptr);
+        recheck->setEnabled(! checking);
+
+        upgrade->setButtonText(upgradeLabel(info ? info->releaseAccess : std::nullopt));
+        resized();
+        repaint();
+    }
+
+    void paint(Graphics& g) override
+    {
+        const auto& cfg = controller.config();
+        const auto& info = controller.notCovered();
+        auto r = getLocalBounds();
+
+        // Reserve the bottom for the buttons so content never slides under them.
+        r.removeFromBottom(46 + 14 + 20); // upgrade button, gap, link
+
+        // Header: a muted brand lockup + an amber "Upgrade needed" pill.
+        auto headerRow = r.removeFromTop(40);
+        auto pillSlot = headerRow.removeFromRight(170);
+        drawBrand(g, lnf, cfg.logo.get(), headerRow, cfg.resolvedProductName(), cfg.resolvedManufacturerName(),
+                  34.0f, 15.0f, /*muted*/ true);
+        drawPill(g, pillSlot, headerRow.getCentreY());
+
+        r.removeFromTop(26);
+        g.setColour(lnf.palette.textPrimary);
+        g.setFont(lnf.heading(24.0f));
+        g.drawFittedText(cfg.notCoveredTitleText(info ? info->appVersion : juce::String()), r.removeFromTop(30),
+                         Justification::topLeft, 1);
+        r.removeFromTop(8);
+
+        g.setColour(lnf.palette.textSecondary);
+        g.setFont(lnf.body(14.0f));
+        g.drawFittedText(cfg.notCoveredBodyText(info ? info->releaseAccess : std::nullopt, controller.displayClock()),
+                         r.removeFromTop(40), Justification::topLeft, 2, 1.0f);
+
+        // Amber "audio is bypassed, the license still works" callout.
+        r.removeFromTop(22);
+        auto callout = r.removeFromTop(juce::jmin(66, r.getHeight()));
+        g.setColour(lnf.palette.trial.withAlpha(0x12 / 255.0f));
+        g.fillRoundedRectangle(callout.toFloat(), 10.0f);
+        g.setColour(lnf.palette.trial.withAlpha(0x38 / 255.0f));
+        g.drawRoundedRectangle(callout.toFloat(), 10.0f, 1.0f);
+        auto inner = callout.reduced(15, 12);
+        auto iconArea = inner.removeFromLeft(18).withSizeKeepingCentre(18, 18).toFloat();
+        if (warnIcon != nullptr)
+            warnIcon->drawWithin(g, iconArea, juce::RectanglePlacement::centred, 1.0f);
+        inner.removeFromLeft(11);
+        g.setColour(lnf.palette.textBody);
+        g.setFont(lnf.body(13.0f));
+        g.drawFittedText("Audio processing is bypassed. Your license still works with the versions it covers, so "
+                         "you can go back to one of those, or upgrade to use this one.",
+                         inner.getX(), inner.getY(), inner.getWidth(), inner.getHeight(),
+                         Justification::centredLeft, 3, 1.0f);
+
+        // A failed check or browser launch, just above the button.
+        if (controller.statusMessage().isNotEmpty())
+        {
+            r.removeFromTop(14);
+            drawInlineError(g, lnf, r.removeFromTop(juce::jmin(34, r.getHeight())), controller.statusMessage());
+        }
+    }
+
+    void resized() override
+    {
+        auto r = getLocalBounds();
+        auto link = r.removeFromBottom(20);
+        recheck->setBounds(link);
+        offline->setBounds(link);
+        r.removeFromBottom(14);
+        upgrade->setBounds(r.removeFromBottom(46));
+    }
+
+private:
+    void drawPill(Graphics& g, Rectangle<int> slot, int centreY)
+    {
+        const juce::String label = juce::String("Upgrade needed").toUpperCase();
+        auto pf = lnf.heading(10.5f);
+        const auto pb = pill::rightAlignedIn(slot, headerRightInset,
+                                             pill::width(pf, label, pill::dotD), 22.0f, centreY);
+        pill::background(g, pb, lnf.palette.trial.withAlpha(0x1e / 255.0f),
+                         lnf.palette.trial.withAlpha(0x52 / 255.0f));
+        pill::dot(g, pb, lnf.palette.trial);
+        g.setFont(pf);
+        g.drawText(label, pill::labelArea(pb, pill::dotD), Justification::centredLeft);
+    }
+
+    std::unique_ptr<StyledButton> upgrade;
+    std::unique_ptr<LinkButton> recheck;
+    std::unique_ptr<LinkButton> offline;
+    std::unique_ptr<juce::Drawable> warnIcon;
+};
+
 //==============================================================================
 // The license view's "Add-ons" row (config.showAddOns): how many add-ons the
 // license unlocks here, and the way to the add-ons screen.
@@ -2696,6 +2839,13 @@ public:
         unlock->onClick = [this] { controller.beginOnlineActivation(); };
         addChildComponent(*unlock);
 
+        // Shown instead of Download when the license doesn't cover the new
+        // version and the store sells the upgrade.
+        upgrade = std::make_unique<StyledButton>(l, StyledButton::Style::accent, upgradeLabel(std::nullopt),
+                                                 icons::fromStroke(icons::externalLink, l.palette.onAccent, 1.8f));
+        upgrade->onClick = [this] { controller.upgradeLicense(); };
+        addChildComponent(*upgrade);
+
         skip = std::make_unique<LinkButton>(l, "Skip this update", l.palette.textSecondary);
         skip->onClick = [this]
         {
@@ -2727,10 +2877,14 @@ public:
         const bool busy = info.phase == Phase::Loading || info.phase == Phase::Downloading;
 
         // Once notes have loaded, swap the Download button for an Unlock CTA when
-        // this license isn't entitled to the installer.
+        // this license isn't entitled to the installer, or for the upgrade when
+        // it doesn't cover the new version.
         const bool gated = info.phase != Phase::Loading && ! info.canDownload;
+        const bool notCovered = gated && ! info.covered;
         download->setVisible(! gated);
-        unlock->setVisible(gated);
+        unlock->setVisible(gated && ! notCovered);
+        upgrade->setVisible(notCovered && info.upgradeUrl.isNotEmpty());
+        upgrade->setButtonText(upgradeLabel(info.releaseAccess));
 
         switch (info.phase)
         {
@@ -2793,6 +2947,7 @@ public:
         const auto l = computeLayout();
         download->setBounds(l.button);
         unlock->setBounds(l.button);
+        upgrade->setBounds(l.button);
         skip->setBounds(l.skip);
 
         const auto area = l.notes;
@@ -2823,6 +2978,8 @@ private:
         // otherwise gives the notes card more room.
         const bool gated = ! info.canDownload && info.phase != Phase::Loading;
         const bool showStatus = info.phase == Phase::Downloading || info.error.isNotEmpty() || gated;
+        // Two lines: the version that needs it, and what the license covers.
+        const bool tallStatus = gated && ! info.covered && info.error.isEmpty();
 
         auto r = getLocalBounds();
 
@@ -2831,7 +2988,7 @@ private:
         r.removeFromBottom(10);
         if (showStatus)
         {
-            l.status = r.removeFromBottom(18);
+            l.status = r.removeFromBottom(tallStatus ? 34 : 18);
             r.removeFromBottom(10);
         }
         l.button = r.removeFromBottom(46);
@@ -2889,6 +3046,17 @@ private:
         {
             drawInlineError(g, lnf, row, info.error);
         }
+        else if (! info.covered)
+        {
+            auto note = (info.newVersion.isNotEmpty() ? "Version " + info.newVersion : juce::String("This update"))
+                      + " needs an upgrade.";
+            const auto covers = ActivationConfig::releaseAccessText(info.releaseAccess, controller.displayClock());
+            if (covers.isNotEmpty())
+                note << " " << covers;
+            g.setColour(lnf.palette.textSecondary);
+            g.setFont(lnf.body(12.5f));
+            g.drawFittedText(note, row, Justification::centredLeft, 2, 1.0f);
+        }
         else if (! info.canDownload)
         {
             const auto& lic = controller.license();
@@ -2905,6 +3073,7 @@ private:
     std::unique_ptr<UpdateNotesList> notesList;
     std::unique_ptr<StyledButton> download;
     std::unique_ptr<StyledButton> unlock;
+    std::unique_ptr<StyledButton> upgrade;
     std::unique_ptr<LinkButton> skip;
 };
 
@@ -2969,6 +3138,7 @@ struct ActivationComponent::Impl : public juce::ChangeListener,
         offline = std::make_unique<OfflineView>(controller, lnf);
         trial = std::make_unique<TrialView>(controller, lnf);
         expired = std::make_unique<ExpiredView>(controller, lnf);
+        notCovered = std::make_unique<NotCoveredView>(controller, lnf);
         details = std::make_unique<DetailsView>(controller, lnf);
         updateView = std::make_unique<UpdateAvailableView>(controller, lnf);
         addOnsView = std::make_unique<AddOnsView>(controller, lnf);
@@ -3076,7 +3246,7 @@ struct ActivationComponent::Impl : public juce::ChangeListener,
     std::vector<ScreenView*> views()
     {
         return { welcome.get(), browser.get(), success.get(), offline.get(), trial.get(),
-                 expired.get(), details.get(), updateView.get(), addOnsView.get() };
+                 expired.get(), notCovered.get(), details.get(), updateView.get(), addOnsView.get() };
     }
 
     ScreenView* viewFor(ActivationController::Screen s)
@@ -3090,6 +3260,7 @@ struct ActivationComponent::Impl : public juce::ChangeListener,
             case S::Offline:     return offline.get();
             case S::Trial:           return trial.get();
             case S::Expired:         return expired.get();
+            case S::NotCovered:      return notCovered.get();
             case S::Details:         return details.get();
             case S::UpdateAvailable: return updateView.get();
             case S::AddOns:          return addOnsView.get();
@@ -3391,7 +3562,7 @@ struct ActivationComponent::Impl : public juce::ChangeListener,
             case S::Loading: case S::Welcome: case S::Error:                   return 0;
             case S::Offline: case S::BrowserWait:                              return 1;
             case S::Trial:   case S::Success: case S::Details: case S::Expired:
-            case S::UpdateAvailable:                                          return 2;
+            case S::NotCovered: case S::UpdateAvailable:                      return 2;
             case S::AddOns:                                                   return 3;
         }
         return 0;
@@ -3599,6 +3770,7 @@ struct ActivationComponent::Impl : public juce::ChangeListener,
     std::unique_ptr<OfflineView> offline;
     std::unique_ptr<TrialView> trial;
     std::unique_ptr<ExpiredView> expired;
+    std::unique_ptr<NotCoveredView> notCovered;
     std::unique_ptr<DetailsView> details;
     std::unique_ptr<UpdateAvailableView> updateView;
     std::unique_ptr<AddOnsView> addOnsView;

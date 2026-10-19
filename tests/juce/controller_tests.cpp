@@ -4055,6 +4055,506 @@ TEST_CASE("onActivationChanged reports an add-on trial that runs out")
 }
 
 //==============================================================================
+// Licenses that cover only some versions of the app
+//==============================================================================
+namespace {
+
+// A license for every version up to 2.x; the app runs 3.0.0 in these tests.
+nlohmann::json upToMajorTwo()
+{
+    auto claims = default_claims();
+    claims["l:rel:major"] = 2;
+    return claims;
+}
+
+const char* const kUpgradeUrl = "https://demo.moonbase.sh/buy/demo-app?variation=v1&license=license-123";
+
+moonbase::http_response notCoveredResponse(const std::string& freshToken)
+{
+    nlohmann::json problem{
+        {"title", "Version not covered"},
+        {"status", 400},
+        {"detail", "The license doesn't cover version 3.0.0"},
+        {"errorType", "ReleaseNotCovered"},
+        {"appVersion", "3.0.0"},
+        {"upgradeUrl", kUpgradeUrl},
+        {"releaseAccess", {{"upToMajor", 2}}},
+        {"license", freshToken},
+    };
+    return moonbase::http_response{400, {}, problem.dump()};
+}
+
+juce::String storedToken(const controller_fixture& fx)
+{
+    return juce::String(nlohmann::json::parse(fx.licenseFile.loadFileAsString().toStdString())
+                            .at("token").get<std::string>());
+}
+
+} // namespace
+
+TEST_CASE("a license that doesn't cover this version locks, keeps the license and offers the upgrade")
+{
+    controller_fixture fx;
+    fx.config.applicationVersion = "3.0.0";
+    auto stale = upToMajorTwo();
+    stale["validated"] = now_seconds() - 3600; // past the throttle -> start() asks Moonbase
+    fx.seedStored(fx.token(stale));
+
+    auto fresh = upToMajorTwo();
+    fresh["validated"] = now_seconds();
+    const auto freshToken = fx.token(fresh);
+    fx.transport->responses.push_back(notCoveredResponse(freshToken));
+
+    ActivationController controller(fx.config, fx.makeLicensing());
+    std::optional<bool> reported;
+    controller.onLicenseChanged = [&](bool licensed) { reported = licensed; };
+    controller.start();
+
+    REQUIRE(pumpUntil([&] { return settled(controller) && reported.has_value(); }));
+    CHECK(controller.screen() == Screen::NotCovered);
+    CHECK_FALSE(controller.license().has_value());
+    CHECK_FALSE(controller.licensedFlag().load());
+    CHECK(reported == false);
+    CHECK(controller.lockReason() == LockReason::NotCovered);
+
+    REQUIRE(controller.notCovered().has_value());
+    const auto& info = *controller.notCovered();
+    CHECK(info.appVersion == "3.0.0");
+    CHECK(info.upgradeUrl == kUpgradeUrl);
+    REQUIRE(info.releaseAccess.has_value());
+    CHECK(info.releaseAccess->up_to_major == 2);
+    CHECK(info.license.id == "license-123");
+
+    // Kept, as the copy Moonbase sent along: it still covers 2.x.
+    REQUIRE(fx.licenseFile.existsAsFile());
+    CHECK(storedToken(fx) == juce::String(freshToken));
+
+    CHECK(controller.config().notCoveredTitleText(info.appVersion) == "Version 3.0.0 needs an upgrade");
+    CHECK(controller.config().notCoveredBodyText(info.releaseAccess) == "Your license covers versions up to 2.x.");
+    controller.showDetails(); // a host's "License" button
+    CHECK(controller.screen() == Screen::NotCovered);
+}
+
+TEST_CASE("a license checked moments ago is judged on this computer, with no upgrade link")
+{
+    controller_fixture fx;
+    fx.config.applicationVersion = "3.0.0";
+    fx.seedStored(fx.token(upToMajorTwo())); // validated 30s ago: the throttle skips Moonbase
+
+    ActivationController controller(fx.config, fx.makeLicensing());
+    controller.start();
+
+    REQUIRE(pumpUntil([&] { return settled(controller); }));
+    CHECK(controller.screen() == Screen::NotCovered);
+    REQUIRE(controller.notCovered().has_value());
+    CHECK(controller.notCovered()->upgradeUrl.isEmpty());
+    CHECK(fx.transport->requests.empty());
+    CHECK(fx.licenseFile.existsAsFile());
+}
+
+TEST_CASE("a version the license covers runs as before")
+{
+    controller_fixture fx;
+    fx.config.applicationVersion = "2.9.0";
+    fx.seedStored(fx.token(upToMajorTwo()));
+
+    ActivationController controller(fx.config, fx.makeLicensing());
+    controller.start();
+
+    REQUIRE(pumpUntil([&] { return settled(controller); }));
+    CHECK(controller.screen() == Screen::Details);
+    REQUIRE(controller.license().has_value());
+    REQUIRE(controller.license()->release_access.has_value());
+    CHECK_FALSE(controller.notCovered().has_value());
+}
+
+TEST_CASE("an offline license that doesn't cover this version stays stored")
+{
+    controller_fixture fx;
+    fx.config.applicationVersion = "3.0.0";
+    auto claims = upToMajorTwo();
+    claims["method"] = "Offline";
+    fx.seedStored(fx.token(claims));
+
+    ActivationController controller(fx.config, fx.makeLicensing());
+    controller.start();
+
+    REQUIRE(pumpUntil([&] { return settled(controller); }));
+    CHECK(controller.screen() == Screen::NotCovered);
+    REQUIRE(controller.notCovered().has_value());
+    CHECK(controller.notCovered()->license.method == moonbase::activation_method::offline);
+    CHECK(fx.licenseFile.existsAsFile());
+    CHECK(fx.transport->requests.empty());
+
+    // Offline licenses are never checked online, so there is nothing to refresh.
+    bool done = false, ok = true;
+    controller.refreshLicense(true, [&](bool refreshed) { done = true; ok = refreshed; });
+    CHECK(done);
+    CHECK_FALSE(ok);
+}
+
+TEST_CASE("an offline license file that doesn't cover this version is kept, and locks")
+{
+    controller_fixture fx;
+    fx.config.applicationVersion = "3.0.0";
+    ActivationController controller(fx.config, fx.makeLicensing());
+    controller.start();
+    REQUIRE(pumpUntil([&] { return controller.screen() == Screen::Welcome; }));
+
+    auto claims = upToMajorTwo();
+    claims["method"] = "Offline";
+    auto responseFile = fx.licenseFile.getParentDirectory().getChildFile(juce::Uuid().toString() + ".mb");
+    responseFile.replaceWithText(fx.token(claims));
+    controller.setOfflineResponse(responseFile);
+    controller.activateOffline();
+
+    CHECK(controller.screen() == Screen::NotCovered);
+    CHECK_FALSE(controller.license().has_value());
+    CHECK(fx.licenseFile.existsAsFile());
+    CHECK(controller.offlineError().isEmpty());
+    responseFile.deleteFile();
+}
+
+TEST_CASE("checking again after the upgrade unlocks")
+{
+    controller_fixture fx;
+    fx.config.applicationVersion = "3.0.0";
+    fx.seedStored(fx.token(upToMajorTwo()));
+    ActivationController controller(fx.config, fx.makeLicensing());
+    controller.start();
+    REQUIRE(pumpUntil([&] { return controller.screen() == Screen::NotCovered; }));
+
+    // Bought: the same license now covers up to 3.x.
+    auto upgraded = default_claims();
+    upgraded["l:rel:major"] = 3;
+    upgraded["validated"] = now_seconds();
+    const auto upgradedToken = fx.token(upgraded);
+    fx.transport->responses.push_back(moonbase::http_response{200, {}, upgradedToken});
+
+    bool done = false, ok = false;
+    controller.refreshLicense(true, [&](bool refreshed) { done = true; ok = refreshed; });
+    CHECK(controller.isRefreshing());
+    REQUIRE(pumpUntil([&] { return done; }));
+
+    CHECK(ok);
+    CHECK_FALSE(controller.isRefreshing());
+    CHECK(controller.screen() == Screen::Details);
+    CHECK(controller.licensedFlag().load());
+    CHECK_FALSE(controller.notCovered().has_value());
+    CHECK(controller.lockReason() == LockReason::None);
+    CHECK(storedToken(fx) == juce::String(upgradedToken));
+}
+
+TEST_CASE("checking again without a connection stays on the NotCovered screen and says so")
+{
+    controller_fixture fx;
+    fx.config.applicationVersion = "3.0.0";
+    fx.seedStored(fx.token(upToMajorTwo()));
+    ActivationController controller(fx.config, fx.makeLicensing());
+    controller.start();
+    REQUIRE(pumpUntil([&] { return controller.screen() == Screen::NotCovered; }));
+
+    // No queued response: the transport fails as an unreachable server does.
+    bool done = false;
+    controller.refreshLicense(true, [&](bool) { done = true; });
+    REQUIRE(pumpUntil([&] { return done; }));
+
+    CHECK(controller.screen() == Screen::NotCovered);
+    CHECK(controller.statusMessage().contains("Couldn't reach Moonbase"));
+    CHECK(controller.notCovered().has_value());
+    CHECK(fx.licenseFile.existsAsFile());
+}
+
+TEST_CASE("a re-validation that finds this version not covered locks and keeps the fresh copy")
+{
+    controller_fixture fx;
+    fx.config.applicationVersion = "3.0.0";
+    // Updates still lasting when this was issued, so it covers 3.0.0 on this computer.
+    auto claims = default_claims();
+    claims["l:rel:until"] = now_seconds() + 3600;
+    fx.seedStored(fx.token(claims));
+    ActivationController controller(fx.config, fx.makeLicensing());
+    controller.start();
+    REQUIRE(pumpUntil([&] { return controller.screen() == Screen::Details; }));
+
+    auto fresh = upToMajorTwo();
+    fresh["validated"] = now_seconds();
+    const auto freshToken = fx.token(fresh);
+    fx.transport->responses.push_back(notCoveredResponse(freshToken));
+
+    bool done = false;
+    controller.refreshLicense(true, [&](bool) { done = true; });
+    REQUIRE(pumpUntil([&] { return done; }));
+
+    CHECK(controller.screen() == Screen::NotCovered);
+    CHECK_FALSE(controller.licensedFlag().load());
+    REQUIRE(controller.notCovered().has_value());
+    CHECK(controller.notCovered()->upgradeUrl == kUpgradeUrl);
+    CHECK(storedToken(fx) == juce::String(freshToken));
+}
+
+TEST_CASE("upgradeLicense opens the upgrade page, or the activation that offers it")
+{
+    SUBCASE("with the link Moonbase gave")
+    {
+        controller_fixture fx;
+        fx.config.applicationVersion = "3.0.0";
+        juce::StringArray opened;
+        fx.config.openBrowser = [&](const juce::URL& url) { opened.add(url.toString(true)); return true; };
+        ActivationController controller(fx.config, fx.makeLicensing());
+
+        auto lic = fx.makeLicensing()->validate_token_local_allow_expired(fx.token(upToMajorTwo()));
+        controller.setPreviewNotCovered(lic, kUpgradeUrl);
+        REQUIRE(controller.screen() == Screen::NotCovered);
+
+        controller.upgradeLicense();
+        CHECK(opened == juce::StringArray{juce::String(kUpgradeUrl)});
+        CHECK(controller.screen() == Screen::NotCovered);
+        CHECK(fx.transport->requests.empty());
+    }
+
+    SUBCASE("without one")
+    {
+        controller_fixture fx;
+        fx.config.applicationVersion = "3.0.0";
+        juce::StringArray opened;
+        fx.config.openBrowser = [&](const juce::URL& url) { opened.add(url.toString(true)); return true; };
+        fx.seedStored(fx.token(upToMajorTwo()));
+        ActivationController controller(fx.config, fx.makeLicensing());
+        controller.start();
+        REQUIRE(pumpUntil([&] { return controller.screen() == Screen::NotCovered; }));
+        REQUIRE(controller.notCovered()->upgradeUrl.isEmpty());
+
+        fx.transport->responses.push_back(moonbase::http_response{
+            200, {}, R"({"id":"request-123","request":"https://demo.moonbase.sh/api/client/activations/request-123?format=JWT","browser":"https://demo.moonbase.sh/activate?token=request-123"})"});
+        controller.upgradeLicense();
+        CHECK(controller.screen() == Screen::BrowserWait);
+        REQUIRE(pumpUntil([&] { return ! opened.isEmpty(); }));
+        CHECK(opened[0].contains("token=request-123"));
+        REQUIRE(! fx.transport->requests.empty());
+        CHECK(juce::String(fx.transport->requests.front().url).contains("appVersion=3.0.0"));
+
+        // Cancelling returns to the license that needs the upgrade, not Welcome.
+        controller.cancelActivation();
+        CHECK(controller.screen() == Screen::NotCovered);
+        CHECK(controller.notCovered().has_value());
+    }
+}
+
+TEST_CASE("an upgrade picked up from another instance unlocks this one")
+{
+    controller_fixture fx;
+    fx.config.applicationVersion = "3.0.0";
+    fx.seedStored(fx.token(upToMajorTwo()));
+    ActivationController controller(fx.config, fx.makeLicensing());
+    controller.start();
+    REQUIRE(pumpUntil([&] { return controller.screen() == Screen::NotCovered; }));
+
+    auto upgraded = default_claims();
+    upgraded["l:rel:major"] = 3;
+    upgraded["validated"] = now_seconds();
+    fx.seedStored(fx.token(upgraded)); // what the instance that checked again writes
+
+    CHECK(pumpUntil([&] { return controller.screen() == Screen::Details; }, 6000));
+    CHECK(controller.licensedFlag().load());
+    CHECK_FALSE(controller.notCovered().has_value());
+}
+
+TEST_CASE("the overlay presents itself for a license that doesn't cover this version")
+{
+    controller_fixture fx;
+    fx.config.applicationVersion = "3.0.0";
+    fx.config.reduceMotion = true;
+    fx.seedStored(fx.token(upToMajorTwo()));
+    ActivationController shared(fx.config, fx.makeLicensing());
+    shared.start();
+    REQUIRE(pumpUntil([&] { return shared.screen() == Screen::NotCovered; }));
+
+    ActivationComponent component(shared);
+    CHECK(pumpUntil([&] { return component.isVisible(); }));
+}
+
+TEST_CASE("a license that doesn't cover this version can still hand its seat back")
+{
+    controller_fixture fx;
+    fx.config.applicationVersion = "3.0.0";
+    fx.seedStored(fx.token(upToMajorTwo()));
+    ActivationController controller(fx.config, fx.makeLicensing());
+    controller.start();
+    REQUIRE(pumpUntil([&] { return controller.screen() == Screen::NotCovered; }));
+
+    fx.transport->responses.push_back(moonbase::http_response{200, {}, ""});
+    controller.deactivate();
+    REQUIRE(pumpUntil([&] { return controller.screen() == Screen::Welcome; }));
+
+    REQUIRE(fx.transport->requests.size() == 1);
+    CHECK(juce::String(fx.transport->requests.front().url).contains("/revoke"));
+    CHECK(controller.lockReason() == LockReason::Deactivated);
+    CHECK_FALSE(controller.notCovered().has_value());
+    CHECK_FALSE(fx.licenseFile.existsAsFile());
+}
+
+TEST_CASE("a check in flight doesn't write back a license another instance removed")
+{
+    controller_fixture fx;
+    fx.config.applicationVersion = "3.0.0";
+    fx.seedStored(fx.token(upToMajorTwo()));
+    auto gated = std::make_shared<gated_transport>();
+    auto licensing = std::make_shared<moonbase::licensing>(
+        fx.config.toLicensingOptions(), fx.store, fx.fingerprint, gated);
+    ActivationController controller(fx.config, licensing, "dev", [gated] { gated->release(); });
+    controller.start();
+    REQUIRE(pumpUntil([&] { return controller.screen() == Screen::NotCovered; }));
+
+    // "Check again" is on its way, and will answer with a fresh copy...
+    auto fresh = upToMajorTwo();
+    fresh["validated"] = now_seconds();
+    {
+        std::lock_guard<std::mutex> lock(gated->mutex);
+        gated->responses.push_back(notCoveredResponse(fx.token(fresh)));
+    }
+    bool done = false;
+    controller.refreshLicense(true, [&](bool) { done = true; });
+    REQUIRE(pumpUntil([&] { return gated->entered.load(); }));
+
+    // ...when another instance forgets the license. It deletes under the store's
+    // lock, which the check holds from its request until it is answered, so the
+    // delete comes after the answer is stored.
+    std::thread otherInstance([&]
+    {
+        auto guard = fx.store->lock_for_update();
+        fx.store->delete_local_license();
+    });
+    std::this_thread::sleep_for(std::chrono::milliseconds(100)); // waiting on the lock
+    gated->release();
+    otherInstance.join();
+    REQUIRE(pumpUntil([&] { return done; }));
+
+    // The removal wins: the watch sees the file go and locks for it.
+    REQUIRE(pumpUntil([&] { return controller.screen() == Screen::Welcome; }, 6000));
+    CHECK(controller.lockReason() == LockReason::Deactivated);
+    CHECK_FALSE(controller.notCovered().has_value());
+    CHECK_FALSE(fx.licenseFile.existsAsFile());
+}
+
+TEST_CASE("a refusal another instance stored locks this one too")
+{
+    controller_fixture fx;
+    fx.config.applicationVersion = "3.0.0";
+    // Issued while updates lasted, so it covers 3.0.0 on this computer.
+    auto claims = default_claims();
+    claims["l:rel:until"] = now_seconds() + 3600;
+    fx.seedStored(fx.token(claims));
+    ActivationController controller(fx.config, fx.makeLicensing());
+    controller.start();
+    REQUIRE(pumpUntil([&] { return controller.screen() == Screen::Details; }));
+
+    // A sibling asked Moonbase, which refused 3.0.0 and sent this copy along.
+    auto refused = upToMajorTwo();
+    refused["validated"] = now_seconds();
+    fx.seedStored(fx.token(refused));
+
+    CHECK(pumpUntil([&] { return controller.screen() == Screen::NotCovered; }, 6000));
+    CHECK_FALSE(controller.licensedFlag().load());
+    CHECK(controller.lockReason() == LockReason::NotCovered);
+    REQUIRE(controller.notCovered().has_value());
+    CHECK(controller.notCovered()->releaseAccess->up_to_major == 2);
+    CHECK(fx.licenseFile.existsAsFile());
+}
+
+TEST_CASE("an older refusal another instance stored doesn't undo a newer license")
+{
+    controller_fixture fx;
+    fx.config.applicationVersion = "3.0.0";
+    auto upgraded = default_claims();
+    upgraded["l:rel:major"] = 3;
+    upgraded["validated"] = now_seconds();
+    fx.seedStored(fx.token(upgraded));
+    ActivationController controller(fx.config, fx.makeLicensing());
+    controller.start();
+    REQUIRE(pumpUntil([&] { return controller.screen() == Screen::Details; }));
+
+    auto refused = upToMajorTwo();
+    refused["validated"] = now_seconds() - 60; // answered before the upgrade
+    fx.seedStored(fx.token(refused));
+
+    pumpFor(3000); // a watch tick reads it
+    CHECK(controller.screen() == Screen::Details);
+    CHECK(controller.licensedFlag().load());
+}
+
+TEST_CASE("a refusal that answers after an upgrade arrived doesn't lock the upgraded license")
+{
+    controller_fixture fx;
+    fx.config.applicationVersion = "3.0.0";
+    auto claims = default_claims();
+    claims["l:rel:until"] = now_seconds() + 3600;
+    claims["validated"] = now_seconds() - 30;
+    fx.seedStored(fx.token(claims));
+    auto gated = std::make_shared<gated_transport>();
+    auto licensing = std::make_shared<moonbase::licensing>(
+        fx.config.toLicensingOptions(), fx.store, fx.fingerprint, gated);
+    ActivationController controller(fx.config, licensing, "dev", [gated] { gated->release(); });
+    controller.start();
+    REQUIRE(pumpUntil([&] { return controller.screen() == Screen::Details; }));
+
+    // A re-check that Moonbase answers with a refusal, issued before the upgrade...
+    auto refused = upToMajorTwo();
+    refused["validated"] = now_seconds() - 20;
+    {
+        std::lock_guard<std::mutex> lock(gated->mutex);
+        gated->responses.push_back(notCoveredResponse(fx.token(refused)));
+    }
+    bool done = false;
+    controller.refreshLicense(true, [&](bool) { done = true; });
+    REQUIRE(pumpUntil([&] { return gated->entered.load(); }));
+
+    // ...while a sibling stores the upgraded license. The store's lock, which the
+    // re-check holds from its request until it is answered, puts that write after
+    // the refusal's.
+    auto upgraded = default_claims();
+    upgraded["l:rel:major"] = 3;
+    upgraded["validated"] = now_seconds();
+    const auto upgradedToken = fx.token(upgraded);
+    std::thread otherInstance([&] { fx.seedStored(upgradedToken); });
+    std::this_thread::sleep_for(std::chrono::milliseconds(100)); // waiting on the lock
+    gated->release();
+    otherInstance.join();
+    REQUIRE(pumpUntil([&] { return done; }));
+
+    // The upgrade wins, here and in the file.
+    CHECK(pumpUntil([&] { return controller.screen() == Screen::Details; }, 6000));
+    CHECK(controller.licensedFlag().load());
+    CHECK(storedToken(fx) == juce::String(upgradedToken));
+}
+
+TEST_CASE("the update screen offers the upgrade for a version the license doesn't cover")
+{
+    controller_fixture fx;
+    fx.config.applicationVersion = "2.3.1";
+    juce::StringArray opened;
+    fx.config.openBrowser = [&](const juce::URL& url) { opened.add(url.toString(true)); return true; };
+    ActivationController controller(fx.config, fx.makeLicensing());
+
+    auto claims = default_claims();
+    claims["p:rel"] = "2.4.0";
+    claims["l:rel:until"] = now_seconds() - 3600;
+    claims["l:rel:upto"] = "2.3.1";
+    auto lic = fx.makeLicensing()->validate_token_local_allow_expired(fx.token(claims));
+
+    controller.setPreviewUpdate(ActivationController::UpdateInfo::Phase::Ready, lic, {}, 0.0, {}, true,
+                                /*covered*/ false, kUpgradeUrl);
+    CHECK(controller.screen() == Screen::UpdateAvailable);
+    CHECK_FALSE(controller.updateInfo().covered);
+    CHECK_FALSE(controller.updateInfo().canDownload);
+    REQUIRE(controller.updateInfo().releaseAccess.has_value());
+    CHECK(controller.updateInfo().releaseAccess->up_to_version == "2.3.1");
+
+    controller.upgradeLicense();
+    CHECK(opened == juce::StringArray{juce::String(kUpgradeUrl)});
+}
+
+//==============================================================================
 int main(int argc, char** argv)
 {
     juce::ScopedJuceInitialiser_GUI gui; // gives this thread a MessageManager
