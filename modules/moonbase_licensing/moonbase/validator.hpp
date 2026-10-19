@@ -157,6 +157,34 @@ inline std::vector<std::string> split_claim_list(const std::optional<std::string
     return result;
 }
 
+// The `sp` claim: the add-ons included in the product's license, one object each,
+// as {id, active, trial, revoked?, exp?, seats?}. An entry this release cannot
+// read is skipped rather than failing the whole license, since a later release
+// may add to its shape.
+inline std::vector<sub_product> read_sub_products_claim(const nlohmann::json& payload)
+{
+    std::vector<sub_product> result;
+    if (!payload.contains("sp") || !payload.at("sp").is_array()) {
+        return result;
+    }
+    for (const auto& entry : payload.at("sp")) {
+        if (!entry.is_object() || !entry.contains("id") || !entry.at("id").is_string()) {
+            continue;
+        }
+        sub_product value;
+        value.id = entry.at("id").get<std::string>();
+        value.active = optional_flag(entry, "active");
+        value.trial = optional_flag(entry, "trial");
+        value.revoked = optional_flag(entry, "revoked");
+        if (entry.contains("exp") && entry.at("exp").is_number()) {
+            value.expires_at = from_epoch_seconds(entry.at("exp").get<long long>());
+        }
+        value.seats = optional_seats(entry, "seats");
+        result.push_back(std::move(value));
+    }
+    return result;
+}
+
 inline std::chrono::system_clock::time_point require_validation_time(const nlohmann::json& payload)
 {
     if (auto epoch = optional_integer(payload, "validated")) {
@@ -386,6 +414,7 @@ private:
         result.licensed_product.properties = detail::object_claim_or_empty(payload, "p:properties");
 
         result.owned_sub_product_ids = detail::split_claim_list(detail::optional_string(payload, "sp:owned"));
+        result.sub_products = detail::read_sub_products_claim(payload);
         result.subscription_id = detail::optional_string(payload, "s:id");
 
         result.issued_to.id = detail::require_string(payload, "u:id");

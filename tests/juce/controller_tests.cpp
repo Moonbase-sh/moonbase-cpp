@@ -20,6 +20,7 @@
 #include <cmath>
 #include <deque>
 #include <functional>
+#include <initializer_list>
 #include <mutex>
 #include <optional>
 #include <thread>
@@ -1652,18 +1653,22 @@ TEST_CASE("a replacement activation from another instance is not undone by an ol
     REQUIRE(pumpUntil([&] { return gated->entered.load(); }));
 
     // ...because another instance re-activated this machine as activation-456.
+    // It stores that under the store's lock, which this refresh holds from its
+    // request until it is answered, so its write comes after the answer.
     auto replacement = default_claims();
     replacement["id"] = "activation-456";
-    fx.seedStored(fx.token(replacement));
+    const auto replacementToken = fx.token(replacement);
+    std::thread otherInstance([&] { fx.seedStored(replacementToken); });
+    std::this_thread::sleep_for(std::chrono::milliseconds(100)); // waiting on the lock
+    gated->release();
+    otherInstance.join();
+
+    REQUIRE(pumpUntil([&] { return done; }));
+    CHECK_FALSE(ok); // the old activation was refused...
+    // ...and the replacement is picked up from the file after it.
     REQUIRE(pumpUntil([&] { return controller.license() && controller.license()->activation_id == "activation-456"; },
                       6000));
-
-    gated->release();
-    REQUIRE(pumpUntil([&] { return done; }));
-    CHECK_FALSE(ok);                           // the old refresh was superseded...
-    CHECK(controller.licensedFlag().load());   // ...and did not lock the replacement
-    REQUIRE(controller.license().has_value());
-    CHECK(controller.license()->activation_id == "activation-456");
+    CHECK(controller.licensedFlag().load());
     auto stored = fx.store->load_local_license();
     REQUIRE(stored.has_value());
     CHECK(stored->activation_id == "activation-456"); // nor wrote the old one back
@@ -2246,6 +2251,38 @@ TEST_CASE("an overlay that opened for a lock keeps the success screen of an acti
     responseFile.deleteFile();
 }
 
+TEST_CASE("an overlay closed on the success screen opens on the license next time")
+{
+    controller_fixture fx;
+    fx.config.reduceMotion = true; // appear() and dismiss() take effect at once
+    ActivationController shared(fx.config, fx.makeLicensing());
+    shared.start();
+    REQUIRE(pumpUntil([&] { return shared.screen() == Screen::Welcome; }));
+
+    ActivationComponent component(shared);
+    component.onClose = [&] { component.dismiss(); };
+    REQUIRE(pumpUntil([&] { return component.isVisible(); }));
+
+    auto claims = default_claims();
+    claims["method"] = "Offline";
+    auto responseFile = fx.licenseFile.getParentDirectory().getChildFile(juce::Uuid().toString() + ".mb");
+    responseFile.replaceWithText(fx.token(claims));
+    shared.setOfflineResponse(responseFile);
+    shared.activateOffline();
+    REQUIRE(pumpUntil([&] { return shared.screen() == Screen::Success; }));
+
+    // "Open {product}", as the success screen's button does.
+    component.onClose();
+    CHECK_FALSE(component.isVisible());
+    REQUIRE(pumpUntil([&] { return shared.screen() == Screen::Details; }));
+
+    component.appear();
+    pumpFor(100);
+    CHECK(component.isVisible());
+    CHECK(shared.screen() == Screen::Details);
+    responseFile.deleteFile();
+}
+
 TEST_CASE("autoPresentOnLock=false leaves presenting to the host")
 {
     controller_fixture fx;
@@ -2375,6 +2412,65 @@ TEST_CASE("destroying the controller mid-request cancels and joins without hangi
 
     // Reaching here means the destructor cancelled + drained promptly.
     CHECK(blocking->entered.load());
+}
+
+TEST_CASE("the HTTP transport cancels every request in flight, not only the latest")
+{
+    // A server that takes two connections and never answers them, so each
+    // request blocks until it is cancelled or times out (a minute, well past the
+    // waits below).
+    juce::StreamingSocket listener;
+    REQUIRE(listener.createListener(0, "127.0.0.1"));
+    std::atomic<int> accepted{ 0 };
+    std::vector<std::unique_ptr<juce::StreamingSocket>> connections;
+    std::thread server([&]
+    {
+        while (connections.size() < 2)
+        {
+            std::unique_ptr<juce::StreamingSocket> connection(listener.waitForNextConnection());
+            if (connection == nullptr)
+                return;
+            connections.push_back(std::move(connection));
+            ++accepted;
+        }
+    });
+
+    moonbase::juce_integration::juce_http_transport transport;
+    moonbase::http_request request;
+    request.url = "http://127.0.0.1:" + std::to_string(listener.getBoundPort()) + "/";
+    request.connect_timeout = std::chrono::seconds(60);
+    std::atomic<int> finished{ 0 };
+    const auto send = [&]
+    {
+        try
+        {
+            (void) transport.send(request);
+        }
+        catch (const std::exception&)
+        {
+        }
+        ++finished;
+    };
+    std::thread first(send);
+    std::thread second(send);
+
+    const auto waitFor = [](const std::function<bool()>& done, std::chrono::milliseconds limit)
+    {
+        const auto deadline = std::chrono::steady_clock::now() + limit;
+        while (! done() && std::chrono::steady_clock::now() < deadline)
+            std::this_thread::sleep_for(std::chrono::milliseconds(10));
+        return done();
+    };
+    CHECK(waitFor([&] { return accepted.load() == 2; }, std::chrono::seconds(15)));
+
+    // Both are waiting for an answer: one cancel() has to reach the two of them.
+    transport.cancel();
+    CHECK(waitFor([&] { return finished.load() == 2; }, std::chrono::seconds(5)));
+
+    first.join();
+    second.join();
+    listener.close();
+    server.join();
 }
 
 TEST_CASE("destroying the controller while another instance holds the license lock does not wait for it")
@@ -2804,6 +2900,1104 @@ TEST_CASE("the shipped easing curves match the ones juce::Easings builds")
     CHECK(easeInOutCubic(0.5f) == doctest::Approx(0.5f).epsilon(0.001));
     // cubic-bezier(0.34, 1.56, 0.64, 1): overshoots 1.0 before settling.
     CHECK(easeOutBack(0.6f) > 1.0f);
+}
+
+//==============================================================================
+// Add-ons
+//==============================================================================
+namespace {
+
+// Takes a list rather than a json, which a single braced entry would initialise
+// as that entry instead of a list of one.
+nlohmann::json withAddOns(std::initializer_list<nlohmann::json> addOns)
+{
+    auto claims = default_claims();
+    claims["sp"] = nlohmann::json::array();
+    for (const auto& entry : addOns)
+        claims["sp"].push_back(entry);
+    return claims;
+}
+
+nlohmann::json addOn(const char* id, bool active, bool trial = false)
+{
+    return { { "id", id }, { "active", active }, { "trial", trial } };
+}
+
+const char* const addOnList = R"({
+    "currency": "EUR",
+    "subProducts": [
+        {"id": "strings", "product": {"id": "demo-app.strings", "name": "Strings", "tagline": "Bowed and plucked", "owned": false, "subscribed": false,
+            "defaultVariation": {"id": "one-off", "name": "Strings", "originalPrice": {"EUR": 49}, "price": {"EUR": 39}, "hasDiscount": true, "recurrence": {"type": "OneOff"}}},
+         "includedInLicense": true, "active": false, "trial": {"status": "Available", "numberOfDays": 7, "requiresNewsletterOptIn": false},
+         "buyUrl": "https://demo.moonbase.sh/buy/demo-app.strings"},
+        {"id": "pack", "product": {"id": "demo-app.pack", "name": "Pack", "tagline": "", "owned": true, "subscribed": false},
+         "includedInLicense": true, "active": true, "seats": {"total": 2, "used": 1, "remaining": 1}}
+    ]
+})";
+
+moonbase::http_response problemResponse(const char* errorType, const char* detail)
+{
+    nlohmann::json body{ { "title", "Refused" }, { "detail", detail }, { "status", 400 } };
+    if (errorType != nullptr)
+        body["errorType"] = errorType;
+    return moonbase::http_response{ 400, {}, body.dump() };
+}
+
+// The add-on list with one add-on, drum-kit, included in the license.
+moonbase::http_response drumKitList(bool owned, bool active, bool forSale = false)
+{
+    nlohmann::json entry{
+        { "id", "drum-kit" },
+        { "product", { { "id", "demo-app.drum-kit" }, { "name", "Drum Kit" }, { "tagline", "" },
+                       { "owned", owned }, { "subscribed", false } } },
+        { "includedInLicense", true },
+        { "active", active },
+    };
+    if (owned)
+        entry["seats"] = { { "total", 2 }, { "used", active ? 1 : 0 }, { "remaining", active ? 1 : 2 } };
+    if (forSale)
+        entry["buyUrl"] = "https://demo.moonbase.sh/buy/demo-app.drum-kit";
+    nlohmann::json list{ { "currency", "EUR" }, { "subProducts", nlohmann::json::array({ entry }) } };
+    return moonbase::http_response{ 200, {}, list.dump() };
+}
+
+
+} // namespace
+
+TEST_CASE("hasSubProduct reads the add-ons the license includes")
+{
+    controller_fixture fx;
+    fx.seedStored(fx.token(withAddOns({ addOn("pack", true), addOn("brass", false), addOn("strings", true, true) })));
+    ActivationController controller(fx.config, fx.makeLicensing());
+    CHECK_FALSE(controller.hasSubProduct("pack")); // nothing loaded yet
+    controller.start();
+    REQUIRE(pumpUntil([&] { return controller.screen() == Screen::Details; }));
+
+    CHECK(controller.hasSubProduct("pack"));
+    CHECK(controller.hasSubProduct("demo-app.strings"));
+    CHECK_FALSE(controller.hasSubProduct("brass"));
+    CHECK_FALSE(controller.hasSubProduct("keys"));
+    CHECK(controller.activeSubProducts() == juce::StringArray{ "pack", "strings" });
+
+    controller.clearLicense();
+    CHECK_FALSE(controller.hasSubProduct("pack"));
+    CHECK(controller.activeSubProducts().isEmpty());
+}
+
+TEST_CASE("subProductFlag follows hasSubProduct for the audio thread, in step with licensedFlag")
+{
+    controller_fixture fx;
+    fx.seedStored(fx.token(withAddOns({ addOn("pack", true), addOn("brass", false) })));
+    ActivationController controller(fx.config, fx.makeLicensing());
+    // Asked for before anything is loaded, as a processor's constructor would.
+    const auto* pack = controller.subProductFlag("pack");
+    const auto* brass = controller.subProductFlag("brass");
+    REQUIRE(pack != nullptr);
+    REQUIRE(brass != nullptr);
+    CHECK(controller.subProductFlag("pack") == pack); // one flag per ID
+    CHECK_FALSE(pack->load());
+
+    controller.start();
+    REQUIRE(pumpUntil([&] { return controller.screen() == Screen::Details; }));
+    CHECK(pack->load());
+    CHECK_FALSE(brass->load());
+    CHECK(controller.subProductFlag("demo-app.pack")->load()); // the whole ID, asked for late: current from the start
+    CHECK_FALSE(controller.subProductFlag("keys")->load());    // one the license doesn't include
+
+    fx.transport->responses.push_back(moonbase::http_response{ 200, {}, fx.token(withAddOns({ addOn("pack", true), addOn("brass", true) })) });
+    bool done = false;
+    controller.activateSubProduct("brass", [&](bool, const juce::String&) { done = true; });
+    REQUIRE(pumpUntil([&] { return done; }));
+    CHECK(brass->load());
+
+    // Down in the same call as licensedFlag, before onLicenseChanged is delivered.
+    controller.clearLicense();
+    CHECK_FALSE(controller.licensedFlag().load());
+    CHECK_FALSE(pack->load());
+    CHECK_FALSE(brass->load());
+}
+
+TEST_CASE("an add-on trial that runs out while the plugin is open is reported, and the license stays")
+{
+    controller_fixture fx;
+    auto strings = addOn("strings", true, true);
+    strings["exp"] = now_seconds() + 2;
+    fx.seedStored(fx.token(withAddOns({ addOn("pack", true), strings })));
+    ActivationController controller(fx.config, fx.makeLicensing());
+    std::vector<bool> reports;
+    controller.onLicenseChanged = [&](bool licensed) { reports.push_back(licensed); };
+    const auto* stringsFlag = controller.subProductFlag("strings");
+    controller.start();
+    REQUIRE(pumpUntil([&] { return reports.size() == 1; }));
+    CHECK(controller.hasSubProduct("strings"));
+    CHECK(stringsFlag->load());
+
+    // No new token: the license watch notices the add-on's end on its own, and
+    // re-checks the license once in case it was bought meanwhile. This one
+    // wasn't (the check gets no answer here), so it stays locked.
+    REQUIRE(pumpUntil([&] { return reports.size() == 2; }, 8000));
+    CHECK(reports.back());
+    CHECK_FALSE(controller.hasSubProduct("strings"));
+    CHECK_FALSE(stringsFlag->load());
+    CHECK(controller.hasSubProduct("pack"));
+    CHECK(controller.licensedFlag().load());
+    CHECK(controller.screen() == Screen::Details);
+    REQUIRE(pumpUntil([&] { return fx.transport->requests.size() == 1; }));
+
+    pumpFor(2500);
+    CHECK(reports.size() == 2);                  // reported once
+    CHECK(fx.transport->requests.size() == 1);   // and re-checked once
+}
+
+TEST_CASE("an add-on bought during its trial stays unlocked when the trial ends")
+{
+    controller_fixture fx;
+    auto drumKit = addOn("drum-kit", true, true);
+    drumKit["exp"] = now_seconds() + 2;
+    fx.seedStored(fx.token(withAddOns({ drumKit })));
+    ActivationController controller(fx.config, fx.makeLicensing());
+    std::vector<bool> reports;
+    controller.onLicenseChanged = [&](bool licensed) { reports.push_back(licensed); };
+    controller.start();
+    REQUIRE(pumpUntil([&] { return reports.size() == 1; }));
+    REQUIRE(controller.hasSubProduct("drum-kit"));
+
+    // Bought on the web meanwhile: when the trial runs out, the re-check takes the seat.
+    auto bought = withAddOns({ addOn("drum-kit", true) });
+    bought["validated"] = now_seconds();
+    fx.transport->responses.push_back(moonbase::http_response{ 200, {}, fx.token(bought) });
+
+    REQUIRE(pumpUntil([&] { return fx.transport->requests.size() == 1; }, 8000));
+    REQUIRE(pumpUntil([&] { return controller.hasSubProduct("drum-kit")
+                                   && ! moonbase::find_sub_product(*controller.license(), "drum-kit")->trial; }));
+    CHECK(fx.transport->requests[0].url.find("/validate?") != std::string::npos);
+}
+
+TEST_CASE("activateSubProduct takes a seat, then loads and stores the license that comes back")
+{
+    controller_fixture fx;
+    fx.seedStored(fx.token(withAddOns({ addOn("strings", false) })));
+    ActivationController controller(fx.config, fx.makeLicensing());
+    std::vector<bool> reports;
+    controller.onLicenseChanged = [&](bool licensed) { reports.push_back(licensed); };
+    controller.start();
+    REQUIRE(pumpUntil([&] { return reports.size() == 1; }));
+    CHECK_FALSE(controller.hasSubProduct("strings"));
+
+    const auto fresh = fx.token(withAddOns({ addOn("strings", true) }));
+    fx.transport->responses.push_back(moonbase::http_response{ 200, {}, fresh });
+    bool done = false, ok = false;
+    controller.activateSubProduct("strings", [&](bool activated, const juce::String&) { done = true; ok = activated; });
+    CHECK(controller.addOns().busyId == "strings");
+
+    REQUIRE(pumpUntil([&] { return done; }));
+    CHECK(ok);
+    CHECK(controller.addOns().busyId.isEmpty());
+    CHECK(controller.hasSubProduct("strings"));
+    REQUIRE(fx.transport->requests.size() == 1);
+    CHECK(fx.transport->requests.front().url.find("/api/client/licenses/demo-app/sub-products/strings/activate?")
+          != std::string::npos);
+    const auto stored = fx.store->load_local_license();
+    REQUIRE(stored.has_value());
+    CHECK(stored->token == fresh);
+    REQUIRE(pumpUntil([&] { return reports.size() == 2; }));
+    CHECK(reports.back());
+    CHECK(controller.screen() == Screen::Details); // nothing moved
+}
+
+TEST_CASE("requestSubProductTrial starts the add-on's trial from the license")
+{
+    controller_fixture fx;
+    fx.seedStored(fx.token(default_claims()));
+    ActivationController controller(fx.config, fx.makeLicensing());
+    controller.start();
+    REQUIRE(pumpUntil([&] { return controller.screen() == Screen::Details; }));
+
+    auto strings = addOn("strings", true, true);
+    strings["exp"] = now_seconds() + 7 * 86400;
+    fx.transport->responses.push_back(moonbase::http_response{ 200, {}, fx.token(withAddOns({ strings })) });
+    bool done = false, ok = false;
+    controller.requestSubProductTrial("strings", [&](bool started, const juce::String&) { done = true; ok = started; });
+
+    REQUIRE(pumpUntil([&] { return done; }));
+    CHECK(ok);
+    CHECK(controller.hasSubProduct("strings"));
+    CHECK(fx.transport->requests.front().url.find("/sub-products/strings/trial?") != std::string::npos);
+}
+
+TEST_CASE("an add-on with no seat to give says so, and the license stays")
+{
+    controller_fixture fx;
+    juce::StringArray diags;
+    fx.config.onDiagnostic = [&](const juce::String& m) { diags.add(m); };
+    fx.seedStored(fx.token(default_claims()));
+    ActivationController controller(fx.config, fx.makeLicensing());
+    controller.start();
+    REQUIRE(pumpUntil([&] { return controller.screen() == Screen::Details; }));
+
+    fx.transport->responses.push_back(problemResponse("NoEligibleLicense", "No license with available activations found"));
+    bool done = false, ok = true;
+    juce::String message;
+    controller.activateSubProduct("strings", [&](bool activated, const juce::String& m) { done = true; ok = activated; message = m; });
+
+    REQUIRE(pumpUntil([&] { return done; }));
+    CHECK_FALSE(ok);
+    CHECK(message.startsWith("No seat of this add-on is free"));
+    CHECK(message.contains("Helio Audio account"));
+    CHECK(controller.addOns().actionError == message);
+    CHECK(diags.joinIntoString(" ").contains("No license with available activations found"));
+    CHECK(controller.licensedFlag().load());
+    CHECK(controller.screen() == Screen::Details);
+    CHECK(fx.transport->requests.size() == 1); // no re-check: the license was never in question
+}
+
+TEST_CASE("an add-on refused for this license says so, and the license stays")
+{
+    controller_fixture fx;
+    fx.seedStored(fx.token(default_claims()));
+    ActivationController controller(fx.config, fx.makeLicensing());
+    controller.start();
+    REQUIRE(pumpUntil([&] { return controller.screen() == Screen::Details; }));
+
+    fx.transport->responses.push_back(problemResponse(nullptr, "A sub-product trial can only be started from an online activation"));
+    bool done = false;
+    juce::String message;
+    controller.requestSubProductTrial("strings", [&](bool, const juce::String& m) { done = true; message = m; });
+
+    REQUIRE(pumpUntil([&] { return done; }));
+    CHECK(message == "This add-on can't be tried on this computer.");
+    CHECK(controller.licensedFlag().load());
+}
+
+TEST_CASE("an add-on call the server refuses for the license re-checks it, and locks")
+{
+    controller_fixture fx;
+    fx.seedStored(fx.token(default_claims()));
+    ActivationController controller(fx.config, fx.makeLicensing());
+    controller.start();
+    REQUIRE(pumpUntil([&] { return controller.screen() == Screen::Details; }));
+
+    const auto revoked = problemResponse("LicenseActivationRevoked", "License has been revoked");
+    fx.transport->responses.push_back(revoked); // the add-on call
+    fx.transport->responses.push_back(revoked); // the re-check it leads to
+    bool done = false, ok = true;
+    controller.activateSubProduct("strings", [&](bool activated, const juce::String&) { done = true; ok = activated; });
+
+    REQUIRE(pumpUntil([&] { return done; }));
+    CHECK_FALSE(ok);
+    REQUIRE(pumpUntil([&] { return ! controller.license().has_value(); }));
+    CHECK(controller.screen() == Screen::Welcome);
+    CHECK(controller.lockReason() == LockReason::Invalid);
+    CHECK(fx.transport->requests.size() == 2);
+}
+
+TEST_CASE("add-ons are not activated or tried from a trial")
+{
+    controller_fixture fx;
+    auto claims = default_claims();
+    claims["trial"] = true;
+    fx.seedStored(fx.token(claims));
+    ActivationController controller(fx.config, fx.makeLicensing());
+    controller.start();
+    REQUIRE(pumpUntil([&] { return controller.screen() == Screen::Trial; }));
+
+    bool done = false, ok = true;
+    controller.activateSubProduct("strings", [&](bool activated, const juce::String&) { done = true; ok = activated; });
+    CHECK(done); // refused right away
+    CHECK_FALSE(ok);
+
+    controller.showAddOns();
+    CHECK(controller.screen() == Screen::Trial);
+    pumpFor(100);
+    CHECK(fx.transport->requests.empty());
+}
+
+TEST_CASE("one add-on call at a time")
+{
+    controller_fixture fx;
+    fx.seedStored(fx.token(default_claims()));
+    auto gated = std::make_shared<gated_transport>();
+    auto licensing = std::make_shared<moonbase::licensing>(
+        fx.config.toLicensingOptions(), fx.store, fx.fingerprint, gated);
+    ActivationController controller(fx.config, licensing, "dev", [gated] { gated->release(); });
+    controller.start();
+    REQUIRE(pumpUntil([&] { return controller.screen() == Screen::Details; }));
+
+    {
+        std::lock_guard<std::mutex> lock(gated->mutex);
+        gated->responses.push_back(moonbase::http_response{ 200, {}, fx.token(withAddOns({ addOn("strings", true) })) });
+    }
+    bool firstDone = false, firstOk = false;
+    controller.activateSubProduct("strings", [&](bool ok, const juce::String&) { firstDone = true; firstOk = ok; });
+    REQUIRE(pumpUntil([&] { return gated->entered.load(); }));
+
+    bool secondDone = false, secondOk = true;
+    controller.requestSubProductTrial("keys", [&](bool ok, const juce::String&) { secondDone = true; secondOk = ok; });
+    CHECK(secondDone);
+    CHECK_FALSE(secondOk);
+    CHECK(controller.addOns().busyId == "strings");
+
+    gated->release();
+    REQUIRE(pumpUntil([&] { return firstDone; }));
+    CHECK(firstOk);
+    CHECK(gated->requests.load() == 1);
+}
+
+TEST_CASE("an add-on that lands after the license is cleared does not bring it back")
+{
+    controller_fixture fx;
+    fx.seedStored(fx.token(default_claims()));
+    auto gated = std::make_shared<gated_transport>();
+    auto licensing = std::make_shared<moonbase::licensing>(
+        fx.config.toLicensingOptions(), fx.store, fx.fingerprint, gated);
+    ActivationController controller(fx.config, licensing, "dev", [gated] { gated->release(); });
+    controller.start();
+    REQUIRE(pumpUntil([&] { return controller.screen() == Screen::Details; }));
+
+    {
+        std::lock_guard<std::mutex> lock(gated->mutex);
+        gated->responses.push_back(moonbase::http_response{ 200, {}, fx.token(withAddOns({ addOn("strings", true) })) });
+    }
+    bool done = false, ok = true;
+    controller.activateSubProduct("strings", [&](bool activated, const juce::String&) { done = true; ok = activated; });
+    REQUIRE(pumpUntil([&] { return gated->entered.load(); }));
+
+    // Clearing waits for the request under way, which holds the store's lock
+    // until it is answered (so the answer is stored first, and deleted with the
+    // rest): let it be answered.
+    std::thread answer([gated] { std::this_thread::sleep_for(std::chrono::milliseconds(200)); gated->release(); });
+    controller.clearLicense();
+    answer.join();
+    REQUIRE_FALSE(fx.licenseFile.existsAsFile());
+
+    REQUIRE(pumpUntil([&] { return done; }));
+    CHECK_FALSE(ok);
+    CHECK_FALSE(controller.license().has_value());
+    CHECK_FALSE(fx.licenseFile.existsAsFile());
+}
+
+TEST_CASE("a forced refresh waits for an add-on call in progress, so it can't undo it")
+{
+    controller_fixture fx;
+    fx.seedStored(fx.token(default_claims()));
+    auto gated = std::make_shared<gated_transport>();
+    auto licensing = std::make_shared<moonbase::licensing>(
+        fx.config.toLicensingOptions(), fx.store, fx.fingerprint, gated);
+    ActivationController controller(fx.config, licensing, "dev", [gated] { gated->release(); });
+    controller.start();
+    REQUIRE(pumpUntil([&] { return controller.screen() == Screen::Details; }));
+
+    const auto withStrings = fx.token(withAddOns({ addOn("strings", true) }));
+    {
+        std::lock_guard<std::mutex> lock(gated->mutex);
+        gated->responses.push_back(moonbase::http_response{ 200, {}, withStrings }); // the add-on call
+        gated->responses.push_back(moonbase::http_response{ 200, {}, withStrings }); // the refresh after it
+    }
+    bool activated = false;
+    controller.activateSubProduct("strings", [&](bool ok, const juce::String&) { activated = ok; });
+    REQUIRE(pumpUntil([&] { return gated->entered.load(); }));
+
+    bool refreshed = false;
+    controller.refreshLicense(true, [&](bool ok) { refreshed = ok; });
+    pumpFor(300);
+    CHECK(gated->requests.load() == 1); // the refresh has not gone out ahead of the seat
+
+    gated->release();
+    REQUIRE(pumpUntil([&] { return activated && refreshed; }));
+    CHECK(gated->requests.load() == 2);
+    CHECK(controller.hasSubProduct("strings"));
+}
+
+TEST_CASE("a throttled refresh that lands after an add-on call does not undo it")
+{
+    controller_fixture fx;
+    // Validated 30s ago: a non-forced check answers from the store. The add-on
+    // call answers with the same validation time, as the server does.
+    const auto validated = now_seconds() - 30;
+    auto seeded = default_claims();
+    seeded["validated"] = validated;
+    fx.seedStored(fx.token(seeded));
+    auto gated = std::make_shared<gated_transport>();
+    auto licensing = std::make_shared<moonbase::licensing>(
+        fx.config.toLicensingOptions(), fx.store, fx.fingerprint, gated);
+    ActivationController controller(fx.config, licensing, "dev", [gated] { gated->release(); });
+    controller.start();
+    REQUIRE(pumpUntil([&] { return controller.screen() == Screen::Details; }));
+
+    auto withDrumKitClaims = withAddOns({ addOn("drum-kit", true) });
+    withDrumKitClaims["validated"] = validated;
+    const auto withDrumKit = fx.token(withDrumKitClaims);
+    auto checked = withAddOns({ addOn("drum-kit", true) });
+    checked["validated"] = now_seconds();
+    const auto checkedToken = fx.token(checked);
+    {
+        std::lock_guard<std::mutex> lock(gated->mutex);
+        gated->responses.push_back(moonbase::http_response{ 200, {}, withDrumKit });  // the add-on call
+        gated->responses.push_back(moonbase::http_response{ 200, {}, checkedToken }); // the check
+    }
+    bool activated = false, refreshed = false;
+    controller.activateSubProduct("drum-kit", [&](bool ok, const juce::String&) { activated = ok; });
+    REQUIRE(pumpUntil([&] { return gated->entered.load(); }));
+
+    // Queued behind the add-on call, and asked with the copy from before it. By
+    // then the store holds the add-on's copy, validated at the same time: which
+    // is current is the server's to say, so the throttled check asks it.
+    controller.refreshLicense(false, [&](bool) { refreshed = true; });
+    std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    gated->release();
+    std::this_thread::sleep_for(std::chrono::milliseconds(300)); // both answers queued, neither landed
+
+    REQUIRE(pumpUntil([&] { return activated && refreshed; }));
+    CHECK(controller.hasSubProduct("drum-kit"));
+    CHECK(controller.license()->token == checkedToken);
+    const auto stored = fx.store->load_local_license();
+    REQUIRE(stored.has_value());
+    CHECK(stored->token == checkedToken);
+    CHECK(gated->requests.load() == 2);
+}
+
+TEST_CASE("a forced refresh queued behind an add-on call applies the server's newer answer")
+{
+    controller_fixture fx;
+    fx.seedStored(fx.token(default_claims()));
+    auto gated = std::make_shared<gated_transport>();
+    auto licensing = std::make_shared<moonbase::licensing>(
+        fx.config.toLicensingOptions(), fx.store, fx.fingerprint, gated);
+    ActivationController controller(fx.config, licensing, "dev", [gated] { gated->release(); });
+    controller.start();
+    REQUIRE(pumpUntil([&] { return controller.screen() == Screen::Details; }));
+
+    // The refresh reaches the server after the add-on call, and by then the
+    // customer has another add-on too: its answer is the newer one.
+    auto later = withAddOns({ addOn("drum-kit", true), addOn("keys", true) });
+    later["validated"] = now_seconds();
+    const auto newer = fx.token(later);
+    {
+        std::lock_guard<std::mutex> lock(gated->mutex);
+        gated->responses.push_back(moonbase::http_response{ 200, {}, fx.token(withAddOns({ addOn("drum-kit", true) })) });
+        gated->responses.push_back(moonbase::http_response{ 200, {}, newer });
+    }
+    bool activated = false, refreshed = false;
+    controller.activateSubProduct("drum-kit", [&](bool ok, const juce::String&) { activated = ok; });
+    REQUIRE(pumpUntil([&] { return gated->entered.load(); }));
+    controller.refreshLicense(true, [&](bool ok) { refreshed = ok; });
+    gated->release();
+
+    REQUIRE(pumpUntil([&] { return activated && refreshed; }));
+    REQUIRE(controller.license().has_value());
+    CHECK(controller.license()->token == newer);
+    CHECK(controller.hasSubProduct("drum-kit"));
+    CHECK(controller.hasSubProduct("keys"));
+    const auto stored = fx.store->load_local_license();
+    REQUIRE(stored.has_value());
+    CHECK(stored->token == newer);
+}
+
+TEST_CASE("a forced refresh queued behind an add-on call applies its answer even when it matches the old license")
+{
+    controller_fixture fx;
+    const auto original = fx.token(default_claims());
+    fx.seedStored(original);
+    auto gated = std::make_shared<gated_transport>();
+    auto licensing = std::make_shared<moonbase::licensing>(
+        fx.config.toLicensingOptions(), fx.store, fx.fingerprint, gated);
+    ActivationController controller(fx.config, licensing, "dev", [gated] { gated->release(); });
+    controller.start();
+    REQUIRE(pumpUntil([&] { return controller.screen() == Screen::Details; }));
+
+    // The add-on is revoked between the two calls, so the server answers the
+    // refresh with the very license it was asked about.
+    {
+        std::lock_guard<std::mutex> lock(gated->mutex);
+        gated->responses.push_back(moonbase::http_response{ 200, {}, fx.token(withAddOns({ addOn("drum-kit", true) })) });
+        gated->responses.push_back(moonbase::http_response{ 200, {}, original });
+    }
+    bool activated = false, refreshed = false;
+    controller.activateSubProduct("drum-kit", [&](bool ok, const juce::String&) { activated = ok; });
+    REQUIRE(pumpUntil([&] { return gated->entered.load(); }));
+    controller.refreshLicense(true, [&](bool ok) { refreshed = ok; });
+    gated->release();
+
+    REQUIRE(pumpUntil([&] { return activated && refreshed; }));
+    CHECK(gated->requests.load() == 2);
+    REQUIRE(controller.license().has_value());
+    CHECK(controller.license()->token == original);
+    CHECK_FALSE(controller.hasSubProduct("drum-kit"));
+    const auto stored = fx.store->load_local_license();
+    REQUIRE(stored.has_value());
+    CHECK(stored->token == original);
+}
+
+TEST_CASE("a host may destroy the controller from loadAddOns' callback")
+{
+    controller_fixture fx;
+    fx.seedStored(fx.token(default_claims()));
+    auto controller = std::make_unique<ActivationController>(fx.config, fx.makeLicensing());
+    controller->start();
+    REQUIRE(pumpUntil([&] { return controller->screen() == Screen::Details; }));
+
+    // A list with a seat to take, which would go on to re-check the license.
+    fx.transport->responses.push_back(drumKitList(/*owned*/ true, /*active*/ false));
+    bool done = false;
+    controller->loadAddOns([&](bool) { controller.reset(); done = true; });
+    REQUIRE(pumpUntil([&] { return done; }));
+    pumpFor(300);
+    CHECK(fx.transport->requests.size() == 1); // nothing went on after it
+}
+
+TEST_CASE("an add-on call that fails after the license changed leaves the new state alone")
+{
+    controller_fixture fx;
+    fx.seedStored(fx.token(default_claims()));
+    auto gated = std::make_shared<gated_transport>();
+    auto licensing = std::make_shared<moonbase::licensing>(
+        fx.config.toLicensingOptions(), fx.store, fx.fingerprint, gated);
+    ActivationController controller(fx.config, licensing, "dev", [gated] { gated->release(); });
+    controller.start();
+    REQUIRE(pumpUntil([&] { return controller.screen() == Screen::Details; }));
+
+    {
+        std::lock_guard<std::mutex> lock(gated->mutex);
+        gated->responses.push_back(problemResponse("LicenseActivationRevoked", "License has been revoked"));
+    }
+    bool done = false, ok = true;
+    juce::String message;
+    controller.activateSubProduct("strings", [&](bool activated, const juce::String& m) { done = true; ok = activated; message = m; });
+    REQUIRE(pumpUntil([&] { return gated->entered.load(); }));
+
+    // Clearing waits for the request under way to be answered (see above).
+    std::thread answer([gated] { std::this_thread::sleep_for(std::chrono::milliseconds(200)); gated->release(); });
+    controller.clearLicense();
+    answer.join();
+    REQUIRE(pumpUntil([&] { return done; }));
+    CHECK_FALSE(ok);
+    CHECK(message == "Your license changed while this was in progress.");
+    CHECK(controller.addOns().actionError.isEmpty());
+    CHECK(controller.addOns().busyId.isEmpty());
+    pumpFor(200);
+    CHECK(gated->requests.load() == 1); // no re-check of a license that is gone
+    CHECK(controller.lockReason() == LockReason::Deactivated);
+}
+
+TEST_CASE("an add-on taken in one instance unlocks in the others")
+{
+    controller_fixture fx;
+    fx.seedStored(fx.token(default_claims()));
+    ActivationController first(fx.config, fx.makeLicensing());
+    ActivationController second(fx.config, fx.makeLicensing());
+    std::vector<bool> secondReports;
+    second.onLicenseChanged = [&](bool licensed) { secondReports.push_back(licensed); };
+    const auto* secondDrumKit = second.subProductFlag("drum-kit");
+    first.start();
+    second.start();
+    REQUIRE(pumpUntil([&] { return first.screen() == Screen::Details && second.screen() == Screen::Details
+                                   && secondReports.size() == 1; }));
+
+    fx.transport->responses.push_back(moonbase::http_response{ 200, {}, fx.token(withAddOns({ addOn("drum-kit", true) })) });
+    bool done = false;
+    first.activateSubProduct("drum-kit", [&](bool, const juce::String&) { done = true; });
+    REQUIRE(pumpUntil([&] { return done; }));
+    CHECK(first.hasSubProduct("drum-kit"));
+
+    // Picked up from the license file the first instance wrote, with no request.
+    REQUIRE(pumpUntil([&] { return second.hasSubProduct("drum-kit"); }, 15000)); // a 2 s watch, late on a busy machine
+    CHECK(secondDrumKit->load());
+    REQUIRE(pumpUntil([&] { return secondReports.size() == 2; }));
+    CHECK(secondReports.back());
+    CHECK(second.screen() == Screen::Details);
+    CHECK(fx.transport->requests.size() == 1);
+}
+
+
+TEST_CASE("an add-on bought since the license was checked takes its seat when the add-ons are listed")
+{
+    controller_fixture fx;
+    fx.seedStored(fx.token(default_claims()));
+    ActivationController controller(fx.config, fx.makeLicensing());
+    controller.start();
+    REQUIRE(pumpUntil([&] { return controller.screen() == Screen::Details; }));
+
+    fx.transport->responses.push_back(drumKitList(/*owned*/ true, /*active*/ false));        // the list
+    fx.transport->responses.push_back(moonbase::http_response{
+        200, {}, fx.token(withAddOns({ addOn("drum-kit", true) })) });                     // the re-check takes the seat
+    fx.transport->responses.push_back(drumKitList(/*owned*/ true, /*active*/ true));         // listed again
+    controller.showAddOns();
+
+    REQUIRE(pumpUntil([&] { return fx.transport->requests.size() == 3
+                                   && controller.addOns().phase == ActivationController::AddOnsInfo::Phase::Ready; }));
+    CHECK(controller.hasSubProduct("drum-kit"));
+    CHECK(fx.transport->requests[1].url.find("/validate?") != std::string::npos);
+    CHECK(controller.screen() == Screen::AddOns);
+    CHECK(controller.addOns().addOns.at(0).active);
+}
+
+TEST_CASE("listing an add-on bought during its trial takes its seat")
+{
+    controller_fixture fx;
+    auto drumKit = addOn("drum-kit", true, true);
+    drumKit["exp"] = now_seconds() + 86400;
+    fx.seedStored(fx.token(withAddOns({ drumKit })));
+    ActivationController controller(fx.config, fx.makeLicensing());
+    controller.start();
+    REQUIRE(pumpUntil([&] { return controller.screen() == Screen::Details; }));
+
+    fx.transport->responses.push_back(drumKitList(/*owned*/ true, /*active*/ true)); // on its trial, and owned
+    fx.transport->responses.push_back(moonbase::http_response{
+        200, {}, fx.token(withAddOns({ addOn("drum-kit", true) })) });               // the re-check: a seat now
+    fx.transport->responses.push_back(drumKitList(true, true));
+    controller.showAddOns();
+
+    REQUIRE(pumpUntil([&] { return fx.transport->requests.size() == 3
+                                   && controller.addOns().phase == ActivationController::AddOnsInfo::Phase::Ready; }));
+    const auto* held = moonbase::find_sub_product(*controller.license(), "drum-kit");
+    REQUIRE(held != nullptr);
+    CHECK_FALSE(held->trial);
+}
+
+TEST_CASE("an add-on on this device's last seat that the license doesn't show is picked up")
+{
+    controller_fixture fx;
+    fx.seedStored(fx.token(default_claims()));
+    ActivationController controller(fx.config, fx.makeLicensing());
+    controller.start();
+    REQUIRE(pumpUntil([&] { return controller.screen() == Screen::Details; }));
+
+    // The list says this device holds the only seat (an answer that never reached
+    // the license here), so none is free, but the check brings it back.
+    nlohmann::json list = nlohmann::json::parse(drumKitList(true, true).body);
+    list["subProducts"][0]["seats"] = { { "total", 1 }, { "used", 1 }, { "remaining", 0 } };
+    fx.transport->responses.push_back(moonbase::http_response{ 200, {}, list.dump() });
+    fx.transport->responses.push_back(moonbase::http_response{
+        200, {}, fx.token(withAddOns({ addOn("drum-kit", true) })) });
+    fx.transport->responses.push_back(moonbase::http_response{ 200, {}, list.dump() });
+    controller.showAddOns();
+
+    REQUIRE(pumpUntil([&] { return fx.transport->requests.size() == 3; }));
+    REQUIRE(pumpUntil([&] { return controller.hasSubProduct("drum-kit"); }));
+}
+
+TEST_CASE("an add-on the server still won't seat is re-checked once, not over and over")
+{
+    controller_fixture fx;
+    fx.seedStored(fx.token(default_claims()));
+    ActivationController controller(fx.config, fx.makeLicensing());
+    controller.start();
+    REQUIRE(pumpUntil([&] { return controller.screen() == Screen::Details; }));
+
+    fx.transport->responses.push_back(drumKitList(true, false));
+    fx.transport->responses.push_back(moonbase::http_response{ 200, {}, fx.token(default_claims()) });
+    fx.transport->responses.push_back(drumKitList(true, false));
+    controller.showAddOns();
+
+    REQUIRE(pumpUntil([&] { return fx.transport->requests.size() == 3; }));
+    pumpFor(500);
+    CHECK(fx.transport->requests.size() == 3);
+    CHECK_FALSE(controller.hasSubProduct("drum-kit")); // "Activate" is the way now
+}
+
+TEST_CASE("with autoActivateSubProducts off, listing add-ons never takes a seat")
+{
+    controller_fixture fx;
+    fx.config.autoActivateSubProducts = false;
+    fx.seedStored(fx.token(default_claims()));
+    ActivationController controller(fx.config, fx.makeLicensing());
+    controller.start();
+    REQUIRE(pumpUntil([&] { return controller.screen() == Screen::Details; }));
+
+    fx.transport->responses.push_back(drumKitList(true, false));
+    bool done = false;
+    controller.loadAddOns([&](bool) { done = true; });
+    REQUIRE(pumpUntil([&] { return done; }));
+    pumpFor(300);
+    CHECK(fx.transport->requests.size() == 1);
+}
+
+TEST_CASE("coming back from buying an add-on in the browser refreshes the add-ons")
+{
+    controller_fixture fx;
+    bool inForeground = true;
+    int looks = 0; // how often the controller asked whether it is in front
+    fx.config.openBrowser = [](const juce::URL&) { return true; };
+    fx.seedStored(fx.token(default_claims()));
+    ActivationController controller(fx.config, fx.makeLicensing());
+    controller.setForegroundCheck([&] { ++looks; return inForeground; });
+    // Until the license watch (every 2 s, later on a busy machine) has looked again.
+    const auto untilLookedAgain = [&]
+    {
+        const int before = looks;
+        return pumpUntil([&] { return looks > before; }, 15000);
+    };
+    controller.start();
+    REQUIRE(pumpUntil([&] { return controller.screen() == Screen::Details; }));
+
+    fx.transport->responses.push_back(drumKitList(/*owned*/ false, /*active*/ false, /*forSale*/ true));
+    bool listed = false;
+    controller.loadAddOns([&](bool) { listed = true; });
+    REQUIRE(pumpUntil([&] { return listed; }));
+
+    REQUIRE(controller.buySubProduct("drum-kit"));
+    REQUIRE(untilLookedAgain()); // still in front: the browser hasn't taken over yet, so nothing happens
+    pumpFor(100);
+    CHECK(fx.transport->requests.size() == 1);
+
+    inForeground = false; // the customer is buying in the browser
+    REQUIRE(untilLookedAgain());
+    pumpFor(100);
+    CHECK(fx.transport->requests.size() == 1);
+
+    fx.transport->responses.push_back(moonbase::http_response{
+        200, {}, fx.token(withAddOns({ addOn("drum-kit", true) })) });
+    fx.transport->responses.push_back(drumKitList(/*owned*/ true, /*active*/ true));
+    inForeground = true; // and back
+    REQUIRE(pumpUntil([&] { return fx.transport->requests.size() == 3
+                                   && controller.addOns().phase == ActivationController::AddOnsInfo::Phase::Ready; },
+                      15000));
+    CHECK(controller.hasSubProduct("drum-kit"));
+    CHECK(fx.transport->requests[1].url.find("/validate?") != std::string::npos);
+
+    // Once: it no longer watches, so going to the background and back again
+    // later is not taken for another purchase.
+    const int looked = looks;
+    inForeground = false;
+    pumpFor(2500);
+    inForeground = true;
+    pumpFor(2500);
+    CHECK(looks == looked);
+    CHECK(fx.transport->requests.size() == 3);
+}
+
+TEST_CASE("a refresh asked for during a deactivation is skipped, and the deactivation finishes")
+{
+    controller_fixture fx;
+    fx.seedStored(fx.token(default_claims()));
+    auto gated = std::make_shared<gated_transport>();
+    auto licensing = std::make_shared<moonbase::licensing>(
+        fx.config.toLicensingOptions(), fx.store, fx.fingerprint, gated);
+    ActivationController controller(fx.config, licensing, "dev", [gated] { gated->release(); });
+    controller.start();
+    REQUIRE(pumpUntil([&] { return controller.screen() == Screen::Details; }));
+
+    {
+        std::lock_guard<std::mutex> lock(gated->mutex);
+        gated->responses.push_back(moonbase::http_response{ 503, {}, R"({"message":"Service Unavailable"})" });
+    }
+    controller.deactivate();
+    REQUIRE(pumpUntil([&] { return gated->entered.load(); }));
+    REQUIRE(controller.isBusy());
+
+    // The add-ons' "Refresh", a purchase coming back, or the host.
+    bool refreshed = true;
+    controller.refreshLicense(true, [&](bool ok) { refreshed = ok; });
+    CHECK_FALSE(refreshed); // turned down at once
+    controller.refreshAddOns();
+
+    gated->release(); // the revoke fails: the license is kept
+    REQUIRE(pumpUntil([&] { return ! controller.isBusy(); }));
+    CHECK(controller.screen() == Screen::Details);
+    CHECK(controller.statusMessage().isNotEmpty());
+    CHECK(controller.licensedFlag().load());
+    pumpFor(200);
+    CHECK(gated->requests.load() == 1);
+}
+
+namespace {
+
+// A store whose writes fail while failWrites is set, as on a full disk.
+struct flaky_store : moonbase::memory_license_store
+{
+    std::atomic<bool> failWrites{ false };
+
+    void store_local_license(const moonbase::license& value) override
+    {
+        if (failWrites.load())
+            throw moonbase::storage_error("disk full");
+        moonbase::memory_license_store::store_local_license(value);
+    }
+};
+
+} // namespace
+
+TEST_CASE("a license whose first save failed is saved by the next refresh")
+{
+    controller_fixture fx;
+    fx.config.openBrowser = [](const juce::URL&) { return true; };
+    auto store = std::make_shared<flaky_store>();
+    auto licensing = std::make_shared<moonbase::licensing>(
+        fx.config.toLicensingOptions(), store, fx.fingerprint, fx.transport);
+    ActivationController controller(fx.config, licensing);
+    controller.start();
+    REQUIRE(pumpUntil([&] { return controller.screen() == Screen::Welcome; }));
+
+    store->failWrites = true;
+    fx.transport->responses.push_back(moonbase::http_response{
+        200, {}, R"({"id":"request-123","request":"https://demo.moonbase.sh/api/client/activations/request-123?format=JWT","browser":"https://demo.moonbase.sh/activate?token=request-123"})"});
+    fx.transport->responses.push_back(moonbase::http_response{ 200, {}, fx.token(default_claims()) });
+    controller.beginOnlineActivation();
+    REQUIRE(pumpUntil([&] { return controller.screen() == Screen::Success; }, 8000));
+    REQUIRE_FALSE(store->load_local_license().has_value()); // the save failed
+
+    store->failWrites = false;
+    auto later = default_claims();
+    later["validated"] = now_seconds();
+    const auto refreshedToken = fx.token(later);
+    fx.transport->responses.push_back(moonbase::http_response{ 200, {}, refreshedToken });
+    bool done = false;
+    controller.refreshLicense(true, [&](bool) { done = true; });
+    REQUIRE(pumpUntil([&] { return done; }));
+
+    const auto stored = store->load_local_license();
+    REQUIRE(stored.has_value());
+    CHECK(stored->token == refreshedToken);
+}
+
+TEST_CASE("a new activation drops the add-ons listed for the one it replaces")
+{
+    controller_fixture fx;
+    fx.config.openBrowser = [](const juce::URL&) { return true; };
+    fx.seedStored(fx.token(withAddOns({ addOn("pack", true) })));
+    ActivationController controller(fx.config, fx.makeLicensing());
+    controller.start();
+    REQUIRE(pumpUntil([&] { return controller.screen() == Screen::Details; }));
+
+    fx.transport->responses.push_back(moonbase::http_response{ 200, {}, addOnList });
+    bool listed = false;
+    controller.loadAddOns([&](bool) { listed = true; });
+    REQUIRE(pumpUntil([&] { return listed; }));
+    REQUIRE_FALSE(controller.addOns().addOns.empty());
+
+    // Activated again here, as another activation.
+    auto other = default_claims();
+    other["id"] = "activation-456";
+    fx.transport->responses.push_back(moonbase::http_response{
+        200, {}, R"({"id":"request-123","request":"https://demo.moonbase.sh/api/client/activations/request-123?format=JWT","browser":"https://demo.moonbase.sh/activate?token=request-123"})"});
+    fx.transport->responses.push_back(moonbase::http_response{ 200, {}, fx.token(other) });
+    controller.beginOnlineActivation();
+    REQUIRE(pumpUntil([&] { return controller.license() && controller.license()->activation_id == "activation-456"; }, 8000));
+
+    CHECK(controller.addOns().addOns.empty());
+    CHECK(controller.addOns().phase == ActivationController::AddOnsInfo::Phase::Idle);
+}
+
+TEST_CASE("loadAddOns lists the add-ons, and losing the license forgets them")
+{
+    controller_fixture fx;
+    fx.seedStored(fx.token(withAddOns({ addOn("pack", true) }))); // as the list has it
+    ActivationController controller(fx.config, fx.makeLicensing());
+    controller.start();
+    REQUIRE(pumpUntil([&] { return controller.screen() == Screen::Details; }));
+    using Phase = ActivationController::AddOnsInfo::Phase;
+    CHECK(controller.addOns().phase == Phase::Idle);
+
+    fx.transport->responses.push_back(moonbase::http_response{ 200, {}, addOnList });
+    bool done = false, ok = false;
+    controller.loadAddOns([&](bool loaded) { done = true; ok = loaded; });
+    CHECK(controller.addOns().phase == Phase::Loading);
+
+    REQUIRE(pumpUntil([&] { return done; }));
+    CHECK(ok);
+    const auto& info = controller.addOns();
+    CHECK(info.phase == Phase::Ready);
+    CHECK(info.currency == "EUR");
+    REQUIRE(info.addOns.size() == 2);
+    CHECK(info.addOns[0].product.name == "Strings");
+    CHECK(info.error.isEmpty());
+    CHECK(fx.transport->requests.front().url == "https://demo.moonbase.sh/api/client/licenses/demo-app/sub-products");
+
+    controller.clearLicense();
+    CHECK(controller.addOns().phase == Phase::Idle);
+    CHECK(controller.addOns().addOns.empty());
+}
+
+TEST_CASE("an add-on list that fails says why, and the license stays")
+{
+    controller_fixture fx;
+    fx.seedStored(fx.token(default_claims()));
+    ActivationController controller(fx.config, fx.makeLicensing());
+    controller.start();
+    REQUIRE(pumpUntil([&] { return controller.screen() == Screen::Details; }));
+
+    fx.transport->responses.push_back(moonbase::http_response{ 503, {}, R"({"message":"Service Unavailable"})" });
+    bool done = false, ok = true;
+    controller.loadAddOns([&](bool loaded) { done = true; ok = loaded; });
+
+    REQUIRE(pumpUntil([&] { return done; }));
+    CHECK_FALSE(ok);
+    CHECK(controller.addOns().error == "Moonbase couldn't do that right now. Try again in a minute.");
+    CHECK(controller.licensedFlag().load());
+}
+
+TEST_CASE("the add-ons screen stays open through a refresh of its license")
+{
+    controller_fixture fx;
+    fx.seedStored(fx.token(withAddOns({ addOn("pack", true) }))); // as the list has it
+    ActivationController controller(fx.config, fx.makeLicensing());
+    controller.start();
+    REQUIRE(pumpUntil([&] { return controller.screen() == Screen::Details; }));
+
+    fx.transport->responses.push_back(moonbase::http_response{ 200, {}, addOnList });
+    controller.showAddOns();
+    CHECK(controller.screen() == Screen::AddOns);
+    REQUIRE(pumpUntil([&] { return controller.addOns().phase == ActivationController::AddOnsInfo::Phase::Ready; }));
+
+    // "Bought an add-on? Refresh": the license comes back with it, then the list.
+    fx.transport->responses.push_back(moonbase::http_response{
+        200, {}, fx.token(withAddOns({ addOn("pack", true), addOn("strings", true) })) });
+    fx.transport->responses.push_back(moonbase::http_response{ 200, {}, addOnList });
+    controller.refreshAddOns();
+    REQUIRE(pumpUntil([&] { return fx.transport->requests.size() == 3
+                                   && controller.addOns().phase == ActivationController::AddOnsInfo::Phase::Ready; }));
+    CHECK(controller.screen() == Screen::AddOns);
+    CHECK(controller.hasSubProduct("strings"));
+    CHECK(fx.transport->requests[1].url.find("/validate?") != std::string::npos);
+
+    controller.showDetails();
+    CHECK(controller.screen() == Screen::Details);
+}
+
+namespace
+{
+// Whether the shown screen (visible all the way down) has an "Activate" button.
+bool offersActivate(juce::Component& root)
+{
+    for (auto* child : root.getChildren())
+    {
+        if (! child->isVisible())
+            continue;
+        if (auto* button = dynamic_cast<juce::Button*>(child); button != nullptr && button->getButtonText() == "Activate")
+            return true;
+        if (offersActivate(*child))
+            return true;
+    }
+    return false;
+}
+} // namespace
+
+TEST_CASE("the add-ons screen goes by the license for a seat here, and offers Activate while a seat may be free")
+{
+    controller_fixture fx;
+    fx.seedStored(fx.token(default_claims()));
+    ActivationController controller(fx.config, fx.makeLicensing());
+    controller.start();
+    REQUIRE(pumpUntil([&] { return controller.screen() == Screen::Details; }));
+    ActivationComponent component(controller);
+    component.setSize(560, 640);
+
+    // Listed while this computer held the add-on's only seat; the license has
+    // been refreshed since.
+    const auto show = [&](moonbase::sub_product held, moonbase::sub_product_seats listed)
+    {
+        auto license = *controller.license();
+        license.sub_products = { held };
+        moonbase::sub_product_catalog_entry entry;
+        entry.id = "drum-kit";
+        entry.product.id = "demo-app.drum-kit";
+        entry.product.name = "Drum Kit";
+        entry.product.owned = true;
+        entry.included_in_license = true;
+        entry.active = true;
+        entry.seats = listed;
+        ActivationController::AddOnsInfo info;
+        info.phase = ActivationController::AddOnsInfo::Phase::Ready;
+        info.addOns = { entry };
+        controller.setPreviewAddOns(std::move(license), std::move(info));
+        pumpFor(50);
+        REQUIRE(controller.screen() == Screen::AddOns);
+        return offersActivate(component);
+    };
+
+    // Revoked here since: the seat is free again, whatever the list counted.
+    CHECK(show({ "drum-kit", false, false, true, std::nullopt, moonbase::sub_product_seats{ 1, 0, 1 } },
+               moonbase::sub_product_seats{ 1, 1, 0 }));
+    // Not revoked, and the license knows of a free seat the list didn't.
+    CHECK(show({ "drum-kit", false, false, false, std::nullopt, moonbase::sub_product_seats{ 2, 1, 1 } },
+               moonbase::sub_product_seats{ 2, 2, 0 }));
+    // Neither knows of one: its seats are in use elsewhere.
+    CHECK_FALSE(show({ "drum-kit", false, false, false, std::nullopt, moonbase::sub_product_seats{ 2, 2, 0 } },
+                     moonbase::sub_product_seats{ 2, 2, 0 }));
+}
+
+TEST_CASE("a change is broadcast when a countdown the screens show passes a day")
+{
+    controller_fixture fx;
+    // An add-on's trial ends a day and 8 seconds from now: "2 days left" at the
+    // start, "1 day left" 8 seconds in, with no new license or list in between.
+    const auto ends = now_seconds() + 86400 + 8;
+    auto keys = addOn("keys", true, true);
+    keys["exp"] = ends;
+    fx.seedStored(fx.token(withAddOns({ keys })));
+    ActivationController controller(fx.config, fx.makeLicensing());
+    controller.start();
+    REQUIRE(pumpUntil([&] { return controller.screen() == Screen::Details; }));
+    const auto end = std::chrono::system_clock::time_point(std::chrono::seconds(ends));
+    REQUIRE(controller.daysUntil(end) == 2);
+
+    struct Changes : juce::ChangeListener
+    {
+        void changeListenerCallback(juce::ChangeBroadcaster*) override { ++count; }
+        int count = 0;
+    } changes;
+    pumpFor(300); // what start() broadcast has landed
+    controller.addChangeListener(&changes);
+
+    pumpFor(2500); // a watch tick or so, with nothing to count down yet
+    CHECK(changes.count == 0);
+
+    REQUIRE(pumpUntil([&] { return controller.daysUntil(end) == 1; }, 15000));
+    CHECK(pumpUntil([&] { return changes.count > 0; }, 6000)); // within a tick or two
+    CHECK(controller.license().has_value()); // the day went by, nothing else changed
+    CHECK(controller.screen() == Screen::Details);
+    controller.removeChangeListener(&changes);
+}
+
+TEST_CASE("buySubProduct opens the add-on's buy link")
+{
+    controller_fixture fx;
+    juce::StringArray opened;
+    fx.config.openBrowser = [&](const juce::URL& url) { opened.add(url.toString(false)); return true; };
+    fx.seedStored(fx.token(withAddOns({ addOn("pack", true) }))); // as the list has it
+    ActivationController controller(fx.config, fx.makeLicensing());
+    controller.start();
+    REQUIRE(pumpUntil([&] { return controller.screen() == Screen::Details; }));
+
+    CHECK_FALSE(controller.buySubProduct("strings")); // not listed yet
+
+    fx.transport->responses.push_back(moonbase::http_response{ 200, {}, addOnList });
+    bool done = false;
+    controller.loadAddOns([&](bool) { done = true; });
+    REQUIRE(pumpUntil([&] { return done; }));
+
+    CHECK(controller.buySubProduct("strings"));
+    CHECK(opened == juce::StringArray{ "https://demo.moonbase.sh/buy/demo-app.strings" });
+    CHECK_FALSE(controller.buySubProduct("pack")); // owned, and not for sale
+}
+
+TEST_CASE("autoActivateSubProducts reaches the SDK options")
+{
+    ActivationConfig config;
+    CHECK(config.toLicensingOptions().auto_activate_sub_products);
+    config.autoActivateSubProducts = false;
+    CHECK_FALSE(config.toLicensingOptions().auto_activate_sub_products);
+    CHECK_FALSE(config.showAddOns); // the add-ons screen is opt-in
+}
+
+TEST_CASE("onActivationChanged reports an add-on trial that runs out")
+{
+    controller_fixture fx;
+    auto strings = addOn("strings", true, true);
+    strings["exp"] = now_seconds() + 2;
+    fx.seedStored(fx.token(withAddOns({ strings })));
+    ActivationController shared(fx.config, fx.makeLicensing());
+    shared.start();
+    REQUIRE(pumpUntil([&] { return shared.screen() == Screen::Details; }));
+
+    ActivationComponent component(shared);
+    std::vector<bool> reports;
+    component.onActivationChanged = [&](bool active) { reports.push_back(active); };
+    REQUIRE(pumpUntil([&] { return reports.size() == 1; }));
+
+    REQUIRE(pumpUntil([&] { return reports.size() == 2; }, 8000));
+    CHECK(reports.back());
+    CHECK_FALSE(shared.hasSubProduct("strings"));
 }
 
 //==============================================================================

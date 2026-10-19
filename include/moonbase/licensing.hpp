@@ -176,12 +176,18 @@ public:
         auto cross_process_guard = store_->lock_for_update();
 
         license freshest = local;
+        // Two copies validated at the same time can still differ: an add-on call
+        // answers with the activation's last validation time rather than a new
+        // one. Nothing in them says which is current, so the server is asked.
+        bool undecided = false;
         try {
             if (auto stored = store_->load_local_license();
                 stored && stored->activation_id == local.activation_id) {
                 auto candidate = validator_->validate_token(stored->token);
                 if (candidate.validated_at > freshest.validated_at) {
                     freshest = std::move(candidate);
+                } else if (candidate.validated_at == freshest.validated_at && candidate.token != freshest.token) {
+                    undecided = true;
                 }
             }
         } catch (const std::exception&) {
@@ -195,7 +201,7 @@ public:
         // inside the grace period — otherwise a min_interval longer than the
         // grace period would silently extend "max age without an online
         // check" past its advertised limit.
-        if (age < options_.online_validation_min_interval
+        if (!undecided && age < options_.online_validation_min_interval
             && age <= options_.online_validation_grace_period) {
             return freshest;
         }
@@ -224,6 +230,72 @@ public:
             }
             throw;
         }
+    }
+
+    // Takes a seat of one of the product's add-ons for this device, from the
+    // license the device holds for the product, and returns that license again,
+    // reporting the add-on in sub_products. The add-on must be included in the
+    // product's license. sub_product_id is the add-on's own part of its product
+    // ID ("drum-kit") or its whole ID ("my-app.drum-kit").
+    //
+    // For apps that take add-on seats themselves (auto_activate_sub_products
+    // off), and for an add-on whose seat on this device was revoked (revoked),
+    // which validating does not take back.
+    //
+    // The returned license is stored, as validate_token_online stores its own:
+    // under the same locks, held from before the request until the write, so
+    // another call here or in another instance can't store an older answer over
+    // it. should_persist, when given, is asked under those locks just before the
+    // write, and false skips it.
+    //
+    // Throws operation_not_supported_error for a trial license without contacting
+    // the API, no_eligible_license_error when the customer has no seat of the
+    // add-on to give (they don't own it, or every seat is taken), and
+    // operation_not_supported_error when the server refuses the add-on for this
+    // license. license_invalid_error or license_expired_error mean the license
+    // itself is no longer good. Other failures are api_error and worth retrying.
+    [[nodiscard]] license activate_sub_product(
+        std::string_view token,
+        std::string_view sub_product_id,
+        std::function<bool()> should_persist = {}) const
+    {
+        require_license_for_sub_products(token);
+        return call_and_store([&] { return client_->activate_sub_product(token, sub_product_id); },
+                              should_persist);
+    }
+
+    // Starts the trial of one of the product's add-ons on this device, from the
+    // license the device holds for the product, and returns that license again,
+    // reporting the trial in sub_products. The add-on must be included in the
+    // product's license and offer trials, and the license must be an online
+    // license rather than a trial. A customer who owns the add-on gets a seat of
+    // it instead, as activate_sub_product does. A device gets one trial of each
+    // add-on: asking again returns the license with the trial it had, expired or
+    // not.
+    //
+    // Stores the result and throws as activate_sub_product does.
+    [[nodiscard]] license request_sub_product_trial(
+        std::string_view token,
+        std::string_view sub_product_id,
+        std::function<bool()> should_persist = {}) const
+    {
+        require_license_for_sub_products(token);
+        return call_and_store([&] { return client_->request_sub_product_trial(token, sub_product_id); },
+                              should_persist);
+    }
+
+    // Lists the product's add-ons for this device, from the license or trial the
+    // device holds for the product: each with its prices when it is for sale,
+    // whether the customer owns it, whether to unlock it here, and its trial,
+    // including whether request_sub_product_trial can start one now. Changes
+    // nothing, so it can back a store or upgrade screen.
+    //
+    // Checks the token locally first. Throws as activate_sub_product does, apart
+    // from the local trial check, and api_error for an answer that isn't the list.
+    [[nodiscard]] sub_product_catalog list_sub_products(std::string_view token) const
+    {
+        static_cast<void>(validator_->validate_token(token));
+        return client_->list_sub_products(token);
     }
 
     void revoke_activation(std::string_view token) const
@@ -300,6 +372,39 @@ public:
 #endif
 
 private:
+    // Add-ons are activated and tried from a license: the server refuses a trial,
+    // so this saves the round trip and says so plainly.
+    void require_license_for_sub_products(std::string_view token) const
+    {
+        if (validator_->validate_token(token).trial) {
+            throw operation_not_supported_error(
+                "Add-ons are activated and tried from a license, not from a trial");
+        }
+    }
+
+    // Makes an add-on call and stores the license it returns, holding the locks
+    // validate_token_online holds from before the request until the write. The
+    // server marks an add-on call's answer with the activation's last validation
+    // time, not a new one, so the order answers reach the store in is the only
+    // order they have: holding the locks makes that the order the server gave
+    // them in. Storing is best-effort, as there: the license is good whether or
+    // not it reached the store.
+    template <typename Call>
+    license call_and_store(Call&& call, const std::function<bool()>& should_persist) const
+    {
+        std::lock_guard<std::mutex> in_process_guard(validate_mutex_);
+        auto cross_process_guard = store_->lock_for_update();
+
+        auto value = call();
+        if (!should_persist || should_persist()) {
+            try {
+                store_->store_local_license(value);
+            } catch (const storage_error&) {
+            }
+        }
+        return value;
+    }
+
     static licensing_options normalize_and_validate(licensing_options options)
     {
         options.endpoint = detail::trim_trailing_slashes(options.endpoint);

@@ -51,28 +51,19 @@ public:
         stream->withExtraHeaders(extraHeaders);
         stream->withConnectionTimeout(timeoutMs);
 
-        {
-            const juce::ScopedLock sl(streamLock);
-            if (cancelled)
-                throw moonbase::api_error(0, "HTTP request to " + request.url + " was cancelled");
-            active = stream.get();
-        }
-
-        const bool connected = stream->connect(nullptr);
-
+        bool connected = false;
         juce::String body;
         int statusCode = 0;
         juce::StringPairArray responseHeaders;
-        if (connected)
         {
-            body = stream->readEntireStreamAsString();
-            statusCode = stream->getStatusCode();
-            responseHeaders = stream->getResponseHeaders();
-        }
-
-        {
-            const juce::ScopedLock sl(streamLock);
-            active = nullptr;
+            const in_flight registration(*this, *stream, request.url);
+            connected = stream->connect(nullptr);
+            if (connected)
+            {
+                body = stream->readEntireStreamAsString();
+                statusCode = stream->getStatusCode();
+                responseHeaders = stream->getResponseHeaders();
+            }
         }
 
         if (! connected)
@@ -103,20 +94,49 @@ public:
         return response;
     }
 
-    // Interrupt any in-flight request and refuse further ones. Safe to call from
-    // another thread; the controller calls it on teardown so a blocking read
+    // Interrupt every in-flight request and refuse further ones. Safe to call
+    // from another thread; the controller calls it on teardown so a blocking read
     // cannot outlive the controller (or the plugin binary).
     void cancel()
     {
         const juce::ScopedLock sl(streamLock);
         cancelled = true;
-        if (active != nullptr)
-            active->cancel();
+        for (auto* stream : active)
+            stream->cancel();
     }
 
 private:
+    // Puts a request's stream where cancel() can reach it, from connect() until
+    // the read completes, or refuses the request once cancel() has run. The
+    // controller's workers share this transport, so several can be in flight.
+    class in_flight
+    {
+    public:
+        in_flight(juce_http_transport& transport, juce::WebInputStream& stream, const std::string& url)
+            : owner(transport), registered(stream)
+        {
+            const juce::ScopedLock sl(owner.streamLock);
+            if (owner.cancelled)
+                throw moonbase::api_error(0, "HTTP request to " + url + " was cancelled");
+            owner.active.add(&registered);
+        }
+
+        ~in_flight()
+        {
+            const juce::ScopedLock sl(owner.streamLock);
+            owner.active.removeFirstMatchingValue(&registered);
+        }
+
+        in_flight(const in_flight&) = delete;
+        in_flight& operator=(const in_flight&) = delete;
+
+    private:
+        juce_http_transport& owner;
+        juce::WebInputStream& registered;
+    };
+
     juce::CriticalSection streamLock;
-    juce::WebInputStream* active = nullptr; // valid only between connect() and the read completing
+    juce::Array<juce::WebInputStream*> active;
     bool cancelled = false;
 };
 

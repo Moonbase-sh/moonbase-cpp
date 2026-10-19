@@ -14,16 +14,21 @@
 // traffic: a license whose `exp` passes or whose offline grace period runs out
 // is re-checked (and locked if it has ended) without a restart, and a license
 // another plugin instance or process activates, refreshes or removes is picked
-// up within a couple of seconds.
+// up within a couple of seconds. A change is broadcast, too, when a day goes by
+// on a countdown to when the license or an add-on ends, so a screen showing the
+// days left keeps up.
 
 #include <atomic>
 #include <chrono>
 #include <cstdint>
 #include <filesystem>
 #include <functional>
+#include <map>
 #include <memory>
+#include <mutex>
 #include <optional>
 #include <string>
+#include <vector>
 
 #include <moonbase/moonbase.hpp>
 
@@ -51,7 +56,8 @@ public:
         Expired,        // a trial license that has ended (plugin locked; see expiredTrial())
         Details,        // a valid full license is loaded
         UpdateAvailable,// a valid license, but a newer app version has been released
-        Error           // an operation failed; statusMessage() has detail
+        Error,          // an operation failed; statusMessage() has detail
+        AddOns          // the product's add-ons, from a full license (see addOns())
     };
 
     // State backing the "Update available" screen. The version strings are known
@@ -78,6 +84,26 @@ public:
         // product's release access-control level. False e.g. for a trial when the
         // product restricts downloads to owners. Known once notes have loaded.
         bool canDownload = true;
+    };
+
+    // State backing the add-ons screen: the product's add-ons the customer can do
+    // something with, as moonbase::licensing::list_sub_products reports them for
+    // this device, and the add-on an activation or trial is running for.
+    struct AddOnsInfo
+    {
+        enum class Phase
+        {
+            Idle,    // not loaded
+            Loading, // listing; addOns keeps what an earlier load found
+            Ready    // listed, or failed (error set)
+        };
+
+        Phase phase = Phase::Idle;
+        juce::String currency;                                // the currency to show prices in
+        std::vector<moonbase::sub_product_catalog_entry> addOns;
+        juce::String error;       // non-empty when listing failed; for the user
+        juce::String busyId;      // the add-on an activation or trial is running for
+        juce::String actionError; // why the last activation or trial failed; for the user
     };
 
     explicit ActivationController(ActivationConfig config);
@@ -168,6 +194,81 @@ public:
     // still prompts.
     void dismissUpdate();
 
+    //== Add-ons ===============================================================
+    // An add-on (a sub-product, with a product ID like "my-app.drum-kit") that the
+    // merchant includes in the product's license travels in it, so the loaded
+    // license already says which ones this device may unlock. Read them on the
+    // message thread, from onLicenseChanged, which also fires when an add-on's
+    // trial runs out while the license itself carries on, and on the audio
+    // thread through subProductFlag().
+
+    // Whether to unlock the add-on here: the loaded license lists it as active
+    // and it hasn't expired. Takes the add-on's own part of its product ID
+    // ("drum-kit") or its whole ID. False while no license is loaded.
+    //
+    // Message thread only, as is activeSubProducts(): both read the license held
+    // there, and allocate. Not for processBlock: use subProductFlag() there.
+    // Debug builds assert when called from another thread.
+    [[nodiscard]] bool hasSubProduct(const juce::String& subProductId) const;
+
+    // The add-ons hasSubProduct() is true for right now, by their own part of
+    // their product ID.
+    [[nodiscard]] juce::StringArray activeSubProducts() const;
+
+    // hasSubProduct(subProductId) for the audio thread, as licensedFlag() is for
+    // the license: ask for it once on the message thread (in the processor's
+    // constructor, say), keep the pointer, and load() it in processBlock. Never
+    // null, and valid for the controller's lifetime. It changes in the same step
+    // as licensedFlag(), and within a couple of seconds of an add-on running out
+    // while the license carries on. One the license doesn't include stays false.
+    [[nodiscard]] const std::atomic<bool>* subProductFlag(const juce::String& subProductId) const;
+
+    // Takes a seat of the add-on for this device, or starts its trial, from the
+    // full license loaded, then loads and stores the license that comes back and
+    // lists the add-ons again if they were loaded. Activating is for an add-on
+    // the customer owns: one whose seat was revoked here, or every one when
+    // config.autoActivateSubProducts is off. A trial is for one they don't own
+    // (owning it, they get a seat instead).
+    //
+    // Async: onComplete runs on the message thread with whether it worked and,
+    // when it didn't, a message to show the user (addOns().actionError has it
+    // too, unless the license changed in the meantime, and onDiagnostic the
+    // detail). One at a time: a call while another runs (addOns().busyId) is
+    // refused. A license the server no longer accepts is re-checked, and locks as
+    // refreshLicense() would.
+    void activateSubProduct(const juce::String& subProductId,
+                            std::function<void(bool activated, const juce::String& message)> onComplete = {});
+    void requestSubProductTrial(const juce::String& subProductId,
+                                std::function<void(bool started, const juce::String& message)> onComplete = {});
+
+    // Lists the product's add-ons for this device into addOns(), with their
+    // prices, ownership and trials, for a store or upgrade screen. Async; a change
+    // is broadcast when it lands, and onComplete runs then.
+    //
+    // Can take a seat: not read-only while config.autoActivateSubProducts is on
+    // (the default). The list itself changes nothing on the server, but when it
+    // shows an add-on the customer owns, with a seat free, that the license
+    // doesn't hold yet (one bought since the license was last checked), the
+    // license is re-checked once, which takes that seat as every check does, and
+    // the add-ons are listed again. With the option off it only reads.
+    void loadAddOns(std::function<void(bool loaded)> onComplete = {});
+
+    // Re-validates the license, so an add-on bought since takes its seat, then
+    // lists the add-ons again. What the add-ons screen's "Refresh" does after a
+    // purchase in the browser.
+    void refreshAddOns();
+
+    // Opens the add-on's buy link (from addOns()) in the browser, through
+    // config.openBrowser when set. False when it has none, or it couldn't open.
+    //
+    // When the app then goes to the background (the customer is in the browser)
+    // and comes back to the front, the add-ons are refreshed as refreshAddOns()
+    // does, so one just bought unlocks without a click. Where the platform can't
+    // tell that the app is in the background, "Refresh" is the way.
+    bool buySubProduct(const juce::String& subProductId);
+
+    [[nodiscard]] const AddOnsInfo& addOns() const noexcept { return addOns_; }
+
     //== Offline activation ====================================================
     bool saveOfflineRequest(const juce::File& destination); // writes the device token
     void setOfflineResponse(const juce::File& responseFile);
@@ -183,6 +284,7 @@ public:
     void showWelcome();
     void showOffline();
     void showDetails();
+    void showAddOns(); // a full license only: routes to Screen::AddOns and loads them
 
     // Force a screen (with an optional synthetic license / offline error / lock
     // reason) with no network and no stored state. For previews, design iteration
@@ -198,10 +300,11 @@ public:
     // setPreviewState(Screen::BrowserWait).
     void setPreviewBrowserLink(juce::String browserUrl, bool opened = true);
 
-    // Pin the wall clock used for trial-countdown math (trialDaysRemaining), so
-    // previews and snapshot tests render a fixed number of days regardless of the
-    // real date. Affects display only; no effect on the live activation flow. Pass
-    // nullopt to unpin and fall back to the system clock.
+    // Pin the wall clock used for trial-countdown math (trialDaysRemaining,
+    // daysUntil) and add-on expiry (hasSubProduct, activeSubProducts), so previews
+    // and snapshot tests render a fixed number of days regardless of the real
+    // date. For previews only, which stop the license watch; validation keeps the
+    // real clock. Pass nullopt to unpin and fall back to the system clock.
     void setPreviewClock(std::optional<std::chrono::system_clock::time_point> now);
 
     // Force the UpdateAvailable screen with synthetic update state (no network),
@@ -213,6 +316,15 @@ public:
                           double progress = 0.0,
                           juce::String error = {},
                           bool canDownload = true);
+
+    // Force the AddOns screen with a synthetic license and add-on list (no
+    // network), for previews + snapshot tests.
+    void setPreviewAddOns(moonbase::license license, AddOnsInfo info);
+
+    // Replace how the controller tells whether the app is in front of the user,
+    // which is juce::Process::isForegroundProcess otherwise. For tests of the
+    // refresh after a purchase in the browser (see buySubProduct).
+    void setForegroundCheck(std::function<bool()> isInForeground);
 
     //== Accessors =============================================================
     [[nodiscard]] Screen screen() const noexcept { return screen_; }
@@ -249,6 +361,10 @@ public:
 
     // Trial display helpers (valid only when a trial license is loaded).
     [[nodiscard]] int trialDaysRemaining() const;
+    // Whole days from now until `when`, rounded up, and 0 once it has passed. On
+    // the preview clock when one is pinned, as trialDaysRemaining() is. For
+    // display, such as an add-on trial's countdown.
+    [[nodiscard]] int daysUntil(std::chrono::system_clock::time_point when) const;
     // True when the loaded trial has no end date: the product's trials never
     // expire, so its token carries no expiry. trialDaysRemaining() is 0 then, so
     // show no countdown.
@@ -315,10 +431,22 @@ private:
     [[nodiscard]] FileStamp stampLicenseFile() const; // watchedFile_ must be set
     void checkLicenseFile();
     void checkLicenseDeadlines();
+    void checkCountdowns();
     [[nodiscard]] bool activationInFlight() const noexcept;
     void onLicenseFileRemoved();
     void adoptStoredLicense(moonbase::license stored);
     void stopLicenseWatch();
+
+    void resetAddOns(); // the license they were for went or was replaced
+    void publishSubProductFlags();
+    void listAddOns(bool pickUpSeats, std::function<void(bool)> onComplete);
+    void refreshAndListAddOns();
+    [[nodiscard]] bool listsSeatToTake() const; // see loadAddOns
+    void checkPurchaseReturn();                 // a license watch tick; see buySubProduct
+    void runSubProductAction(const juce::String& subProductId, bool trial,
+                             std::function<void(bool, const juce::String&)> onComplete);
+    [[nodiscard]] juce::String addOnName(const juce::String& subProductId) const;
+    [[nodiscard]] std::chrono::system_clock::time_point clockNow() const; // the preview clock when pinned
 
     void notifyLicenseChange();  // coalesced, async onLicenseChanged
     void deliverLicenseChange();
@@ -371,15 +499,47 @@ private:
     // period. Spaced by onlineCheckInterval, so a skewed clock can't turn the
     // watch into a request every tick.
     std::optional<std::chrono::steady_clock::time_point> lastGraceCheck_;
+    // The ends the screens count down to (see checkCountdowns), and the days to
+    // each as of the last watch tick.
+    std::vector<std::chrono::system_clock::time_point> countdownEnds_;
+    std::vector<int> countdownDays_;
 
     // onLicenseChanged bookkeeping: the token last reported (nullopt = no license).
     bool licenseChangePending_ = false;
     bool licenseReported_ = false;
     std::optional<std::string> reportedToken_;
+    juce::StringArray reportedSubProducts_; // activeSubProducts() as last reported
+
+    //== Add-ons ===============================================================
+    AddOnsInfo addOns_;
+    // subProductFlag()'s flags, by the ID each was asked for. A map's entries
+    // never move, so the pointers handed out stay valid.
+    mutable std::map<juce::String, std::atomic<bool>> subProductFlags_;
+    // Bumped by every list, and when the license they were listed for goes, so a
+    // list that lands late is dropped.
+    std::atomic<std::uint64_t> addOnsGeneration_{0};
+    std::uint64_t addOnCalls_ = 0;   // numbers each add-on activation or trial
+    std::uint64_t addOnCall_ = 0;    // the one busyId belongs to; 0 when none
+    // Set by buySubProduct once the browser opened, until the app comes back to
+    // the front (or an hour has passed).
+    std::optional<std::chrono::steady_clock::time_point> purchaseOpenedAt_;
+    bool leftForPurchase_ = false; // the app has been in the background since
+    juce::StringArray lapsesChecked_; // add-ons that ran out and were re-checked for, once each (see checkLicenseDeadlines)
+    std::function<bool()> isInForeground_; // empty: juce::Process::isForegroundProcess
+    // Held by a refresh and an add-on call for the whole of their work, from the
+    // request until the answer is stored and queued, so the answers land here in
+    // the order they reached the store. The store's own lock, which they also
+    // hold from the request until the write, orders them against other
+    // instances. Shared with the workers, which outlive no one: the destructor
+    // joins them.
+    std::shared_ptr<std::mutex> onlineCalls_ = std::make_shared<std::mutex>();
 
     // Bumped by every state-changing entry point; async continuations capture it
     // and no-op if it has moved on by the time they run on the message thread.
-    std::atomic<std::uint64_t> generation_{0};
+    // Shared with the workers, which look at it under the store's lock before
+    // storing an answer, so a superseded one never reaches the store.
+    std::shared_ptr<std::atomic<std::uint64_t>> generations_ = std::make_shared<std::atomic<std::uint64_t>>(0);
+    std::atomic<std::uint64_t>& generation_ = *generations_;
 
     //== Update flow ===========================================================
     UpdateInfo updateInfo_;

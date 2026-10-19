@@ -89,6 +89,23 @@ inline std::string revoke_path(const licensing_options& options)
         "/revoke";
 }
 
+inline std::string sub_products_path(const licensing_options& options)
+{
+    return trim_trailing_slashes(options.endpoint) +
+        "/api/client/licenses/" +
+        url_encode(options.product_id) +
+        "/sub-products";
+}
+
+// action is "activate" or "trial". The id goes in as given: the server takes the
+// add-on's own part of its product ID or its whole ID.
+inline std::string sub_product_path(const licensing_options& options,
+                                    std::string_view sub_product_id,
+                                    const char* action)
+{
+    return sub_products_path(options) + "/" + url_encode(sub_product_id) + "/" + action;
+}
+
 inline std::map<std::string, std::string> client_query(const licensing_options& options)
 {
     std::map<std::string, std::string> query{{"format", "JWT"}};
@@ -102,6 +119,10 @@ inline std::map<std::string, std::string> client_query(const licensing_options& 
         if (!value.empty()) {
             query["meta[" + key + "]"] = value;
         }
+    }
+    // Only sent when off, the server's default
+    if (!options.auto_activate_sub_products) {
+        query["autoActivateSubProducts"] = "false";
     }
     return query;
 }
@@ -310,6 +331,37 @@ inline void throw_if_store_closed(const problem_details& problem)
 {
     const auto problem = parse_problem(response.body);
     throw_if_store_closed(problem);
+    throw_api_error(response, problem);
+}
+
+// The add-on endpoints answer about two things: the license the request carried,
+// and the add-on it asked for. Only an errorType about the license makes a 400 a
+// verdict on it (license_invalid_error, or license_expired_error), since an app
+// may lock on that. Every other refusal is about the add-on, and leaves the
+// license as good as it was: NoEligibleLicense when the customer has no seat of
+// it to give, and operation_not_supported_error for an add-on that can't be
+// activated or tried from this license, such as one not included in it, or a
+// trial asked for from an offline license.
+[[noreturn]] inline void throw_for_sub_product_problem(const http_response& response)
+{
+    const auto problem = parse_problem(response.body);
+    throw_if_store_closed(problem);
+
+    const auto message = problem_message(response.status_code, problem);
+    if (problem.error_type == "LicenseExpired") {
+        throw license_expired_error(message);
+    }
+    if (response.status_code == 400) {
+        if (problem.error_type == "LicenseInvalid" || problem.error_type == "LicenseRevoked" ||
+            problem.error_type == "LicenseActivationRevoked") {
+            throw license_invalid_error(message);
+        }
+        if (problem.error_type == "NoEligibleLicense") {
+            throw no_eligible_license_error(message);
+        }
+        throw operation_not_supported_error(message);
+    }
+
     throw_api_error(response, problem);
 }
 
@@ -601,7 +653,85 @@ public:
         return validator_->validate_token(response.body);
     }
 
+    // POST /api/client/licenses/{product}/sub-products/{id}/activate: takes a
+    // seat of one of the product's add-ons for the device the license token is
+    // bound to, and returns that license again, reporting the add-on in
+    // sub_products. Neither stores it nor checks the token locally first;
+    // licensing::activate_sub_product does both.
+    //
+    // Throws no_eligible_license_error when the customer has no seat of the add-on
+    // to give, operation_not_supported_error when it can't be activated from this
+    // license, and license_invalid_error or license_expired_error when the
+    // license itself is no longer good.
+    [[nodiscard]] license activate_sub_product(std::string_view token, std::string_view sub_product_id) const
+    {
+        return post_for_sub_product(token, sub_product_id, "activate");
+    }
+
+    // POST /api/client/licenses/{product}/sub-products/{id}/trial: starts the
+    // add-on's trial on the device the license token is bound to (or takes a seat
+    // of it, when the customer owns it), and returns that license again. Throws as
+    // activate_sub_product does.
+    [[nodiscard]] license request_sub_product_trial(std::string_view token, std::string_view sub_product_id) const
+    {
+        return post_for_sub_product(token, sub_product_id, "trial");
+    }
+
+    // POST /api/client/licenses/{product}/sub-products: the product's add-ons the
+    // customer can do something with, for the device the license or trial token
+    // is bound to. Changes nothing. Throws as activate_sub_product does, and
+    // api_error for an answer that isn't the add-on list.
+    [[nodiscard]] sub_product_catalog list_sub_products(std::string_view token) const
+    {
+        http_request request;
+        request.method = "POST";
+        request.url = detail::sub_products_path(options_);
+        request.headers = detail::default_headers(options_, "text/plain");
+        request.connect_timeout = options_.http_connect_timeout;
+        request.request_timeout = options_.http_request_timeout;
+        request.body = std::string(token);
+
+        const auto response = transport_->send(request);
+        if (response.status_code < 200 || response.status_code >= 300) {
+            detail::throw_for_sub_product_problem(response);
+        }
+
+        try {
+            return nlohmann::json::parse(response.body).get<sub_product_catalog>();
+        } catch (const std::exception& ex) {
+            throw api_error(
+                static_cast<int>(response.status_code),
+                std::string("Could not parse the add-on list: ") + ex.what());
+        }
+    }
+
 private:
+    [[nodiscard]] license post_for_sub_product(std::string_view token,
+                                               std::string_view sub_product_id,
+                                               const char* action) const
+    {
+        if (detail::trim_ascii_whitespace(std::string(sub_product_id)).empty()) {
+            throw configuration_error("An add-on id is required");
+        }
+
+        http_request request;
+        request.method = "POST";
+        request.url = detail::append_query(
+            detail::sub_product_path(options_, sub_product_id, action),
+            detail::client_query(options_));
+        request.headers = detail::default_headers(options_, "text/plain");
+        request.connect_timeout = options_.http_connect_timeout;
+        request.request_timeout = options_.http_request_timeout;
+        request.body = std::string(token);
+
+        const auto response = transport_->send(request);
+        if (response.status_code < 200 || response.status_code >= 300) {
+            detail::throw_for_sub_product_problem(response);
+        }
+        detail::ensure_token_response(response);
+        return validator_->validate_token(response.body);
+    }
+
     licensing_options options_;
     std::shared_ptr<device_id_resolver> device_ids_;
     std::shared_ptr<license_validator> validator_;

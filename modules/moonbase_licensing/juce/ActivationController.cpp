@@ -93,6 +93,26 @@ juce::String unexpectedFailure(const juce::String& lead, const std::exception& e
     const auto reason = juce::String::fromUTF8(ex.what()).trim();
     return reason.isEmpty() ? lead + "." : lead + ": " + reason;
 }
+
+// Screen copy for an add-on request that got no answer about the add-on: the
+// connection, Moonbase, or this machine. `lead` says what failed ("Couldn't
+// activate Drum Kit"), and `notFound` what a 404 means for this request.
+juce::String addOnFailure(const std::exception& ex, const juce::String& lead, const juce::String& notFound)
+{
+    if (const auto* api = dynamic_cast<const moonbase::api_error*>(&ex); api != nullptr && api->status_code() == 404)
+        return notFound;
+
+    switch (classifyFailure(ex))
+    {
+        case Failure::Unreachable: return "Couldn't reach Moonbase. Check your internet connection and try again.";
+        case Failure::Busy:        return "Moonbase couldn't do that right now. Try again in a minute.";
+        case Failure::StoreClosed: return "This store has closed, so add-ons aren't available.";
+        case Failure::NoIdentity:  return "This computer can't be identified. Contact the developer for help.";
+        case Failure::Refused:     return lead + ". If this keeps happening, contact the developer.";
+        case Failure::Unexpected:  break;
+    }
+    return unexpectedFailure(lead, ex);
+}
 } // namespace
 
 ActivationController::ActivationController(ActivationConfig config)
@@ -524,6 +544,15 @@ void ActivationController::refreshLicense(bool force, std::function<void(bool)> 
         return;
     }
 
+    // A deactivation on its way settles the license either way, and a re-check
+    // now would supersede it and leave it unfinished.
+    if (busy_)
+    {
+        emitDiagnostic("refreshLicense: skipped while a deactivation is in progress.");
+        if (onComplete) onComplete(false);
+        return;
+    }
+
     // Nothing to refresh, or an offline license (permanent + server-untracked).
     if (! license_ || license_->method == moonbase::activation_method::offline)
     {
@@ -543,8 +572,26 @@ void ActivationController::refreshLicense(bool force, std::function<void(bool)> 
     auto licensing = licensing_;
 
     threadPool_.addJob([safe, generation, token, currentLicense, wasTrial, gracePeriod, licensing, force,
-                        onComplete]() mutable
+                        onComplete, onlineCalls = onlineCalls_, generations = generations_]() mutable
     {
+        // Takes turns with the add-on calls until its answer is queued (see
+        // onlineCalls_).
+        std::lock_guard<std::mutex> oneAtATime(*onlineCalls);
+
+        // Asked under the store's lock, just before the answer is stored: not
+        // when this check was superseded (deactivate and clearLicense among
+        // others move the generation on first, and delete under the same lock
+        // after), and not over another activation stored meanwhile. With nothing
+        // stored it is written, which also puts back a license whose first save
+        // failed.
+        const auto stillCurrent = [licensing, generations, generation, activationId = currentLicense.activation_id]
+        {
+            if (generations->load() != generation)
+                return false;
+            const auto stored = licensing->store().load_local_license();
+            return ! stored.has_value() || stored->activation_id == activationId;
+        };
+
         std::optional<moonbase::license> refreshed;
         bool expired = false;
         bool rejected = false;
@@ -554,16 +601,29 @@ void ActivationController::refreshLicense(bool force, std::function<void(bool)> 
         {
             if (force)
             {
-                // Bypass the min-interval throttle by hitting the API directly.
+                // Past the min-interval throttle, straight to the API, but holding
+                // the store's lock from the request until the answer is stored, as
+                // licensing does for its own checks: answers then reach the store
+                // in the order the server gave them, whichever instance asked.
+                auto guard = licensing->store().lock_for_update();
                 refreshed = licensing->client().validate_token_online(token);
+                if (stillCurrent())
+                {
+                    try
+                    {
+                        licensing->store().store_local_license(*refreshed);
+                    }
+                    catch (const moonbase::storage_error& ex)
+                    {
+                        diag = juce::String("Refreshed, but couldn't persist the license: ") + ex.what();
+                    }
+                }
             }
             else
             {
-                // Throttled + grace-period aware (skips the network if recent).
-                // Suppress the SDK's own background-thread persist; we persist on
-                // the message thread below so a stale write can't resurrect a
-                // license the user cleared while this refresh was in flight.
-                refreshed = licensing->validate_token_online(token, [] { return false; });
+                // Throttled + grace-period aware (skips the network if recent),
+                // and stores what it got the same way.
+                refreshed = licensing->validate_token_online(token, stillCurrent);
             }
         }
         catch (const moonbase::license_expired_error& ex)
@@ -591,7 +651,7 @@ void ActivationController::refreshLicense(bool force, std::function<void(bool)> 
         }
 
         juce::MessageManager::callAsync([safe, generation, refreshed, expired, rejected, pastGrace,
-                                         currentLicense, wasTrial, licensing, diag, onComplete]() mutable
+                                         currentLicense, wasTrial, licensing, force, diag, onComplete]() mutable
         {
             auto* self = safe.get();
             if (self != nullptr)
@@ -604,20 +664,25 @@ void ActivationController::refreshLicense(bool force, std::function<void(bool)> 
                 return;
             }
 
+            // A throttled check can answer with the very license it was asked
+            // about. When the license held here has moved on since (an add-on call
+            // landed, say), that answer is the older of the two: keep what is held.
+            // A forced check always reached the server, after anything held here,
+            // so its answer applies even when it matches the license it was asked
+            // about: an add-on revoked since then is gone again.
+            if (! force && refreshed && refreshed->token == currentLicense.token && self->license_
+                && self->license_->activation_id == refreshed->activation_id
+                && self->license_->token != currentLicense.token)
+            {
+                if (onComplete) onComplete(true);
+                return;
+            }
+
             if (refreshed)
             {
-                // Persist here on the message thread: serialized against
-                // deactivate()/clearLicense() and gated by the generation check
-                // above, so a stale refresh cannot recreate a cleared license.
-                try
-                {
-                    auto guard = licensing->store().lock_for_update();
-                    licensing->store().store_local_license(*refreshed);
-                }
-                catch (const moonbase::storage_error& ex)
-                {
-                    self->emitDiagnostic(juce::String("Refreshed, but couldn't persist the license: ") + ex.what());
-                }
+                // Stored already, on the worker, if it was still current then.
+                if (diag.isNotEmpty())
+                    self->emitDiagnostic(diag);
 
                 // Updates license_, re-routes the screen if needed, and notifies
                 // listeners (onActivationChanged) so the host can reload features.
@@ -980,6 +1045,44 @@ void ActivationController::watchLicense()
 
     checkLicenseFile();
     checkLicenseDeadlines();
+    checkPurchaseReturn();
+    checkCountdowns();
+}
+
+// The screens count down to when the license and its add-ons end ("5 days
+// left"), and nothing reports a day going by: broadcast a change when one of
+// those counts moves, so a screen left open keeps up. Not when what ends has
+// changed: whatever changed it broadcast already.
+void ActivationController::checkCountdowns()
+{
+    std::vector<std::chrono::system_clock::time_point> ends;
+    const auto add = [&ends](const std::optional<std::chrono::system_clock::time_point>& end)
+    {
+        if (end)
+            ends.push_back(*end);
+    };
+    if (license_)
+    {
+        add(license_->expires_at);
+        for (const auto& entry : license_->sub_products)
+            add(entry.expires_at);
+    }
+    for (const auto& entry : addOns_.addOns)
+    {
+        add(entry.expires_at);
+        if (entry.trial)
+            add(entry.trial->expires_at);
+    }
+
+    std::vector<int> days;
+    for (const auto& end : ends)
+        days.push_back(daysUntil(end));
+
+    const bool dayWentBy = ends == countdownEnds_ && days != countdownDays_;
+    countdownEnds_ = std::move(ends);
+    countdownDays_ = std::move(days);
+    if (dayWentBy)
+        sendChangeMessage();
 }
 
 void ActivationController::stopLicenseWatch()
@@ -1124,6 +1227,45 @@ bool ActivationController::activationInFlight() const noexcept
 
 void ActivationController::checkLicenseDeadlines()
 {
+    // An add-on's trial (or subscription) can run out while the license itself
+    // carries on, which changes what the host may unlock without a new token.
+    publishSubProductFlags();
+    if (license_ && licenseReported_)
+    {
+        const auto active = activeSubProducts();
+        if (active != reportedSubProducts_)
+        {
+            notifyLicenseChange();
+            sendChangeMessage();
+        }
+        for (const auto& id : active)
+            lapsesChecked_.removeString(id); // unlocked again: may be checked again later
+
+        // One whose time ran out may have been bought or renewed meanwhile, which
+        // the server turns into a seat at the next check: check now, once for
+        // each, as an expiring license is checked. Looked for on every tick, so a
+        // check put off (by a deactivation on its way, say) still happens.
+        if (license_->method == moonbase::activation_method::online && ! busy_ && refreshesInFlight_ == 0
+            && ! activationInFlight())
+        {
+            juce::StringArray ranOut;
+            const auto now = clockNow();
+            for (const auto& entry : license_->sub_products)
+            {
+                const auto id = juce::String::fromUTF8(entry.id.c_str());
+                if (entry.active && entry.expires_at && *entry.expires_at <= now && ! lapsesChecked_.contains(id))
+                    ranOut.add(id);
+            }
+            if (! ranOut.isEmpty())
+            {
+                lapsesChecked_.addArray(ranOut);
+                emitDiagnostic("An add-on ran out; re-checking the license in case it was bought or renewed.");
+                refreshLicense(true);
+                return;
+            }
+        }
+    }
+
     // Not while a refresh is already on its way (the host's own, after a
     // purchase, or an earlier one of ours): starting another would supersede it.
     if (! license_ || busy_ || refreshesInFlight_ > 0)
@@ -1186,6 +1328,11 @@ void ActivationController::endActivationFlows()
     offlineResponse_ = juce::File();
     offlineRequestSaved_ = false;
     offlineError_.clear();
+    // The add-ons were listed for the license being replaced; whatever replaces
+    // it routes the screen.
+    resetAddOns();
+    if (screen_ == Screen::AddOns)
+        screen_ = Screen::Details;
 }
 
 //==============================================================================
@@ -1207,6 +1354,17 @@ void ActivationController::showDetails()
 {
     // For a trial license "details" is the trial view; keep them consistent.
     setScreen(screenForCurrentLicense());
+}
+
+void ActivationController::showAddOns()
+{
+    // Add-ons are activated and tried from a full license.
+    if (! license_ || license_->trial)
+        return;
+
+    addOns_.actionError.clear();
+    setScreen(Screen::AddOns);
+    loadAddOns();
 }
 
 void ActivationController::setPreviewState(Screen screen, std::optional<moonbase::license> license,
@@ -1231,6 +1389,7 @@ void ActivationController::setPreviewState(Screen screen, std::optional<moonbase
     }
     lockReason_ = lockReason;
     pendingRequest_.reset();
+    resetAddOns();
     // Route the preview error to the field the target screen actually shows: the
     // Offline view reads offlineError(); the others (Welcome/Error, Details) read
     // statusMessage().
@@ -1265,16 +1424,478 @@ void ActivationController::setPreviewClock(std::optional<std::chrono::system_clo
     previewClock_ = now;
 }
 
+std::chrono::system_clock::time_point ActivationController::clockNow() const
+{
+    return previewClock_.value_or(std::chrono::system_clock::now());
+}
+
+void ActivationController::setPreviewAddOns(moonbase::license license, AddOnsInfo info)
+{
+    ++generation_;
+    resetAddOns();
+    stopTimer();
+    stopLicenseWatch(); // a preview stays exactly as set
+    pollInFlight_ = false;
+    busy_ = false;
+    pendingRequest_.reset();
+
+    setLicense(std::move(license));
+    expiredTrial_.reset();
+    statusMessage_.clear();
+    addOns_ = std::move(info);
+
+    screen_ = Screen::AddOns;
+    sendSynchronousChangeMessage();
+}
+
+//==============================================================================
+// Add-ons
+bool ActivationController::hasSubProduct(const juce::String& subProductId) const
+{
+    JUCE_ASSERT_MESSAGE_THREAD // keep an atomic flag for the audio thread (see the header)
+    return license_ && moonbase::has_sub_product(*license_, subProductId.toStdString(), clockNow());
+}
+
+const std::atomic<bool>* ActivationController::subProductFlag(const juce::String& subProductId) const
+{
+    JUCE_ASSERT_MESSAGE_THREAD // once, ahead of the audio thread (see the header)
+    auto [entry, added] = subProductFlags_.try_emplace(subProductId);
+    if (added)
+        entry->second.store(hasSubProduct(subProductId), std::memory_order_release);
+    return &entry->second;
+}
+
+void ActivationController::publishSubProductFlags()
+{
+    for (auto& [id, flag] : subProductFlags_)
+        flag.store(hasSubProduct(id), std::memory_order_release);
+}
+
+juce::StringArray ActivationController::activeSubProducts() const
+{
+    JUCE_ASSERT_MESSAGE_THREAD
+    juce::StringArray ids;
+    if (! license_)
+        return ids;
+
+    const auto now = clockNow();
+    for (const auto& entry : license_->sub_products)
+        if (moonbase::has_sub_product(*license_, entry.id, now))
+            ids.addIfNotAlreadyThere(juce::String::fromUTF8(entry.id.c_str()));
+    return ids;
+}
+
+void ActivationController::resetAddOns()
+{
+    ++addOnsGeneration_;
+    addOns_ = {};
+    addOnCall_ = 0;
+    lapsesChecked_.clear();
+    purchaseOpenedAt_.reset();
+    leftForPurchase_ = false;
+}
+
+juce::String ActivationController::addOnName(const juce::String& subProductId) const
+{
+    const auto id = subProductId.toStdString();
+    for (const auto& entry : addOns_.addOns)
+        if (entry.id == id || entry.product.id == id)
+            return juce::String::fromUTF8(entry.product.name.c_str());
+    return {};
+}
+
+void ActivationController::activateSubProduct(const juce::String& subProductId,
+                                              std::function<void(bool, const juce::String&)> onComplete)
+{
+    runSubProductAction(subProductId, /*trial*/ false, std::move(onComplete));
+}
+
+void ActivationController::requestSubProductTrial(const juce::String& subProductId,
+                                                  std::function<void(bool, const juce::String&)> onComplete)
+{
+    runSubProductAction(subProductId, /*trial*/ true, std::move(onComplete));
+}
+
+void ActivationController::runSubProductAction(const juce::String& subProductId, bool trial,
+                                               std::function<void(bool, const juce::String&)> onComplete)
+{
+    if (licensing_ == nullptr || ! license_ || license_->trial)
+    {
+        const juce::String message = license_ && license_->trial
+            ? juce::String("Add-ons are activated from a full license, not a trial.")
+            : "Activate " + config_.resolvedProductName() + " first.";
+        addOns_.actionError = message;
+        sendChangeMessage();
+        if (onComplete) onComplete(false, message);
+        return;
+    }
+
+    if (addOns_.busyId.isNotEmpty())
+    {
+        if (onComplete) onComplete(false, "Another add-on is still being set up. Try again in a moment.");
+        return;
+    }
+
+    // Named in the copy when the add-ons have been listed.
+    const auto name = addOnName(subProductId);
+    const auto subject = name.isNotEmpty() ? name : juce::String("This add-on");
+    const auto object = name.isNotEmpty() ? name : juce::String("this add-on");
+    const auto account = config_.brandAccountName();
+
+    const auto call = ++addOnCalls_;
+    addOnCall_ = call;
+    addOns_.busyId = subProductId;
+    addOns_.actionError.clear();
+    sendChangeMessage();
+
+    const auto token = license_->token;
+    const auto activationId = license_->activation_id;
+    const auto id = subProductId.toStdString();
+    juce::WeakReference<ActivationController> safe(this);
+    auto licensing = licensing_;
+
+    threadPool_.addJob([safe, licensing, token, activationId, id, trial, call, subject, object, account,
+                        onComplete, onlineCalls = onlineCalls_]() mutable
+    {
+        // Takes turns with a forced refresh until the answer is queued (see onlineCalls_).
+        std::lock_guard<std::mutex> oneAtATime(*onlineCalls);
+
+        std::optional<moonbase::license> result;
+        bool licenseRefused = false;
+        juce::String diag;
+        juce::String userMessage;
+        try
+        {
+            // licensing holds the store's lock from the request until it stores
+            // the answer, so answers reach the store in the order the server gave
+            // them, whichever instance asked. Only over a stored copy of this
+            // activation: one cleared, deactivated or replaced meanwhile is left
+            // as it is. (Nothing stored can also mean the license's first save
+            // failed; the next refresh writes it, see refreshLicense.)
+            const auto stillThisLicense = [licensing, activationId]
+            {
+                const auto stored = licensing->store().load_local_license();
+                return stored.has_value() && stored->activation_id == activationId;
+            };
+            result = trial ? licensing->request_sub_product_trial(token, id, stillThisLicense)
+                           : licensing->activate_sub_product(token, id, stillThisLicense);
+        }
+        catch (const moonbase::no_eligible_license_error& ex)
+        {
+            diag = juce::String::fromUTF8(ex.what());
+            userMessage = "No seat of " + object + " is free for this computer. Free one in your " + account
+                        + " account, or buy one.";
+        }
+        catch (const moonbase::operation_not_supported_error& ex)
+        {
+            diag = juce::String::fromUTF8(ex.what());
+            userMessage = subject + (trial ? " can't be tried on this computer." : " can't be activated on this computer.");
+        }
+        catch (const moonbase::license_expired_error& ex)
+        {
+            licenseRefused = true;
+            diag = juce::String::fromUTF8(ex.what());
+            userMessage = "Your license has expired.";
+        }
+        catch (const moonbase::license_invalid_error& ex)
+        {
+            licenseRefused = true;
+            diag = juce::String::fromUTF8(ex.what());
+            userMessage = "Your license is no longer valid on this computer.";
+        }
+        catch (const std::exception& ex)
+        {
+            diag = describeError(ex);
+            userMessage = addOnFailure(ex,
+                                       trial ? "Couldn't start the trial of " + object : "Couldn't activate " + object,
+                                       "Moonbase couldn't find " + object + ".");
+        }
+
+
+        juce::MessageManager::callAsync([safe, result, licenseRefused, diag, userMessage, trial, call, activationId,
+                                         onComplete]() mutable
+        {
+            auto* self = safe.get();
+            if (self == nullptr)
+                return;
+            // Unless the license went in the meantime, which cleared it already.
+            if (self->addOnCall_ == call)
+            {
+                self->addOnCall_ = 0;
+                self->addOns_.busyId.clear();
+            }
+
+            // Only onto the license it was asked from: one deactivated, cleared or
+            // replaced since keeps what it has now.
+            const bool sameLicense = self->license_ && self->license_->activation_id == activationId;
+            const juce::String changed = "Your license changed while this was in progress.";
+
+            if (result)
+            {
+                const bool applies = sameLicense && result->activation_id == activationId;
+                if (applies)
+                    self->setLicense(std::move(result)); // stored already, by licensing
+                self->sendChangeMessage();
+                if (applies && self->addOns_.phase != AddOnsInfo::Phase::Idle)
+                    self->listAddOns(/*pickUpSeats*/ false, {}); // show what changed
+                if (onComplete) onComplete(applies, applies ? juce::String() : changed);
+                return;
+            }
+
+            self->emitDiagnostic(juce::String(trial ? "requestSubProductTrial" : "activateSubProduct")
+                                 + " failed: " + diag);
+            if (! sameLicense)
+            {
+                self->sendChangeMessage();
+                if (onComplete) onComplete(false, changed);
+                return;
+            }
+
+            self->addOns_.actionError = userMessage;
+            self->sendChangeMessage();
+            // The license itself was refused: re-check it, which locks as a
+            // refresh does when the server stands by that. Not over a
+            // deactivation on its way, which settles it either way.
+            if (licenseRefused && ! self->busy_)
+                self->refreshLicense(true);
+            if (onComplete) onComplete(false, userMessage);
+        });
+    });
+}
+
+void ActivationController::loadAddOns(std::function<void(bool)> onComplete)
+{
+    listAddOns(/*pickUpSeats*/ true, std::move(onComplete));
+}
+
+void ActivationController::listAddOns(bool pickUpSeats, std::function<void(bool)> onComplete)
+{
+    if (licensing_ == nullptr || ! license_)
+    {
+        if (onComplete) onComplete(false);
+        return;
+    }
+
+    const auto generation = ++addOnsGeneration_;
+    addOns_.phase = AddOnsInfo::Phase::Loading;
+    addOns_.error.clear();
+    sendChangeMessage();
+
+    const auto token = license_->token;
+    juce::WeakReference<ActivationController> safe(this);
+    auto licensing = licensing_;
+
+    threadPool_.addJob([safe, generation, licensing, token, pickUpSeats, onComplete]() mutable
+    {
+        std::optional<moonbase::sub_product_catalog> catalog;
+        bool licenseRefused = false;
+        juce::String diag;
+        juce::String userMessage;
+        try
+        {
+            catalog = licensing->list_sub_products(token);
+        }
+        catch (const moonbase::license_expired_error& ex)
+        {
+            licenseRefused = true;
+            diag = juce::String::fromUTF8(ex.what());
+            userMessage = "Your license has expired.";
+        }
+        catch (const moonbase::license_invalid_error& ex)
+        {
+            licenseRefused = true;
+            diag = juce::String::fromUTF8(ex.what());
+            userMessage = "Your license is no longer valid on this computer.";
+        }
+        catch (const std::exception& ex)
+        {
+            diag = describeError(ex);
+            userMessage = addOnFailure(ex, "Couldn't load the add-ons",
+                                       "Moonbase couldn't find the add-ons for this license.");
+        }
+
+        juce::MessageManager::callAsync([safe, generation, catalog, licenseRefused, diag, userMessage,
+                                         pickUpSeats, onComplete]() mutable
+        {
+            auto* self = safe.get();
+            if (self == nullptr)
+                return;
+            if (generation != self->addOnsGeneration_.load())
+            {
+                if (onComplete) onComplete(false); // superseded, or the license went
+                return;
+            }
+
+            self->addOns_.phase = AddOnsInfo::Phase::Ready;
+            if (catalog)
+            {
+                self->addOns_.currency = juce::String::fromUTF8(catalog->currency.c_str());
+                self->addOns_.addOns = std::move(catalog->sub_products);
+                self->addOns_.error.clear();
+            }
+            else
+            {
+                self->emitDiagnostic("loadAddOns failed: " + diag);
+                self->addOns_.error = userMessage;
+            }
+            self->sendChangeMessage();
+            // As for an add-on call (the generation above means it is still the
+            // license the list was asked for).
+            if (licenseRefused && ! self->busy_)
+                self->refreshLicense(true);
+
+            // Bought since the license was last checked: checking it takes the
+            // seat, as it would at the next launch. Once, so an add-on the
+            // server still won't seat can't start a loop.
+            const bool takeSeat = catalog && pickUpSeats && self->listsSeatToTake();
+            if (onComplete) onComplete(catalog.has_value());
+
+            // The callback may have destroyed the controller (a host closing its
+            // editor, say) or cleared the license, so look again before going on.
+            self = safe.get();
+            if (takeSeat && self != nullptr && self->listsSeatToTake())
+            {
+                self->emitDiagnostic("An add-on the customer owns has a seat free; re-checking the license to take it.");
+                self->refreshAndListAddOns();
+            }
+        });
+    });
+}
+
+bool ActivationController::listsSeatToTake() const
+{
+    if (! config_.autoActivateSubProducts || ! license_ || license_->trial
+        || license_->method != moonbase::activation_method::online)
+        return false;
+
+    const auto now = clockNow();
+    for (const auto& entry : addOns_.addOns)
+    {
+        const bool owned = entry.product.owned || entry.product.subscribed;
+        if (! entry.included_in_license || ! owned || entry.revoked)
+            continue;
+
+        // On a seat here already: nothing to take. A trial still unlocking one
+        // the customer has since bought gives way to a seat at the next check.
+        const auto* held = moonbase::find_sub_product(*license_, entry.id);
+        if (held != nullptr && ! held->trial && moonbase::has_sub_product(*license_, entry.id, now))
+            continue;
+
+        // A seat is free, or the list says this device has one that the license
+        // doesn't show (an answer that was never stored, say).
+        if (entry.active || (entry.seats && entry.seats->remaining > 0))
+            return true;
+    }
+    return false;
+}
+
+void ActivationController::refreshAddOns()
+{
+    if (! license_)
+        return;
+
+    addOns_.actionError.clear();
+    refreshAndListAddOns();
+}
+
+void ActivationController::refreshAndListAddOns()
+{
+    // Not over a deactivation on its way (see refreshLicense).
+    if (! license_ || busy_)
+        return;
+
+    // An offline license is never re-validated; its add-ons are just listed.
+    if (license_->method == moonbase::activation_method::offline)
+    {
+        listAddOns(/*pickUpSeats*/ false, {});
+        return;
+    }
+
+    addOns_.phase = AddOnsInfo::Phase::Loading;
+    addOns_.error.clear();
+    sendChangeMessage();
+
+    // The license was just checked, so the list that follows has no seat left
+    // to take that checking again would.
+    juce::WeakReference<ActivationController> safe(this);
+    refreshLicense(true, [safe](bool)
+    {
+        if (auto* self = safe.get(); self != nullptr && self->license_)
+            self->listAddOns(/*pickUpSeats*/ false, {});
+    });
+}
+
+void ActivationController::setForegroundCheck(std::function<bool()> isInForeground)
+{
+    isInForeground_ = std::move(isInForeground);
+}
+
+void ActivationController::checkPurchaseReturn()
+{
+    if (! purchaseOpenedAt_)
+        return;
+
+    if (std::chrono::steady_clock::now() - *purchaseOpenedAt_ > std::chrono::hours(1))
+    {
+        purchaseOpenedAt_.reset(); // whatever happened, it wasn't a purchase coming back
+        return;
+    }
+
+    const bool inForeground = isInForeground_ ? isInForeground_() : juce::Process::isForegroundProcess();
+    if (! inForeground)
+    {
+        leftForPurchase_ = true;
+        return;
+    }
+    // Back, but a deactivation is on its way: wait for it to settle (losing the
+    // license forgets the purchase too).
+    if (! leftForPurchase_ || ! license_ || busy_)
+        return;
+
+    purchaseOpenedAt_.reset();
+    leftForPurchase_ = false;
+    emitDiagnostic("Back from the browser after opening an add-on's buy link; refreshing the add-ons.");
+    refreshAddOns();
+}
+
+bool ActivationController::buySubProduct(const juce::String& subProductId)
+{
+    const auto id = subProductId.toStdString();
+    for (const auto& entry : addOns_.addOns)
+    {
+        if ((entry.id != id && entry.product.id != id) || entry.buy_url.empty())
+            continue;
+
+        const juce::URL link(juce::String::fromUTF8(entry.buy_url.c_str()));
+        const bool opened = config_.openBrowser ? config_.openBrowser(link) : link.launchInDefaultBrowser();
+        if (! opened)
+        {
+            emitDiagnostic("Couldn't open the browser to buy an add-on: " + link.toString(false));
+            addOns_.actionError = "Couldn't open your browser to buy "
+                                + juce::String::fromUTF8(entry.product.name.c_str()) + ".";
+            sendChangeMessage();
+            return false;
+        }
+
+        // Refresh once the customer is back from the browser (checkPurchaseReturn).
+        purchaseOpenedAt_ = std::chrono::steady_clock::now();
+        leftForPurchase_ = false;
+        return true;
+    }
+    return false;
+}
+
 //==============================================================================
 int ActivationController::trialDaysRemaining() const
 {
     if (! license_ || ! license_->expires_at)
         return 0;
+    return daysUntil(*license_->expires_at);
+}
 
-    const auto now = previewClock_.value_or(std::chrono::system_clock::now());
-    const auto seconds = std::chrono::duration_cast<std::chrono::seconds>(
-                             *license_->expires_at - now)
-                             .count();
+int ActivationController::daysUntil(std::chrono::system_clock::time_point when) const
+{
+    const auto seconds = std::chrono::duration_cast<std::chrono::seconds>(when - clockNow()).count();
     if (seconds <= 0)
         return 0;
     return static_cast<int>((seconds + 86399) / 86400); // ceil to whole days
@@ -1295,11 +1916,17 @@ void ActivationController::setScreen(Screen newScreen, const juce::String& messa
 
 void ActivationController::setLicense(std::optional<moonbase::license> value)
 {
+    const bool sameActivation = license_ && value && license_->activation_id == value->activation_id;
     license_ = std::move(value);
     if (license_)
         lockReason_ = LockReason::None;
+    // The add-ons were listed for the activation that just went or was replaced
+    // (an activation here, say), along with anything still on its way for it.
+    if (! sameActivation)
+        resetAddOns();
     // Publish for the audio thread (this always runs on the message thread).
     licensed_.store(license_.has_value(), std::memory_order_release);
+    publishSubProductFlags();
     notifyLicenseChange();
 }
 
@@ -1324,11 +1951,13 @@ void ActivationController::deliverLicenseChange()
     licenseChangePending_ = false;
 
     auto token = license_ ? std::optional<std::string>(license_->token) : std::nullopt;
-    if (licenseReported_ && token == reportedToken_)
+    auto subProducts = activeSubProducts();
+    if (licenseReported_ && token == reportedToken_ && subProducts == reportedSubProducts_)
         return;
 
     licenseReported_ = true;
     reportedToken_ = std::move(token);
+    reportedSubProducts_ = std::move(subProducts);
     if (onLicenseChanged)
         onLicenseChanged(license_.has_value());
 }
@@ -1352,6 +1981,15 @@ void ActivationController::applyLicense(std::optional<moonbase::license> value)
     // screen first (unless that version was skipped); "Skip this update" then
     // falls through to the normal Details / Trial screen.
     const auto dest = screenForCurrentLicense();
+
+    // A refresh of the license whose add-ons are open (after a purchase, say)
+    // keeps them open.
+    if (screen_ == Screen::AddOns && dest == Screen::Details)
+    {
+        sendChangeMessage();
+        return;
+    }
+
     if ((dest == Screen::Details || dest == Screen::Trial) && config_.autoPresentUpdate
         && updateAvailable() && ! updateDismissedForCurrentLicense())
     {

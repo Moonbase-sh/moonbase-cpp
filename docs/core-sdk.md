@@ -220,6 +220,95 @@ online-activated paid licenses; calling it for offline or trial tokens raises
 same way they do for `validate_token_online`, but with no grace-period
 fallback — revoke is a one-shot operation.
 
+## Add-ons
+
+An add-on (a sub-product, with a product ID like `my-app.drum-kit`) that the
+merchant includes in its main product's license travels in the main license, so
+one validation answers for both. When a device activates or validates the main
+product, it takes a seat of each such add-on the customer owns, and the license
+lists them in `sub_products`:
+
+```cpp
+if (moonbase::has_sub_product(license, "drum-kit")) {
+    // unlock the drum kit
+}
+```
+
+`has_sub_product` takes the add-on's own part of its ID or the whole ID. It is
+true while the license lists the add-on as active and it has not expired, which
+matters for an offline license, whose add-on trial can run out long before the
+license is checked again. An add-on the customer owns, but with every seat taken
+on other devices, is listed with `active` false. One bought after the device
+activated shows up at the next online validation: `validate_token_online` asks the
+server at most once per `online_validation_min_interval`, and
+`client().validate_token_online` asks right away. `find_sub_product` returns the
+entry itself, with its `trial`, `revoked`, `expires_at` and `seats`.
+
+`owned_sub_product_ids` still lists every add-on the customer owns, included in
+the license or not, without saying whether it may be used on this device.
+
+If the customer revokes an add-on's seat on this device (from their account, or
+the merchant does it for them), validating does not take it back: the license
+lists it with `revoked` set until the app activates it again. To take seats
+yourself instead of on every activation and validation, set
+`licensing_options::auto_activate_sub_products` to false. Either way, take a
+seat with:
+
+```cpp
+auto updated = licensing.activate_sub_product(license.token, "drum-kit");
+```
+
+To let a customer try an add-on that offers trials, start its trial from the
+main license:
+
+```cpp
+auto updated = licensing.request_sub_product_trial(license.token, "drum-kit");
+```
+
+Both return the main license again, now reporting the add-on, and store it as
+`validate_token_online` stores its own (pass a `should_persist` predicate to
+decide at the last moment, as there). The license must be a full license, not a
+trial: a trial token throws `operation_not_supported_error` without contacting
+the API. A trial also needs an online license. A customer who owns the add-on
+gets a seat of it instead of a trial, and a device gets one trial of each
+add-on: asking again returns the license with the trial it had, expired or not.
+Revoking the main license's activation frees the device's add-on seats too.
+
+To show the customer what else there is, for example on an upgrade screen, list
+the product's add-ons from the license (or trial) the device holds. Each comes
+with its prices when it is for sale, whether the customer owns it, whether to
+unlock it here, and its trial:
+
+```cpp
+const auto catalog = licensing.list_sub_products(license.token);
+
+for (const auto& add_on : catalog.sub_products) {
+    if (add_on.active) {
+        // owned, or trialing, on this device
+    } else if (add_on.trial && add_on.trial->status == moonbase::sub_product_trial_status::available) {
+        // offer "Try it", which calls request_sub_product_trial
+    } else if (!add_on.buy_url.empty()) {
+        // offer "Buy" for add_on.product.default_variation->price[catalog.currency],
+        // opening add_on.buy_url in the browser
+    }
+}
+```
+
+It lists only the add-ons the customer can do something with: ones they own or
+subscribe to, ones on sale, and ones whose trial can be started or is running on
+this device. `trial->status` is `available` when `request_sub_product_trial` can
+start one now, `active` or `expired` for the trial the device had, and
+`unavailable` otherwise, including for a status this release does not know.
+Listing changes nothing, and is not stored.
+
+The add-on calls refuse in two ways, and only one of them is about the license:
+
+| Exception | Meaning |
+| --- | --- |
+| `no_eligible_license_error` | The customer has no seat of the add-on to give: they don't own it, or every seat is taken. The license is fine; offer to buy the add-on or free a seat |
+| `operation_not_supported_error` | The add-on can't be activated or tried from this license: it is not included in the license, a trial was asked for from an offline license, or the token is a trial. The license is fine |
+| `license_invalid_error`, `license_expired_error` | The license itself is no longer good, as from `validate_token_online` |
+
 ## Errors
 
 Everything the SDK throws derives from `moonbase::moonbase_error`, whose `type()`
@@ -233,6 +322,8 @@ trying again can help:
 | `license_expired_error` | The license has expired: a trial ended, or a subscription lapsed | Lock, and offer to buy |
 | `store_closed_error` | The merchant closed their Moonbase account. No verdict on the license | Treat it like being offline |
 | `activation_request_error` | A browser activation request can never complete | Start a new request |
+| `no_eligible_license_error` | No seat of an add-on to give. No verdict on the license | Offer to buy the add-on or free a seat |
+| `operation_not_supported_error` | The call can't apply to this license: revoking an offline or trial license, or an add-on it can't take | Keep the license |
 | `configuration_error` | Bad options, or a device id resolver that returned an empty id | Fix the setup |
 
 How each call maps what the API returns:
@@ -245,6 +336,10 @@ How each call maps what the API returns:
 | | 400 | `activation_request_error` |
 | `validate_token_online`, `revoke_activation` | 400 | `license_invalid_error` (`license_expired_error` when `errorType` is `LicenseExpired`) |
 | | 403 or 404 | `api_error`, covered by the grace period |
+| `activate_sub_product`, `request_sub_product_trial`, `list_sub_products` | 400 with `errorType` `LicenseInvalid`, `LicenseRevoked` or `LicenseActivationRevoked` | `license_invalid_error` (`license_expired_error` for `LicenseExpired`) |
+| | 400 with `errorType: NoEligibleLicense` | `no_eligible_license_error` |
+| | any other 400 | `operation_not_supported_error` with the server's reason |
+| | 404 | `api_error` |
 | `inventory_client` | any failure but a closed store | `api_error` with the status; these endpoints never judge the license |
 | any | 410 with `errorType: StoreClosed` | `store_closed_error`, read before the status |
 | any | 429, 5xx, a transport failure | `api_error` |

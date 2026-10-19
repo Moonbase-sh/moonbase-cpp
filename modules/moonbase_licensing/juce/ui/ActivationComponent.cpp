@@ -6,6 +6,7 @@
 #include <optional>
 #include <string>
 #include <utility>
+#include <vector>
 
 namespace moonbase::juce_integration {
 
@@ -1629,6 +1630,49 @@ private:
 };
 
 //==============================================================================
+// The license view's "Add-ons" row (config.showAddOns): how many add-ons the
+// license unlocks here, and the way to the add-ons screen.
+class AddOnsRowButton : public juce::Button
+{
+public:
+    AddOnsRowButton(ActivationController& c, ActivationLookAndFeel& l)
+        : juce::Button("Add-ons"), controller(c), lnf(l)
+    {
+        setMouseCursor(juce::MouseCursor::PointingHandCursor);
+    }
+
+    void paintButton(Graphics& g, bool over, bool down) override
+    {
+        auto r = getLocalBounds();
+        if (over || down)
+        {
+            g.setColour(lnf.palette.ghostHover);
+            g.fillRoundedRectangle(r.toFloat().reduced(6.0f, 4.0f), 8.0f);
+        }
+
+        auto inner = r.reduced(16, 0);
+        if (auto chevron = icons::fromStroke(icons::chevronRight, lnf.palette.textSecondary, 2.0f))
+            chevron->drawWithin(g, inner.removeFromRight(14).toFloat().withSizeKeepingCentre(14.0f, 14.0f),
+                                juce::RectanglePlacement::centred, 1.0f);
+        inner.removeFromRight(8);
+
+        g.setColour(lnf.palette.textSecondary);
+        g.setFont(lnf.body(12.5f));
+        g.drawText(getButtonText(), inner, Justification::centredLeft);
+
+        const int active = controller.activeSubProducts().size();
+        g.setColour(lnf.palette.textBody);
+        g.setFont(lnf.heading(13.0f));
+        g.drawText(active > 0 ? juce::String(active) + " active" : juce::String("View"), inner,
+                   Justification::centredRight);
+    }
+
+private:
+    ActivationController& controller;
+    ActivationLookAndFeel& lnf;
+};
+
+//==============================================================================
 // License details
 class DetailsView : public ScreenView
 {
@@ -1639,6 +1683,11 @@ public:
                                                     "Deactivate this device");
         deactivate->onClick = [this] { controller.deactivate(); };
         addAndMakeVisible(*deactivate);
+
+        // The card's last row when config.showAddOns is set (see refresh()).
+        addOnsRow = std::make_unique<AddOnsRowButton>(c, l);
+        addOnsRow->onClick = [this] { controller.showAddOns(); };
+        addChildComponent(*addOnsRow);
 
         // Shown (in refresh) only when an update is available but was dismissed;
         // re-opens the update screen.
@@ -1651,6 +1700,8 @@ public:
     {
         // Offline licenses are permanent: no seats, no server-side revoke.
         deactivate->setVisible(! isOffline());
+        addOnsRow->setVisible(showsAddOns());
+        addOnsRow->repaint(); // the count of active add-ons may have moved
         if (controller.config().reduceMotion)
             deactivate->setBusyImmediate(controller.isBusy());
         else
@@ -1719,7 +1770,8 @@ public:
         }
 
         // Info card fills the remaining middle, capped at its natural height.
-        auto card = r.removeFromTop(juce::jmin(5 * 38, r.getHeight()));
+        const int rowH = rowHeight(r.getHeight());
+        auto card = r.removeFromTop(juce::jmin(cardHeight(rowH), r.getHeight()));
         g.setColour(lnf.palette.cardFill);
         g.fillRoundedRectangle(card.toFloat(), 12.0f);
         g.setColour(lnf.palette.panelBorder);
@@ -1728,17 +1780,19 @@ public:
         auto inner = card.reduced(16, 0);
         if (auto& lic = controller.license())
         {
-            drawRow(g, inner.removeFromTop(38), "Licensed to",
+            drawRow(g, inner.removeFromTop(rowH), "Licensed to",
                     lic->issued_to.name.empty() ? lic->issued_to.email : juce::String(lic->issued_to.name));
             divider(g, inner);
-            drawRow(g, inner.removeFromTop(38), "Email", juce::String(lic->issued_to.email));
+            drawRow(g, inner.removeFromTop(rowH), "Email", juce::String(lic->issued_to.email));
             divider(g, inner);
-            drawRow(g, inner.removeFromTop(38), "Plan",
+            drawRow(g, inner.removeFromTop(rowH), "Plan",
                     juce::String(lic->licensed_product.name) + (lic->trial ? kMidDot + "trial" : kMidDot + "license"));
             divider(g, inner);
-            drawRow(g, inner.removeFromTop(38), "Activation", juce::String(moonbase::to_string(lic->method)));
+            drawRow(g, inner.removeFromTop(rowH), "Activation", juce::String(moonbase::to_string(lic->method)));
             divider(g, inner);
-            drawRow(g, inner.removeFromTop(38), "Expires", expiryText(*lic));
+            drawRow(g, inner.removeFromTop(rowH), "Expires", expiryText(*lic));
+            if (showsAddOns())
+                divider(g, inner); // addOnsRow draws the row under it
         }
 
         if (offline)
@@ -1771,11 +1825,45 @@ public:
 
         deactivate->setBounds(content.removeFromRight(bw).withSizeKeepingCentre(bw, 32));
 
+        // Under the card's first five rows and their dividers, as paint() lays them out.
+        const auto [card, rowH] = cardGeometry();
+        addOnsRow->setBounds(card.withTrimmedTop(5 * rowH + 5));
+
         layoutUpdateBadge();
     }
 
 private:
     struct Seats { int used; int total; };
+
+    // The add-ons row only belongs to a full license; add-ons are activated and
+    // tried from one.
+    [[nodiscard]] bool showsAddOns() const
+    {
+        auto& lic = controller.license();
+        return controller.config().showAddOns && lic && ! lic->trial;
+    }
+
+    // Rows are 38px. With the add-ons row they give a little in a short panel,
+    // rather than let the card cut that row off. `space` is the card's room.
+    [[nodiscard]] int rowHeight(int space) const
+    {
+        return showsAddOns() ? juce::jlimit(26, 38, (space - 5) / 6) : 38;
+    }
+
+    // Five rows, or six with the add-ons row and its divider.
+    [[nodiscard]] int cardHeight(int rowH) const { return showsAddOns() ? 6 * rowH + 5 : 5 * rowH; }
+
+    // Where paint() draws the info card, and its row height.
+    [[nodiscard]] std::pair<Rectangle<int>, int> cardGeometry() const
+    {
+        auto r = getLocalBounds();
+        r.removeFromBottom((isOffline() ? 22 : 58) + 14);
+        r.removeFromTop(40 + 22);
+        if (controller.statusMessage().isNotEmpty() && ! controller.isBusy())
+            r.removeFromBottom(20 + 8);
+        const int rowH = rowHeight(r.getHeight());
+        return { r.removeFromTop(juce::jmin(cardHeight(rowH), r.getHeight())), rowH };
+    }
 
     [[nodiscard]] bool isOffline() const
     {
@@ -1935,6 +2023,574 @@ private:
 
     std::unique_ptr<StyledButton> deactivate;
     std::unique_ptr<UpdatePillButton> updateBadge;
+    std::unique_ptr<AddOnsRowButton> addOnsRow;
+};
+
+//==============================================================================
+// Add-ons: the product's add-ons, each with where it stands on this computer and
+// what the customer can do about it: try it, buy it, or activate it here.
+// Opened from the license view's "Add-ons" row.
+namespace {
+namespace addons {
+
+juce::String formatAmount(double amount, const juce::String& currency)
+{
+    const bool whole = std::abs(amount - std::round(amount)) < 0.005;
+    const auto number = whole ? juce::String((juce::int64) std::llround(amount)) : juce::String(amount, 2);
+    if (currency == "USD")
+        return "$" + number;
+    if (currency == "EUR")
+        return u8("\xe2\x82\xac") + number; // euro sign
+    if (currency == "GBP")
+        return u8("\xc2\xa3") + number; // pound sign
+    return number + " " + currency;
+}
+
+juce::String cycleSuffix(const std::string& cycleLength)
+{
+    if (cycleLength == "Daily")     return " / day";
+    if (cycleLength == "Weekly")    return " / week";
+    if (cycleLength == "Monthly")   return " / month";
+    if (cycleLength == "Quarterly") return " / quarter";
+    if (cycleLength == "Yearly")    return " / year";
+    return {};
+}
+
+// What the add-on costs in the list's currency: its default price, or its first.
+// Empty when it isn't for sale in that currency.
+juce::String priceText(const moonbase::sub_product_catalog_entry& entry, const juce::String& currency)
+{
+    const auto& product = entry.product;
+    const auto* pricing = product.default_variation ? &*product.default_variation
+                        : product.variations.empty() ? nullptr
+                                                     : &product.variations.front();
+    if (pricing == nullptr)
+        return {};
+
+    const auto price = pricing->price.find(currency.toStdString());
+    if (price == pricing->price.end())
+        return {};
+
+    auto text = formatAmount(price->second, currency);
+    if (pricing->recurrence && pricing->recurrence->type == "Recurring")
+        text << cycleSuffix(pricing->recurrence->cycle_length);
+    return text;
+}
+
+enum class Action { none, tryIt, activate, buy };
+enum class Tone { muted, success, trial };
+
+juce::String actionLabel(Action action)
+{
+    switch (action)
+    {
+        case Action::tryIt:    return "Try free";
+        case Action::activate: return "Activate";
+        case Action::buy:      return "Buy";
+        case Action::none:     break;
+    }
+    return {};
+}
+
+// One add-on as its row shows it.
+struct Row
+{
+    juce::String id;
+    juce::String name;
+    juce::String status;
+    Tone tone = Tone::muted;
+    Action primary = Action::none;   // rightmost
+    Action secondary = Action::none; // left of it, when there is room
+
+    [[nodiscard]] juce::String signature() const
+    {
+        return id + "|" + name + "|" + status + "|" + juce::String((int) tone) + "|"
+             + juce::String((int) primary) + "|" + juce::String((int) secondary);
+    }
+};
+
+Row describe(const moonbase::sub_product_catalog_entry& entry, const ActivationController& controller)
+{
+    using Status = moonbase::sub_product_trial_status;
+
+    Row row;
+    row.id = juce::String::fromUTF8(entry.id.c_str());
+    row.name = juce::String::fromUTF8(entry.product.name.c_str());
+
+    const auto price = priceText(entry, controller.addOns().currency);
+    const auto tagline = juce::String::fromUTF8(entry.product.tagline.c_str());
+    const bool owns = entry.product.owned || entry.product.subscribed;
+    const bool forSale = ! entry.buy_url.empty();
+    const auto join = [](const juce::String& a, const juce::String& b)
+    { return a.isEmpty() ? b : b.isEmpty() ? a : a + kMidDot + b; };
+
+    // The list says where each add-on stood when it was loaded. For one the
+    // license lists, the license says where it stands on this computer now (on a
+    // seat or a trial, revoked here, until when), and keeps saying it as time
+    // passes and the license is refreshed: a trial that runs out with the screen
+    // open shows as ended, and a seat revoked here since shows as revoked.
+    const auto& license = controller.license();
+    const auto* held = license ? moonbase::find_sub_product(*license, entry.id) : nullptr;
+    const bool active = entry.included_in_license ? controller.hasSubProduct(row.id) : entry.active;
+    const bool wasActive = held != nullptr ? held->active : entry.active;
+    const bool revoked = held != nullptr ? held->revoked : entry.revoked;
+    const auto ends = held != nullptr ? held->expires_at
+                    : entry.expires_at ? entry.expires_at
+                    : entry.trial ? entry.trial->expires_at : std::nullopt;
+    const bool lapsed = wasActive && ! active && ends && controller.daysUntil(*ends) == 0;
+
+    // Whether a trial rather than a seat is what unlocks it here. A customer who
+    // buys an add-on during its trial keeps the trial until a seat replaces it.
+    const bool onTrial = held != nullptr ? held->trial : entry.trial && entry.trial->status == Status::active;
+
+    // The device's trial of it, as the license has it when it lists one: started
+    // since the list loaded, or run out since, it is used up either way.
+    auto trial = entry.trial ? entry.trial->status : Status::unavailable;
+    if (held != nullptr && held->trial)
+        trial = active ? Status::active : Status::expired;
+    else if (trial == Status::active && lapsed)
+        trial = Status::expired;
+
+    if (active && owns && ! onTrial)
+    {
+        row.status = entry.included_in_license ? juce::String("Active on this computer")
+                   : entry.product.subscribed ? juce::String("Subscribed")
+                                              : juce::String("Owned");
+        row.tone = Tone::success;
+    }
+    else if (active)
+    {
+        // Unlocked here by its trial.
+        juce::String left;
+        if (ends)
+        {
+            const int days = controller.daysUntil(*ends);
+            left = days == 1 ? juce::String("1 day left") : juce::String(days) + " days left";
+        }
+        row.status = join("Trial", left);
+        row.tone = Tone::trial;
+        // Bought during the trial: a seat of it is theirs to take.
+        if (owns && entry.included_in_license)
+            row.primary = Action::activate;
+        else if (forSale)
+            row.primary = Action::buy;
+    }
+    else if (lapsed && owns && ! onTrial)
+    {
+        // Owned until now: a subscription to it that ended.
+        row.status = join("Expired", price);
+        if (forSale)
+            row.primary = Action::buy;
+    }
+    else if (entry.included_in_license && owns)
+    {
+        // Owned, but this computer holds no seat of it. Its seats are in use
+        // only when neither the list nor the license knows of one free: either
+        // can be the older, and Activate hidden on the older one's word would
+        // strand an add-on whose seat has been freed since. Offered with none
+        // free, the server says so.
+        const bool listKnows = entry.seats.has_value();
+        const bool licenseKnows = held != nullptr && held->seats.has_value();
+        const bool seatsInUse = (listKnows || licenseKnows)
+                             && (! listKnows || entry.seats->remaining <= 0)
+                             && (! licenseKnows || held->seats->remaining <= 0);
+        if (revoked)
+        {
+            row.status = "Deactivated on this computer";
+            row.primary = Action::activate;
+        }
+        else if (seatsInUse)
+        {
+            const auto total = listKnows ? entry.seats->total : held->seats->total;
+            row.status = total == 1 ? juce::String("Its seat is in use on another computer")
+                                    : "All " + juce::String(total) + " seats are in use";
+        }
+        else
+        {
+            row.status = "Not activated on this computer";
+            row.primary = Action::activate;
+        }
+    }
+    else if (trial == Status::available)
+    {
+        const auto days = entry.trial->number_of_days;
+        row.status = join(days ? juce::String(*days) + "-day free trial" : juce::String("Free trial"), price);
+        row.primary = Action::tryIt;
+        if (forSale)
+            row.secondary = Action::buy;
+    }
+    else if (trial == Status::expired)
+    {
+        row.status = join("Trial ended", price);
+        if (forSale)
+            row.primary = Action::buy;
+    }
+    else if (trial == Status::unavailable && entry.trial && entry.trial->requires_newsletter_opt_in)
+    {
+        // Its trial is for newsletter subscribers, which the customer isn't yet.
+        // Joining in their account and refreshing here brings "Try free".
+        row.status = join("Join the newsletter to try it free", price);
+        if (forSale)
+            row.primary = Action::buy;
+    }
+    else
+    {
+        row.status = join(price, tagline);
+        if (forSale)
+            row.primary = Action::buy;
+    }
+    return row;
+}
+
+} // namespace addons
+} // namespace
+
+// The add-on rows, inside the add-ons screen's viewport: a card per add-on with
+// its name, where it stands here, and a button for what to do about it.
+class AddOnsList : public juce::Component
+{
+public:
+    using Phase = ActivationController::AddOnsInfo::Phase;
+    static constexpr int rowHeight = 58;
+    static constexpr int rowGap = 8;
+    static constexpr int skeletonRows = 3;
+    static constexpr int minTextWidth = 120; // below this the second button gives way
+
+    AddOnsList(ActivationController& c, ActivationLookAndFeel& l) : controller(c), lnf(l) {}
+
+    // Rebuilds the rows when the add-ons changed, and marks the one that's busy.
+    void sync()
+    {
+        std::vector<addons::Row> next;
+        juce::String nextSignature;
+        for (const auto& entry : controller.addOns().addOns)
+        {
+            next.push_back(addons::describe(entry, controller));
+            nextSignature << next.back().signature() << "\n";
+        }
+
+        if (nextSignature != signature)
+        {
+            signature = nextSignature;
+            rows = std::move(next);
+            rebuildButtons();
+        }
+        applyBusy();
+        repaint();
+    }
+
+    [[nodiscard]] bool showsSkeleton() const
+    {
+        return rows.empty() && controller.addOns().phase == Phase::Loading;
+    }
+
+    [[nodiscard]] int contentHeight() const
+    {
+        const int n = showsSkeleton() ? skeletonRows : (int) rows.size();
+        return n == 0 ? 0 : n * rowHeight + (n - 1) * rowGap;
+    }
+
+    void paint(Graphics& g) override
+    {
+        if (showsSkeleton())
+        {
+            for (int i = 0; i < skeletonRows; ++i)
+            {
+                const auto bounds = rowBounds(i);
+                drawCard(g, bounds);
+                auto inner = bounds.reduced(14, 0);
+                g.setColour(lnf.palette.skeleton);
+                g.fillRoundedRectangle(inner.withHeight(11).withWidth(inner.getWidth() / 3)
+                                           .withY(bounds.getCentreY() - 14).toFloat(), 5.5f);
+                g.fillRoundedRectangle(inner.withHeight(9).withWidth(inner.getWidth() / 2)
+                                           .withY(bounds.getCentreY() + 5).toFloat(), 4.5f);
+            }
+            return;
+        }
+
+        for (size_t i = 0; i < rows.size(); ++i)
+            drawRow(g, rowBounds((int) i), rows[i], buttons[i]);
+    }
+
+    void resized() override { layoutButtons(); }
+
+private:
+    struct Buttons
+    {
+        std::unique_ptr<StyledButton> primary, secondary;
+    };
+
+    [[nodiscard]] Rectangle<int> rowBounds(int index) const
+    {
+        return { 0, index * (rowHeight + rowGap), getWidth(), rowHeight };
+    }
+
+    void drawCard(Graphics& g, Rectangle<int> bounds) const
+    {
+        g.setColour(lnf.palette.cardFill);
+        g.fillRoundedRectangle(bounds.toFloat(), 10.0f);
+        g.setColour(lnf.palette.panelBorder);
+        g.drawRoundedRectangle(bounds.toFloat().reduced(0.5f), 10.0f, 1.0f);
+    }
+
+    void drawRow(Graphics& g, Rectangle<int> bounds, const addons::Row& row, const Buttons& rowButtons) const
+    {
+        drawCard(g, bounds);
+
+        // The text runs up to the first visible button.
+        auto text = bounds.reduced(14, 0);
+        for (const auto* button : { rowButtons.primary.get(), rowButtons.secondary.get() })
+            if (button != nullptr && button->isVisible())
+                text.setRight(juce::jmin(text.getRight(), button->getX() - 12));
+
+        g.setColour(lnf.palette.textPrimary);
+        g.setFont(lnf.heading(14.0f));
+        g.drawText(row.name, text.withHeight(20).withY(bounds.getCentreY() - 19), Justification::centredLeft, true);
+
+        g.setColour(row.tone == addons::Tone::success ? lnf.palette.success
+                    : row.tone == addons::Tone::trial ? lnf.palette.trial
+                                                      : lnf.palette.textSecondary);
+        g.setFont(lnf.body(12.5f));
+        g.drawText(row.status, text.withHeight(16).withY(bounds.getCentreY() + 2), Justification::centredLeft, true);
+    }
+
+    void rebuildButtons()
+    {
+        buttons.clear();
+        for (const auto& row : rows)
+        {
+            Buttons rowButtons;
+            rowButtons.primary = makeButton(row.id, row.primary, StyledButton::Style::accent);
+            rowButtons.secondary = makeButton(row.id, row.secondary, StyledButton::Style::ghost);
+            buttons.push_back(std::move(rowButtons));
+        }
+        layoutButtons();
+    }
+
+    std::unique_ptr<StyledButton> makeButton(const juce::String& id, addons::Action action, StyledButton::Style style)
+    {
+        if (action == addons::Action::none)
+            return nullptr;
+
+        auto button = std::make_unique<StyledButton>(lnf, style, addons::actionLabel(action));
+        button->onClick = [this, id, action]
+        {
+            switch (action)
+            {
+                case addons::Action::tryIt:    controller.requestSubProductTrial(id); break;
+                case addons::Action::activate: controller.activateSubProduct(id); break;
+                case addons::Action::buy:      controller.buySubProduct(id); break;
+                case addons::Action::none:     break;
+            }
+        };
+        addAndMakeVisible(*button);
+        return button;
+    }
+
+    [[nodiscard]] int buttonWidth(const StyledButton& button) const
+    {
+        return juce::jmax(76, (int) std::ceil(compat::stringWidth(lnf.heading(14.0f), button.getButtonText())) + 30);
+    }
+
+    void layoutButtons()
+    {
+        for (size_t i = 0; i < buttons.size(); ++i)
+        {
+            auto area = rowBounds((int) i).reduced(14, 0);
+            auto& rowButtons = buttons[i];
+            const int primaryW = rowButtons.primary ? buttonWidth(*rowButtons.primary) : 0;
+            const int secondaryW = rowButtons.secondary ? buttonWidth(*rowButtons.secondary) : 0;
+
+            if (rowButtons.primary)
+            {
+                rowButtons.primary->setBounds(area.removeFromRight(primaryW).withSizeKeepingCentre(primaryW, 32));
+                area.removeFromRight(8);
+            }
+            if (rowButtons.secondary)
+            {
+                // On a narrow panel the name keeps its room and the second button goes.
+                const bool fits = area.getWidth() - secondaryW - 12 >= minTextWidth;
+                rowButtons.secondary->setVisible(fits);
+                if (fits)
+                    rowButtons.secondary->setBounds(area.removeFromRight(secondaryW).withSizeKeepingCentre(secondaryW, 32));
+            }
+        }
+    }
+
+    // While an add-on is being activated or tried its button spins, and the rest
+    // wait their turn, as they do while the list is reloading.
+    void applyBusy()
+    {
+        const auto busyId = controller.addOns().busyId;
+        const bool anyBusy = busyId.isNotEmpty() || controller.addOns().phase == Phase::Loading;
+        const bool reduce = controller.config().reduceMotion;
+        for (size_t i = 0; i < rows.size(); ++i)
+        {
+            for (auto* button : { buttons[i].primary.get(), buttons[i].secondary.get() })
+            {
+                if (button == nullptr)
+                    continue;
+                const bool spins = busyId.isNotEmpty() && rows[i].id == busyId && button == buttons[i].primary.get();
+                if (reduce)
+                    button->setBusyImmediate(spins);
+                else
+                    button->setBusy(spins);
+                button->setEnabled(! anyBusy); // after setBusy, which enables a button it stops
+                button->setAlpha(anyBusy && ! spins ? 0.45f : 1.0f);
+            }
+        }
+    }
+
+    ActivationController& controller;
+    ActivationLookAndFeel& lnf;
+    std::vector<addons::Row> rows;
+    std::vector<Buttons> buttons; // one per row, in order
+    juce::String signature;       // of rows, so an unchanged list keeps its buttons
+};
+
+class AddOnsView : public ScreenView
+{
+public:
+    using Phase = ActivationController::AddOnsInfo::Phase;
+
+    AddOnsView(ActivationController& c, ActivationLookAndFeel& l) : ScreenView(c, l)
+    {
+        back = std::make_unique<LinkButton>(l, "Back", l.palette.textSecondary,
+                                            icons::fromStroke(icons::back, l.palette.textSecondary, 2.0f),
+                                            Justification::left);
+        back->onClick = [this] { controller.showDetails(); };
+        addAndMakeVisible(*back);
+
+        // "Refresh" after buying in the browser, or "Try again" when the list failed.
+        footer = std::make_unique<LinkButton>(l, juce::String(), l.palette.link, nullptr, Justification::left);
+        footer->setMouseCursor(juce::MouseCursor::PointingHandCursor);
+        footer->onClick = [this]
+        {
+            if (listFailed())
+                controller.loadAddOns();
+            else
+                controller.refreshAddOns();
+        };
+        addAndMakeVisible(*footer);
+
+        list = std::make_unique<AddOnsList>(c, l);
+        viewport.setViewedComponent(list.get(), false);
+        viewport.setScrollBarsShown(true, false); // vertical only, when needed
+        viewport.setScrollBarThickness(11);
+        auto& scrollbar = viewport.getVerticalScrollBar();
+        scrollbar.setColour(juce::ScrollBar::thumbColourId, l.palette.scrollThumb);
+        scrollbar.setColour(juce::ScrollBar::trackColourId, l.palette.scrollTrack);
+        addAndMakeVisible(viewport);
+    }
+
+    void refresh() override
+    {
+        const bool loading = controller.addOns().phase == Phase::Loading;
+        footer->setLabel(loading      ? u8("Checking\xe2\x80\xa6")
+                         : listFailed() ? juce::String("Try again")
+                                        : juce::String("Bought an add-on? Refresh"),
+                         nullptr);
+        // Not while an add-on is being activated: its license is on its way.
+        const bool waiting = controller.addOns().busyId.isNotEmpty();
+        footer->setEnabled(! loading && ! waiting);
+        footer->setAlpha(waiting && ! loading ? 0.45f : 1.0f);
+        list->sync();
+        resized();
+        repaint();
+    }
+
+    void paint(Graphics& g) override
+    {
+        const auto& info = controller.addOns();
+        const auto l = computeLayout();
+
+        g.setColour(lnf.palette.textPrimary);
+        g.setFont(lnf.heading(23.0f));
+        g.drawText("Add-ons", l.heading, Justification::topLeft);
+
+        g.setColour(lnf.palette.textSecondary);
+        g.setFont(lnf.body(14.0f));
+        g.drawFittedText("Everything you can add to " + controller.config().resolvedProductName() + ".",
+                         l.subtitle, Justification::topLeft, 1, 1.0f);
+
+        // Nothing listed: say why, where the rows would be.
+        if (info.addOns.empty() && info.phase == Phase::Ready)
+        {
+            if (listFailed())
+            {
+                drawInlineError(g, lnf, l.list.withHeight(38), info.error);
+            }
+            else
+            {
+                g.setColour(lnf.palette.textSecondary);
+                g.setFont(lnf.body(13.5f));
+                g.drawFittedText("There are no add-ons for " + controller.config().resolvedProductName() + " yet.",
+                                 l.list.withHeight(40), Justification::centredLeft, 2, 1.0f);
+            }
+        }
+
+        if (! l.message.isEmpty())
+            drawInlineError(g, lnf, l.message, message());
+    }
+
+    void resized() override
+    {
+        const auto l = computeLayout();
+        back->setBounds(l.back.withWidth(juce::jmin(90, getWidth())));
+        footer->setBounds(l.footer.withWidth(juce::jmin(l.footer.getWidth(), 280)));
+
+        viewport.setBounds(l.list);
+        const int content = list->contentHeight();
+        const bool scrolls = content > l.list.getHeight();
+        // Overflow -> leave a gutter for the scrollbar; fits -> fill the area.
+        list->setSize(scrolls ? juce::jmax(0, l.list.getWidth() - 13) : l.list.getWidth(),
+                      scrolls ? content : l.list.getHeight());
+    }
+
+private:
+    struct Layout { Rectangle<int> back, heading, subtitle, list, message, footer; };
+
+    [[nodiscard]] bool listFailed() const
+    {
+        const auto& info = controller.addOns();
+        return info.error.isNotEmpty() && info.addOns.empty();
+    }
+
+    // Under the list: why an activation or trial failed, or why a reload did
+    // while the earlier list stays up.
+    [[nodiscard]] juce::String message() const
+    {
+        const auto& info = controller.addOns();
+        if (info.actionError.isNotEmpty())
+            return info.actionError;
+        return info.addOns.empty() ? juce::String() : info.error;
+    }
+
+    [[nodiscard]] Layout computeLayout() const
+    {
+        auto r = getLocalBounds();
+        Layout l;
+        l.back = r.removeFromTop(22);
+        r.removeFromTop(2);
+        l.heading = r.removeFromTop(26);
+        r.removeFromTop(2);
+        l.subtitle = r.removeFromTop(20);
+        r.removeFromTop(14);
+
+        l.footer = r.removeFromBottom(20);
+        r.removeFromBottom(10);
+        if (message().isNotEmpty())
+        {
+            l.message = r.removeFromBottom(30);
+            r.removeFromBottom(6);
+        }
+        l.list = r;
+        return l;
+    }
+
+    std::unique_ptr<LinkButton> back, footer;
+    juce::Viewport viewport;
+    std::unique_ptr<AddOnsList> list;
 };
 
 //==============================================================================
@@ -2315,6 +2971,7 @@ struct ActivationComponent::Impl : public juce::ChangeListener,
         expired = std::make_unique<ExpiredView>(controller, lnf);
         details = std::make_unique<DetailsView>(controller, lnf);
         updateView = std::make_unique<UpdateAvailableView>(controller, lnf);
+        addOnsView = std::make_unique<AddOnsView>(controller, lnf);
 
         for (auto* v : views())
         {
@@ -2419,7 +3076,7 @@ struct ActivationComponent::Impl : public juce::ChangeListener,
     std::vector<ScreenView*> views()
     {
         return { welcome.get(), browser.get(), success.get(), offline.get(), trial.get(),
-                 expired.get(), details.get(), updateView.get() };
+                 expired.get(), details.get(), updateView.get(), addOnsView.get() };
     }
 
     ScreenView* viewFor(ActivationController::Screen s)
@@ -2435,6 +3092,7 @@ struct ActivationComponent::Impl : public juce::ChangeListener,
             case S::Expired:         return expired.get();
             case S::Details:         return details.get();
             case S::UpdateAvailable: return updateView.get();
+            case S::AddOns:          return addOnsView.get();
             case S::Error:           return welcome.get();
             case S::Loading:         default: return nullptr;
         }
@@ -2542,12 +3200,16 @@ struct ActivationComponent::Impl : public juce::ChangeListener,
         if (! owner.onActivationChanged)
             return;
 
+        // An add-on's trial running out changes what the host may unlock without
+        // a new token, so it counts too.
         auto token = license ? std::optional<std::string>(license->token) : std::nullopt;
-        if (activationReported && token == reportedToken)
+        auto subProducts = controller.activeSubProducts();
+        if (activationReported && token == reportedToken && subProducts == reportedSubProducts)
             return;
 
         activationReported = true;
         reportedToken = std::move(token);
+        reportedSubProducts = std::move(subProducts);
         owner.onActivationChanged(license.has_value());
     }
 
@@ -2610,6 +3272,7 @@ struct ActivationComponent::Impl : public juce::ChangeListener,
                                                                owner.setVisible(false);
                                                                appear_ = 1.0f; // reset for next show
                                                                applyAppear();
+                                                               restOnLicenseView();
                                                            }
                                                        })
                                .build());
@@ -2671,22 +3334,30 @@ struct ActivationComponent::Impl : public juce::ChangeListener,
     {
         presentedForLock = false;
 
-        // Closing the overlay while the update screen is up returns the resting
-        // screen to the license view, so re-opening (e.g. the host's License
-        // button) never lands back on the update screen.
-        if (controller.screen() == ActivationController::Screen::UpdateAvailable)
-            controller.showDetails();
-
         if (controller.config().reduceMotion || ! appearAnim)
         {
             owner.setVisible(false);
             appear_ = 1.0f;
             applyAppear();
+            restOnLicenseView();
             return;
         }
         appearStart_ = appear_;
         appearTarget_ = 0.0f;
         appearAnim->start();
+    }
+
+    // Once the overlay is closed, a screen that only means something while it is
+    // up (an activation's "You're all set", the update and add-ons screens) gives
+    // way to the license view, so opening it again (e.g. the host's License
+    // button) shows the license. Done after the fade, so the panel doesn't change
+    // screens on its way out.
+    void restOnLicenseView()
+    {
+        using S = ActivationController::Screen;
+        const auto screen = controller.screen();
+        if (screen == S::Success || screen == S::UpdateAvailable || screen == S::AddOns)
+            controller.showDetails();
     }
 
     // Combined panel scale: appear/dismiss animation * fit-to-window down-scale.
@@ -2721,6 +3392,7 @@ struct ActivationComponent::Impl : public juce::ChangeListener,
             case S::Offline: case S::BrowserWait:                              return 1;
             case S::Trial:   case S::Success: case S::Details: case S::Expired:
             case S::UpdateAvailable:                                          return 2;
+            case S::AddOns:                                                   return 3;
         }
         return 0;
     }
@@ -2929,6 +3601,7 @@ struct ActivationComponent::Impl : public juce::ChangeListener,
     std::unique_ptr<ExpiredView> expired;
     std::unique_ptr<DetailsView> details;
     std::unique_ptr<UpdateAvailableView> updateView;
+    std::unique_ptr<AddOnsView> addOnsView;
     ScreenView* active = nullptr;
     ScreenView* outgoing = nullptr;
     ActivationController::Screen lastScreen = ActivationController::Screen::Loading;
@@ -2952,6 +3625,7 @@ struct ActivationComponent::Impl : public juce::ChangeListener,
     bool presentedForLock = false;    // up only because the plugin locked (not asked for)
     bool activationReported = false;
     std::optional<std::string> reportedToken; // nullopt = reported as not activated
+    juce::StringArray reportedSubProducts;    // controller.activeSubProducts() as last reported
 
     // Modal appear/dismiss animation state.
     float appear_ = 1.0f;       // 1 = fully shown, 0 = hidden

@@ -40,6 +40,10 @@ Add the module, fill in three fields, show one component.
   trial, trial expired, license details, and update-available — with animated
   transitions and drag-and-drop for offline license files. Designed to sit as a modal
   over your plugin and lock it until activated.
+- **Add-ons.** `controller.hasSubProduct("drum-kit")` says, on the message thread, whether
+  to unlock an add-on the merchant includes in the license, `subProductFlag("drum-kit")`
+  gives the audio thread a lock-free copy, and an opt-in add-ons screen
+  (`config.showAddOns`) lets the customer try, buy or activate each one.
 - **In-app updates.** When the user's license entitles them to a newer release than the
   installed app, an "Update available" screen shows the release notes and downloads the
   new installer for their platform in-app, with progress. It appears automatically when
@@ -63,6 +67,14 @@ pins, so the module drops into a HISE project.
        alt="Update available screen: an 'Update available' pill, a 'Solstice 1.0.0 is ready' heading, a 'What's new' changelog card, a Download button, and a 'Skip this update' link.">
 </p>
 <p align="center"><em>The in-app update notification: release notes and a one-click installer download.</em></p>
+
+<p align="center">
+  <img src="../../assets/moonbase-juce-license-add-ons.png" width="49%"
+       alt="License details screen with an Add-ons row reading '2 active' and a chevron, under the licensed-to, email, plan, activation and expiry rows.">
+  <img src="../../assets/moonbase-juce-add-ons.png" width="49%"
+       alt="Add-ons screen: 'Laniakea Pack' active on this computer, 'Keys' in its trial with 5 days left and a Buy button, and 'Drum Kit' offering a 7-day free trial at €39 with Buy and Try free buttons.">
+</p>
+<p align="center"><em>Add-ons: the license view counts the active ones, and the add-ons screen lets the customer try, buy or activate each one.</em></p>
 
 ## Add it to your project
 

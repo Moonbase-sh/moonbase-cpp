@@ -60,6 +60,20 @@ PNG per state:
 | `20-theme-daylight-offline` | Offline flow, Daylight (drop zone, links) |
 | `21-theme-forest-expired` | Trial ended, "Understory" theme (deep green, danger tokens) |
 | `22-theme-forest-update` | Update ready, Understory (notes card + scrollbar) |
+| `23-details-add-ons` | License details with the "Add-ons" row (`config.showAddOns`) |
+| `23b-details-add-ons-error` | The same with a deactivate error, so the card has the least room |
+| `24-add-ons` | Add-ons screen: every row state (active, trial, try, deactivated, seats full, for sale, trial ended), scrolling |
+| `24-add-ons-short` | Add-ons screen with three that fit, no scrollbar (the docs' screenshot) |
+| `24-add-ons-trial-ran-out` | An add-on trial that ran out after the list loaded ("Trial ended", Buy) |
+| `24-add-ons-edges` | Bought during its trial (Activate), a single seat in use, a trial behind a newsletter sign-up, a long name |
+| `24-add-ons-trial-used-up` | A trial started and run out since an older list was loaded: not offered again |
+| `24b-add-ons-busy` | An add-on's trial starting (spinner), the other buttons waiting |
+| `24c-add-ons-no-seat` | An add-on with no free seat (error under the list) |
+| `24d-add-ons-loading` | Add-ons loading (skeleton rows) |
+| `24e-add-ons-failed` | Add-ons that couldn't be listed (error, "Try again") |
+| `24f-add-ons-empty` | A product with no add-ons to show |
+| `24g-theme-daylight-add-ons` | Add-ons screen, Daylight |
+| `24h-theme-ember-add-ons` | Add-ons screen, Ember's monospaced face |
 
 Add a state by adding a `writeSnapshot(...)` call.
 

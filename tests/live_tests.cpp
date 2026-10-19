@@ -90,4 +90,10 @@ TEST_CASE("live API activation flow")
     CHECK(revalidated.activation_id == fulfilled->activation_id);
     CHECK_FALSE(revalidated.token.empty());
     CHECK(revalidated.validated_at >= fulfilled->validated_at);
+
+    // A trial lists the add-ons it can act on (those on sale), and changes nothing.
+    // Activating or trying one takes a full license, so that is refused unsent.
+    const auto catalog = sdk.list_sub_products(revalidated.token);
+    CHECK_FALSE(catalog.currency.empty());
+    CHECK_THROWS_AS((void)sdk.activate_sub_product(revalidated.token, "demo-app-pro"), operation_not_supported_error);
 }
