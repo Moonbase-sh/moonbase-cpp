@@ -5,6 +5,8 @@
 //
 //   juce::FontOptions                        JUCE 8.0.0+
 //   juce::GlyphArrangement::getStringWidth   JUCE 8.0.2+
+//   juce::Drawable::createFromSVGString      JUCE 9.0.0+ (which also removed
+//                                            createFromSVG (const XmlElement&))
 //   juce::exactlyEqual                       JUCE 7.0.9+
 //   wrapperType_LV2                          JUCE 7+     (guarded in JuceMetadata.h)
 //   SystemStats::getUniqueDeviceID           JUCE 7.0.5+ (detected in
@@ -21,6 +23,7 @@
 
 #include <juce_core/juce_core.h>
 #include <juce_graphics/juce_graphics.h>
+#include <juce_gui_basics/juce_gui_basics.h> // juce::Drawable before JUCE 9
 
 // 6.1.3 is the first release with juce::URL::DownloadTaskOptions (the update
 // downloader) and juce::Font::getTypefacePtr. It is also the version HISE pins.
@@ -92,6 +95,19 @@ namespace moonbase::juce_integration::compat {
     return juce::GlyphArrangement::getStringWidth(f, text);
 #else
     return f.getStringWidthFloat(text);
+#endif
+}
+
+// SVG. JUCE 9 parses SVG text itself and dropped the XmlElement overload that
+// 6 to 8 offer. Returns nullptr when the SVG does not parse, on every version.
+[[nodiscard]] inline std::unique_ptr<juce::Drawable> drawableFromSvg(const juce::String& svg)
+{
+#if MOONBASE_JUCE_AT_LEAST(9, 0, 0)
+    return juce::Drawable::createFromSVGString(svg);
+#else
+    if (auto xml = juce::XmlDocument::parse(svg))
+        return juce::Drawable::createFromSVG(*xml);
+    return nullptr;
 #endif
 }
 

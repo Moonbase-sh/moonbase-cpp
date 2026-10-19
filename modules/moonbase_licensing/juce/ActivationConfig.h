@@ -200,8 +200,9 @@ struct ActivationConfig
 
     // Product / manufacturer brand mark shown in the header lockup. When unset,
     // a generated sun mark in the accent colour is drawn. Provide a vector
-    // Drawable (e.g. juce::Drawable::createFromSVG(...)) for crispness:
-    //   config.logo = std::shared_ptr<juce::Drawable>(juce::Drawable::createFromSVG(*xml));
+    // Drawable for crispness, e.g. from SVG text:
+    //   config.logo = juce::Drawable::createFromSVGString(svg);   // JUCE 9
+    //   config.logo = juce::Drawable::createFromSVG(*xml);        // JUCE 6 to 8
     std::shared_ptr<juce::Drawable> logo;
 
     // Optional UI copy overrides (see ActivationStrings).

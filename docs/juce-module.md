@@ -10,7 +10,7 @@ not use `juce::OnlineUnlockStatus`.
 > is the native alternative.
 
 Lives at [`modules/moonbase_licensing/`](../modules/moonbase_licensing/). Requires
-**JUCE 6.1.3 or later** (6.x, 7.x and 8.x are all supported and all covered by CI)
+**JUCE 6.1.3 or later** (6.x, 7.x, 8.x and 9.x are all supported and all covered by CI)
 and **C++17**. 6.1.3 is the floor because it is the first release with
 `juce::URL::DownloadTaskOptions`, which the in-app updater uses. It is also the
 version [HISE](https://hise.audio) pins, so the module drops into a HISE project.
@@ -435,8 +435,8 @@ cmake --build build --target MoonbaseActivationNative
 
 It fetches JUCE on first configure and adds the module with `juce_add_module`,
 exactly how a downstream project consumes it. Pass
-`-DMOONBASE_JUCE_VERSION=6.1.3` (or `7.0.12`) to build the sample against an
-older JUCE.
+`-DMOONBASE_JUCE_VERSION=9.0.4` to build the sample against JUCE 9, or `6.1.3`
+(or `7.0.12`) for an older JUCE.
 
 ## Tests
 
@@ -470,7 +470,8 @@ cmake -B build-asan -DMOONBASE_BUILD_TESTS=ON -DMOONBASE_SANITIZER=address,undef
 ```
 
 CI: `sanitizers.yml` runs the SDK suite under ASan/UBSan and TSan on Linux; `juce.yml`
-builds the module and runs the behavioral suite on macOS.
+builds the module and runs the behavioral suite on Linux, macOS and Windows against JUCE
+8.0.4 and 9.0.4, and on macOS against 8.0.0, 7.0.12 and 6.1.3.
 
 ## Diagnostics
 
