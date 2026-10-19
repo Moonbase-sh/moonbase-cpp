@@ -19,9 +19,7 @@ std::unique_ptr<juce::Drawable> fromStroke(const juce::String& pathData,
         << "\" stroke-width=\"" << juce::String(strokeWidth)
         << "\" stroke-linecap=\"round\" stroke-linejoin=\"round\"/></svg>";
 
-    if (auto xml = juce::XmlDocument::parse(svg))
-        return juce::Drawable::createFromSVG(*xml);
-    return nullptr;
+    return compat::drawableFromSvg(svg);
 }
 
 std::unique_ptr<juce::Drawable> fromFill(const juce::String& pathData,
@@ -33,9 +31,7 @@ std::unique_ptr<juce::Drawable> fromFill(const juce::String& pathData,
         << juce::String(viewBox) << " " << juce::String(viewBox) << "\">"
         << "<path d=\"" << pathData << "\" fill=\"" << hexOf(colour) << "\"/></svg>";
 
-    if (auto xml = juce::XmlDocument::parse(svg))
-        return juce::Drawable::createFromSVG(*xml);
-    return nullptr;
+    return compat::drawableFromSvg(svg);
 }
 
 // The Moonbase brand mark, verbatim from the marketing site's
@@ -52,10 +48,7 @@ static const char* const kMoonbaseSvg = R"SVG(<svg viewBox="0 0 512 512" fill="n
 
 std::unique_ptr<juce::Drawable> moonbaseMark(juce::Colour colour)
 {
-    const auto svg = juce::String(kMoonbaseSvg).replace("FILLCOLOR", hexOf(colour));
-    if (auto xml = juce::XmlDocument::parse(svg))
-        return juce::Drawable::createFromSVG(*xml);
-    return nullptr;
+    return compat::drawableFromSvg(juce::String(kMoonbaseSvg).replace("FILLCOLOR", hexOf(colour)));
 }
 
 // Heroicons-style 24x24 stroke paths, taken from the Solstice design.

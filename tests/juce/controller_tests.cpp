@@ -2727,6 +2727,60 @@ TEST_CASE("a role typeface is used for that role only")
 }
 
 //==============================================================================
+// Icons are inline SVG, and JUCE 9 parses SVG with a different parser than 6 to
+// 8. An icon it can't read comes back null and simply goes missing from the UI,
+// so paint every one on whichever JUCE this build uses.
+
+namespace {
+
+// The most opaque pixel the icon paints into a small image.
+juce::Colour strongestPixel(const juce::Drawable& icon)
+{
+    juce::Image image(juce::Image::ARGB, 48, 48, true);
+    {
+        juce::Graphics g(image);
+        icon.drawWithin(g, image.getBounds().toFloat(), juce::RectanglePlacement::centred, 1.0f);
+    }
+
+    juce::Colour strongest = juce::Colours::transparentBlack;
+    for (int y = 0; y < image.getHeight(); ++y)
+        for (int x = 0; x < image.getWidth(); ++x)
+            if (const auto pixel = image.getPixelAt(x, y); pixel.getAlpha() > strongest.getAlpha())
+                strongest = pixel;
+    return strongest;
+}
+
+} // namespace
+
+TEST_CASE("every built-in icon parses and paints in its colour")
+{
+    const auto colour = juce::Colour(0xff186cdc);
+
+    const char* const strokePaths[] = {
+        icons::offlineGlobe, icons::back,     icons::upload,       icons::checkCircle,
+        icons::fileQuestion, icons::warning,  icons::lock,         icons::externalLink,
+        icons::monitor,      icons::check,    icons::cross,        icons::downloadTray,
+        icons::copy,
+    };
+
+    for (const auto* path : strokePaths)
+    {
+        CAPTURE(path);
+        const auto icon = icons::fromStroke(path, colour);
+        REQUIRE(icon != nullptr);
+        CHECK(strongestPixel(*icon) == colour);
+    }
+
+    const auto filled = icons::fromFill(icons::checkCircle, colour);
+    REQUIRE(filled != nullptr);
+    CHECK(strongestPixel(*filled) == colour);
+
+    const auto mark = icons::moonbaseMark(colour);
+    REQUIRE(mark != nullptr);
+    CHECK(strongestPixel(*mark) == colour);
+}
+
+//==============================================================================
 // The animation seam has two backends (juce_animation when the project links it,
 // the module's own otherwise). These pin the semantics the UI depends on, and run
 // against whichever one this build picked.

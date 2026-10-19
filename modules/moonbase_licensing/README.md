@@ -54,7 +54,7 @@ Add the module, fill in three fields, show one component.
   misconfiguration, exposes a diagnostics sink for field debugging, and can attach
   JUCE system/host telemetry to requests. Brandable end to end.
 
-Requires **JUCE 6.1.3 or later** (6.x, 7.x and 8.x are all supported) and C++17.
+Requires **JUCE 6.1.3 or later** (6.x, 7.x, 8.x and 9.x are all supported) and C++17.
 Supports macOS, Windows, Linux, iOS and Android. 6.1.3 is also the version HISE
 pins, so the module drops into a HISE project.
 
