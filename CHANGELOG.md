@@ -1,3 +1,10 @@
+# [4.12.0](https://github.com/Moonbase-sh/moonbase-cpp/compare/v4.11.0...v4.12.0) (2026-10-20)
+
+
+### Features
+
+* add-on (sub-product) seats, trials and listing ([#45](https://github.com/Moonbase-sh/moonbase-cpp/issues/45)) ([a2ae91c](https://github.com/Moonbase-sh/moonbase-cpp/commit/a2ae91c0f330bdf64674caf55995bd81a70ea889))
+
 # [4.11.0](https://github.com/Moonbase-sh/moonbase-cpp/compare/v4.10.1...v4.11.0) (2026-10-19)
 
 
