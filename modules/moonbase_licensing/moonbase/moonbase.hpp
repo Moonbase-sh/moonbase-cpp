@@ -18,6 +18,7 @@
 #endif
 #include "moonbase/inventory.hpp"
 #include "moonbase/licensing.hpp"
+#include "moonbase/release_access.hpp"
 #include "moonbase/store.hpp"
 #include "moonbase/types.hpp"
 #include "moonbase/validator.hpp"

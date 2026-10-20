@@ -280,6 +280,78 @@ inline void throw_if_store_closed(const problem_details& problem)
     }
 }
 
+// The problem as a JSON object, or empty when the body is not one.
+inline std::optional<nlohmann::json> problem_object(const std::string& body)
+{
+    try {
+        auto problem = nlohmann::json::parse(body);
+        if (problem.is_object()) {
+            return problem;
+        }
+    } catch (const std::exception&) {
+    }
+    return std::nullopt;
+}
+
+// A string field of a problem, or empty when it is missing, blank or not a
+// string: the extensions a problem carries are read leniently, so a change to
+// one never hides the error itself.
+inline std::optional<std::string> problem_string(const nlohmann::json& problem, const char* key)
+{
+    if (!problem.contains(key) || !problem.at(key).is_string()) {
+        return std::nullopt;
+    }
+    auto value = problem.at(key).get<std::string>();
+    if (trim_ascii_whitespace(value).empty()) {
+        return std::nullopt;
+    }
+    return value;
+}
+
+// What a license covers, as the API describes it in a ReleaseNotCovered problem
+// or a product's releaseAccess, or empty when it says nothing about the dates or
+// majors covered.
+inline std::optional<license_release_access> release_access_from(const nlohmann::json& owner)
+{
+    if (!owner.contains("releaseAccess") || !owner.at("releaseAccess").is_object()) {
+        return std::nullopt;
+    }
+    const auto& value = owner.at("releaseAccess");
+
+    license_release_access access;
+    if (auto until = problem_string(value, "updatesUntil")) {
+        try {
+            access.updates_until = parse_api_timestamp(*until);
+        } catch (const std::exception&) {
+            // Left out, like any field of the problem that can't be read.
+        }
+    }
+    if (value.contains("upToMajor") && value.at("upToMajor").is_number_integer()) {
+        if (const auto major = value.at("upToMajor").get<long long>(); major >= 0) {
+            access.up_to_major = major;
+        }
+    }
+    if (!access.updates_until && !access.up_to_major) {
+        return std::nullopt;
+    }
+    access.up_to_version = problem_string(value, "upToVersion");
+    return access;
+}
+
+// application_version as Moonbase reads it (MAJOR.MINOR.PATCH), or as given when
+// it can't be read that way.
+inline std::string app_version_text(const licensing_options& options)
+{
+    if (!options.application_version) {
+        return {};
+    }
+    if (const auto version = parse_app_version(*options.application_version)) {
+        return std::to_string(version->major) + "." + std::to_string(version->minor) + "."
+            + std::to_string(version->patch);
+    }
+    return *options.application_version;
+}
+
 [[noreturn]] inline void throw_api_error(const http_response& response, const problem_details& problem)
 {
     throw api_error(
@@ -325,12 +397,21 @@ inline void throw_if_store_closed(const problem_details& problem)
 
 // The inventory endpoints never judge the license: a token they cannot use just
 // makes the request anonymous. Their 400s are about the product id, version or
-// platform asked for, so every failure other than a closed store is an api_error
-// carrying the status.
+// platform asked for, so every failure other than a closed store, and a release
+// the customer's licenses don't cover, is an api_error carrying the status.
 [[noreturn]] inline void throw_for_inventory_problem(const http_response& response)
 {
     const auto problem = parse_problem(response.body);
     throw_if_store_closed(problem);
+    if (problem.error_type == "ReleaseNotCovered") {
+        const auto body = problem_object(response.body);
+        throw release_not_covered_error(
+            problem.detail.empty() ? "Your license doesn't cover this version" : problem.detail,
+            std::nullopt,
+            {},
+            body ? release_access_from(*body) : std::nullopt,
+            body ? problem_string(*body, "upgradeUrl") : std::nullopt);
+    }
     throw_api_error(response, problem);
 }
 
@@ -544,7 +625,7 @@ public:
 
         const auto response = transport_->send(request);
         if (response.status_code < 200 || response.status_code >= 300) {
-            detail::throw_for_problem(response);
+            throw_for_license_problem(response);
         }
 
         try {
@@ -576,7 +657,7 @@ public:
 
         const auto response = transport_->send(request);
         if (response.status_code < 200 || response.status_code >= 300) {
-            detail::throw_for_problem(response);
+            throw_for_license_problem(response);
         }
         detail::ensure_token_response(response);
         return validator_->validate_token(response.body);
@@ -598,7 +679,7 @@ public:
 
         const auto response = transport_->send(request);
         if (response.status_code < 200 || response.status_code >= 300) {
-            detail::throw_for_problem(response);
+            throw_for_license_problem(response);
         }
         // Success is an empty 200. A web page in its place means something in
         // between answered, and the seat may well still be taken.
@@ -650,7 +731,9 @@ public:
             detail::throw_for_activation_poll_problem(response);
         }
         detail::ensure_token_response(response);
-        return validator_->validate_token(response.body);
+        // Moonbase activates only a license that covers the version the request
+        // named, and a seat is taken by now, so the device doesn't judge it again.
+        return validator_->validate_token_ignoring_release_access(response.body);
     }
 
     // POST /api/client/licenses/{product}/sub-products/{id}/activate: takes a
@@ -729,7 +812,46 @@ private:
             detail::throw_for_sub_product_problem(response);
         }
         detail::ensure_token_response(response);
-        return validator_->validate_token(response.body);
+        // Not judged against the app's version: the add-on's seat or trial is
+        // taken by now, and the license is judged when it is validated.
+        return validator_->validate_token_ignoring_release_access(response.body);
+    }
+
+    // The license endpoints' failures, as detail::throw_for_problem maps them,
+    // except that ReleaseNotCovered is read first: the license is good, just not
+    // for this version, and the problem says what it covers, where to upgrade
+    // and, on validation, carries the license freshly issued.
+    [[noreturn]] void throw_for_license_problem(const http_response& response) const
+    {
+        if (const auto problem = detail::problem_object(response.body);
+            problem && detail::problem_string(*problem, "errorType").value_or("") == "ReleaseNotCovered") {
+            throw release_not_covered(*problem);
+        }
+        detail::throw_for_problem(response);
+    }
+
+    [[nodiscard]] release_not_covered_error release_not_covered(const nlohmann::json& problem) const
+    {
+        std::optional<license> refused;
+        if (const auto token = detail::problem_string(problem, "license")) {
+            try {
+                // Checked like any license this client returns, except against
+                // the app's version, which would only refuse it again.
+                refused = validator_->validate_token_ignoring_release_access(*token);
+            } catch (const std::exception&) {
+                // Best effort: the refusal stands without it, and a token that
+                // fails verification is not one to hand the app to store.
+            }
+        }
+        auto app_version = detail::problem_string(problem, "appVersion").value_or(detail::app_version_text(options_));
+        auto message = detail::problem_string(problem, "detail")
+                           .value_or("The license doesn't cover version " + app_version);
+        return release_not_covered_error(
+            message,
+            std::move(refused),
+            std::move(app_version),
+            detail::release_access_from(problem),
+            detail::problem_string(problem, "upgradeUrl"));
     }
 
     licensing_options options_;

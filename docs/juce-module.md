@@ -153,6 +153,10 @@ The screens:
 - **Add-ons** (opt-in): the product's add-ons, each with where it stands on this
   computer and a Try free, Buy or Activate action. See [Add-ons](#add-ons).
 - **Trial expired** — a locked "trial has ended" screen with Unlock / Activate offline.
+- **Upgrade needed.** A locked screen for a license that doesn't cover this version of
+  the app, such as one whose updates ended before it came out. It says what the license
+  covers and offers the upgrade, and the license stays stored; see
+  [Licenses that cover some versions](#licenses-that-cover-some-versions).
 - **Update available.** Shown when a validated license reports a released version
   (the `current_release_version` / `p:rel` claim) newer than the app version. Loads the
   release notes from the inventory endpoints and downloads the new installer for the
@@ -271,7 +275,8 @@ you add hidden with `addChildComponent` shows when it is needed.
   subscription or offline license reached its end date), `Invalid` (Moonbase no longer
   accepts it: revoked, or bound to another device) or `Unverified` (not
   checked online within `onlineGracePeriod`). A trial that ends gets the **Trial
-  expired** screen instead. The copy is in `config.strings` (`deactivatedTitle`,
+  expired** screen instead, and a license that doesn't cover this version of the app
+  the **Upgrade needed** screen (`NotCovered`). The copy is in `config.strings` (`deactivatedTitle`,
   `licenseExpiredBody`, and so on), and `lockReason()` goes back to `None` once a
   license is loaded. A custom UI can read it from `onLicenseChanged(false)`.
 - **It steps back when the license returns.** If the overlay only opened for the lock
@@ -680,7 +685,10 @@ Details / Trial screen (it never interrupts the locked Expired screen). It then:
 applies it: a full (non-trial) license owns the product and can download; a trial cannot
 download from an owners-only product (the default). When the license isn't entitled, the
 screen swaps the Download button for an **Unlock full version** CTA and a short note, so
-the user never hits a 403 (`updateInfo().canDownload`).
+the user never hits a 403 (`updateInfo().canDownload`). When Moonbase says the customer's
+licenses don't cover the new version, the screen offers the upgrade instead and says what
+they cover (`updateInfo().covered`, `releaseAccess` and `upgradeUrl`; see
+[Licenses that cover some versions](#licenses-that-cover-some-versions)).
 
 Both inventory requests authenticate with the license token via the
 `Authorization: LicenseToken <jwt>` scheme (`moonbase::inventory_client`). Observe
@@ -712,6 +720,44 @@ click (it expires after ~15 minutes). The skip list lives in a small JSON state 
 beside the license (`<license>.state.json`); that file (`ActivationState`) is the general
 place for client state that should survive restarts, so future cached/remembered values
 live there too.
+
+## Licenses that cover some versions
+
+A license bought outright can cover only some versions of the plugin: those released
+while its updates lasted ("12 months of updates"), or every version up to a major
+("versions up to 2.x"). Moonbase checks the running version against it on every online
+validation, and the module checks it on this computer when Moonbase isn't asked, so set
+`config.applicationVersion` (or rely on `JucePlugin_VersionString`) to the version that
+has to be covered.
+
+A license that doesn't cover the running version locks the plugin, like a trial that
+ended, but stays stored: it still covers the versions it did, so the customer can go
+back to one of them. The **Upgrade needed** screen names the version, says what the
+license covers, and offers:
+
+- **Upgrade license**, or **Renew updates** for a license whose updates ended
+  (`controller().upgradeLicense()`). It opens the upgrade page Moonbase named for the
+  license. Without one (the license was judged on this computer, offline or moments
+  after a check), it starts an online activation instead: Moonbase's activation page
+  offers the upgrade to a signed-in customer where the store sells one, then activates
+  this computer on it.
+- **Already upgraded? Check again** (`controller().refreshLicense()`), which unlocks once
+  the upgrade has gone through. An offline license is never checked online, so it gets a
+  link to load the upgraded license file instead.
+
+An offline license is judged by its license file alone. A version limit holds either way,
+but a time limit in a file made while updates lasted can't say which version came last,
+so once the updates end that file keeps covering later versions until the customer loads
+a new one (see [the core SDK guide](core-sdk.md#licenses-that-cover-some-versions)).
+
+Instances share the license file, so this works both ways: an upgrade another instance
+picks up unlocks this one, and a refusal another instance gets from Moonbase locks it.
+
+For a custom UI, `controller().notCovered()` holds the license, the version it doesn't
+cover, what it covers (`releaseAccess`) and the upgrade link (`upgradeUrl`, empty when
+Moonbase didn't name one), and `lockReason()` is `LockReason::NotCovered`.
+`config.notCoveredTitleText()` and `config.notCoveredBodyText()` give the built-in copy,
+which `config.strings.notCoveredTitle` and `notCoveredBody` override.
 
 ## Telemetry / analytics
 

@@ -9,6 +9,7 @@
 #include <functional>
 #include <map>
 #include <memory>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -62,6 +63,11 @@ struct ActivationStrings
     juce::String licenseInvalidBody;     // default: "{manufacturerName} no longer accepts this license on this computer. Activate again, or contact {manufacturerName} if this seems wrong."
     juce::String licenseUnverifiedTitle; // default: "Couldn't verify your license"
     juce::String licenseUnverifiedBody;  // default: "{productName} has gone too long without checking its license online. Connect to the internet and activate again."
+
+    // The NotCovered screen, for a license that doesn't cover this version of
+    // the app. The defaults name the version and say what the license covers.
+    juce::String notCoveredTitle; // default: "Version {appVersion} needs an upgrade"
+    juce::String notCoveredBody;  // default, e.g.: "Your updates ended on 1 Jun 2026. Your license covers releases up to 2.3.0."
 };
 
 // Why the plugin lost its license, so a screen can say so. Read it from
@@ -74,6 +80,7 @@ enum class LockReason
     Expired,     // the license reached its end date (a trial also gets the Expired screen)
     Invalid,     // Moonbase no longer accepts it: revoked, or bound to another device
     Unverified,  // it couldn't be checked online within onlineGracePeriod
+    NotCovered,  // it doesn't cover this version of the app; it stays stored (see ActivationController::notCovered())
 };
 
 struct ActivationConfig
@@ -333,6 +340,7 @@ struct ActivationConfig
             case LockReason::Expired:     return pick(strings.licenseExpiredTitle, "Your license has expired");
             case LockReason::Invalid:     return pick(strings.licenseInvalidTitle, "Your license is no longer valid");
             case LockReason::Unverified:  return pick(strings.licenseUnverifiedTitle, "Couldn't verify your license");
+            case LockReason::NotCovered:  return notCoveredTitleText({});
             case LockReason::None:        break;
         }
         return {};
@@ -362,11 +370,66 @@ struct ActivationConfig
                            ? strings.licenseUnverifiedBody
                            : product + " has gone too long without checking its license online. "
                                        "Connect to the internet and activate again.";
+            case LockReason::NotCovered:
+                return notCoveredBodyText(std::nullopt);
             case LockReason::None:
                 break;
         }
         return {};
     }
+
+    // The NotCovered screen's title, naming the version that isn't covered
+    // (MAJOR.MINOR.PATCH, or empty when unknown).
+    [[nodiscard]] juce::String notCoveredTitleText(const juce::String& appVersion) const
+    {
+        if (strings.notCoveredTitle.isNotEmpty())
+            return strings.notCoveredTitle;
+        return appVersion.isNotEmpty() ? "Version " + appVersion + " needs an upgrade"
+                                       : juce::String("This version needs an upgrade");
+    }
+
+    // The NotCovered screen's body: what the license that doesn't cover this
+    // version does cover (see releaseAccessText).
+    [[nodiscard]] juce::String notCoveredBodyText(
+        const std::optional<moonbase::license_release_access>& access,
+        std::chrono::system_clock::time_point now = std::chrono::system_clock::now()) const
+    {
+        if (strings.notCoveredBody.isNotEmpty())
+            return strings.notCoveredBody;
+        const auto covers = releaseAccessText(access, now);
+        return covers.isNotEmpty() ? covers
+                                   : "Your " + resolvedProductName() + " license doesn't cover this version.";
+    }
+
+    // What a license that covers only some versions covers, in a sentence or
+    // two, judged at `now`: "Your updates ended on 1 Jun 2026. Your license
+    // covers releases up to 2.3.0." Empty when there is nothing to say.
+    [[nodiscard]] static juce::String releaseAccessText(
+        const std::optional<moonbase::license_release_access>& access,
+        std::chrono::system_clock::time_point now = std::chrono::system_clock::now())
+    {
+        if (! access)
+            return {};
+
+        juce::StringArray sentences;
+        if (access->updates_until && *access->updates_until < now)
+        {
+            const auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+                                access->updates_until->time_since_epoch()).count();
+            sentences.add("Your updates ended on " + juce::Time((juce::int64) ms).toString(true, false) + ".");
+        }
+
+        juce::StringArray covers;
+        if (access->up_to_major)
+            covers.add("versions up to " + juce::String(*access->up_to_major) + ".x");
+        if (access->up_to_version)
+            covers.add("releases up to " + juce::String(*access->up_to_version));
+        if (! covers.isEmpty())
+            sentences.add("Your license covers " + covers.joinIntoString(" and ") + ".");
+
+        return sentences.joinIntoString(" ");
+    }
+
     [[nodiscard]] juce::URL activationUrlResolved() const
     {
         if (activationUrl.toString(false).isNotEmpty())

@@ -53,7 +53,7 @@ matching script and commit its output in the same change.
 | Path | Source of truth | Refresh with |
 | --- | --- | --- |
 | `modules/moonbase_licensing/moonbase/` | `include/moonbase/` | `scripts/sync-juce-module.sh` |
-| `FINGERPRINT_SPEC.md`, `tests/vectors/fingerprint-vectors.json` | `@moonbase.sh/licensing` | `scripts/sync-fingerprint-vectors.sh` |
+| `FINGERPRINT_SPEC.md`, `tests/vectors/fingerprint-vectors.json`, `tests/vectors/release-access-vectors.json` | `@moonbase.sh/licensing` | `scripts/sync-fingerprint-vectors.sh` |
 
 `sync-juce-module.sh` is a byte-exact mirror with `--delete`, so **never hand-edit
 anything under `modules/moonbase_licensing/moonbase/`**; the next sync reverts it. Any

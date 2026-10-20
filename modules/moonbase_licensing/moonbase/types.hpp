@@ -120,6 +120,26 @@ struct sub_product {
     std::optional<sub_product_seats> seats;
 };
 
+// Which versions of the app a license covers, when it doesn't cover every one. A
+// license bought outright can cover the releases published while its updates
+// lasted ("12 months of updates"), or every version up to a major ("versions up
+// to 2.x"). It never expires because of it; it just doesn't cover the versions
+// after that. The two limits add up rather than narrow each other: a license
+// with both covers a version that either one covers. Check a version with
+// covers_version (release_access.hpp).
+struct license_release_access {
+    // Releases published until then are covered, and every version while it has
+    // not passed.
+    std::optional<std::chrono::system_clock::time_point> updates_until;
+    // Every version whose major is at most this is covered.
+    std::optional<long long> up_to_major;
+    // Once updates_until has passed, the last version published before it
+    // (MAJOR.MINOR.PATCH), covered along with every older one. Empty while
+    // updates last, and when nothing was published before they ended (then
+    // every version is covered).
+    std::optional<std::string> up_to_version;
+};
+
 struct license {
     std::string id;
     std::string activation_id;
@@ -141,6 +161,9 @@ struct license {
     std::optional<std::string> subscription_id;
     std::optional<long long> seat_count;  // total activation seats (from token claims), if provided
     std::optional<long long> seats_used;  // seats currently in use, if provided
+    // Which versions of the app the license covers; empty when it covers every
+    // version, which is every license but one bought with limited updates.
+    std::optional<license_release_access> release_access;
     nlohmann::json properties = nlohmann::json::object();
     std::string token;
 };
@@ -289,7 +312,16 @@ struct licensing_options {
     std::string public_key;
     std::optional<std::string> account_id;
     platform target_platform = current_platform();
+    // Reported with every request, and also the version a license has to cover
+    // when it covers only some (see license::release_access): Moonbase refuses
+    // to validate one that doesn't, and so does the validator on the device
+    // unless enforce_release_access is off. A version that can't be read (see
+    // parse_app_version) is not checked.
     std::optional<std::string> application_version;
+    // Whether the validator refuses a license that doesn't cover
+    // application_version, with release_not_covered_error, judged by the device
+    // clock. Moonbase refuses such a license when validating online either way.
+    bool enforce_release_access = true;
     // Identifies a higher-level integration built on top of the SDK (e.g. the
     // JUCE module). Appended to the User-Agent after "moonbase-cpp/<version>" so
     // the server can tell which client made the request.
@@ -446,6 +478,39 @@ inline void from_json(const nlohmann::json& json, sub_product& value)
     value.seats = detail::optional_seats(json, "seats");
 }
 
+inline void to_json(nlohmann::json& json, const license_release_access& value)
+{
+    json = nlohmann::json::object();
+    if (value.updates_until) {
+        json["updatesUntil"] = detail::format_iso8601_utc(*value.updates_until);
+    }
+    if (value.up_to_major) {
+        json["upToMajor"] = *value.up_to_major;
+    }
+    if (value.up_to_version) {
+        json["upToVersion"] = *value.up_to_version;
+    }
+}
+
+// Read leniently. A license is judged by its token, so a field this can't read
+// is left out rather than costing the stored license.
+inline void from_json(const nlohmann::json& json, license_release_access& value)
+{
+    value = {};
+    if (json.contains("updatesUntil") && json.at("updatesUntil").is_string()) {
+        try {
+            value.updates_until = detail::parse_iso8601_utc(json.at("updatesUntil").get<std::string>());
+        } catch (const std::exception&) {
+        }
+    }
+    if (json.contains("upToMajor") && json.at("upToMajor").is_number_integer()) {
+        value.up_to_major = json.at("upToMajor").get<long long>();
+    }
+    if (json.contains("upToVersion") && json.at("upToVersion").is_string()) {
+        value.up_to_version = json.at("upToVersion").get<std::string>();
+    }
+}
+
 inline void to_json(nlohmann::json& json, const license& value)
 {
     json = nlohmann::json{
@@ -473,6 +538,9 @@ inline void to_json(nlohmann::json& json, const license& value)
     }
     if (value.seats_used) {
         json["seatsUsed"] = *value.seats_used;
+    }
+    if (value.release_access) {
+        json["releaseAccess"] = *value.release_access;
     }
 }
 
@@ -518,6 +586,11 @@ inline void from_json(const nlohmann::json& json, license& value)
         value.seats_used = json.at("seatsUsed").get<long long>();
     } else {
         value.seats_used.reset();
+    }
+    if (json.contains("releaseAccess") && json.at("releaseAccess").is_object()) {
+        value.release_access = json.at("releaseAccess").get<license_release_access>();
+    } else {
+        value.release_access.reset();
     }
     value.properties = json.value("properties", nlohmann::json::object());
     json.at("token").get_to(value.token);

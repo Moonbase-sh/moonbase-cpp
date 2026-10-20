@@ -39,6 +39,9 @@ PNG per state:
 | `06-trial` | Valid trial license (days-left, progress, features) |
 | `06b-trial-expired` | Trial that has ended (locked) |
 | `06c-trial-overflow` | Trial with a long feature list (scrollable field) |
+| `06f-not-covered-updates-ended` | Locked: a license whose updates ended before this version (Renew updates) |
+| `06g-not-covered-up-to-major` | Locked: a license for versions up to 2.x, judged on this computer (no upgrade link) |
+| `06h-not-covered-offline` | Locked: an offline license that doesn't cover this version (load an upgraded file) |
 | `07-details` | Valid perpetual license (details, seats, deactivate) |
 | `07b-details-subscription` | Subscription license with an expiry date |
 | `07c-details-error` | Details with a deactivate failure (error) |
@@ -50,11 +53,13 @@ PNG per state:
 | `12-update-downloading` | Update installer downloading (progress bar) |
 | `13-update-error` | Update details failed to load (error) |
 | `14-update-gated` | Update the license can't download (Unlock CTA) |
+| `14b-update-not-covered` | Update the license doesn't cover (upgrade CTA, what it covers) |
 | `15-theme-ember-welcome` | Welcome, "Ember" theme (warm near-black, amber, monospaced) |
 | `15b-theme-ember-welcome-error` | The longest welcome error copy in Ember's monospaced face, where it runs widest |
 | `15c-theme-ember-welcome-license-invalid` | The longest lock-reason copy in Ember's monospaced face |
 | `16-theme-ember-activating` | Browser activation with no browser, Ember (spinner arc + track, copy button) |
 | `17-theme-ember-trial` | Trial, Ember (pill, progress gradient, feature list) |
+| `17b-theme-ember-not-covered` | Upgrade needed, Ember (trial washes, both limits' copy) |
 | `18-theme-daylight-success` | Just activated, "Daylight" theme (light) |
 | `19-theme-daylight-details` | License details, Daylight (cards, seat pips) |
 | `20-theme-daylight-offline` | Offline flow, Daylight (drop zone, links) |

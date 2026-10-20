@@ -308,6 +308,7 @@ void ActivationController::start()
     {
         std::optional<moonbase::license> result;
         std::optional<moonbase::license> expiredTrial;
+        std::optional<NotCoveredInfo> notCovered;
         bool deleteExpiredOffline = false;
         auto reason = LockReason::None; // why a stored license didn't load
         juce::String diag;
@@ -363,7 +364,19 @@ void ActivationController::start()
                         reason = LockReason::Expired;
                     }
                     else
-                        result = std::move(peek);
+                    {
+                        try
+                        {
+                            licensing->validator().ensure_covers_application_version(*peek);
+                            result = std::move(peek);
+                        }
+                        catch (const moonbase::release_not_covered_error& ex)
+                        {
+                            // Kept on disk: it still covers the versions it did.
+                            diag = juce::String("Stored offline license doesn't cover this version: ") + ex.what();
+                            notCovered = notCoveredFrom(ex, *peek);
+                        }
+                    }
                 }
                 else if (peek)
                 {
@@ -385,6 +398,13 @@ void ActivationController::start()
                             expiredTrial = std::move(peek);
                         else
                             result = std::nullopt;
+                    }
+                    catch (const moonbase::release_not_covered_error& ex)
+                    {
+                        // Good, but not for this version -> locked, and kept on
+                        // disk (the SDK already stored the copy Moonbase sent).
+                        diag = juce::String("Stored license doesn't cover this version: ") + ex.what();
+                        notCovered = notCoveredFrom(ex, *peek);
                     }
                     catch (const moonbase::license_invalid_error& ex)
                     {
@@ -412,8 +432,8 @@ void ActivationController::start()
             result = std::nullopt;
         }
 
-        juce::MessageManager::callAsync([safe, generation, result, expiredTrial, deleteExpiredOffline, reason,
-                                         diag]() mutable
+        juce::MessageManager::callAsync([safe, generation, result, expiredTrial, notCovered, deleteExpiredOffline,
+                                         reason, diag]() mutable
         {
             auto* self = safe.get();
             if (self == nullptr || generation != self->generation_.load())
@@ -424,6 +444,8 @@ void ActivationController::start()
                 self->deleteStoredLicense();
             if (expiredTrial)
                 self->showTrialExpired(std::move(*expiredTrial));
+            else if (notCovered)
+                self->showNotCovered(std::move(*notCovered));
             else if (result)
                 self->applyLicense(std::move(result));
             else
@@ -500,10 +522,8 @@ void ActivationController::beginOnlineActivation()
 
             self->pendingRequest_ = request;
             const juce::URL link(juce::String(request->browser_url));
-            // On Windows this is ShellExecute, which fails when no default
-            // browser is set; the screen then offers the link to copy.
-            const bool opened = self->config_.openBrowser ? self->config_.openBrowser(link)
-                                                          : link.launchInDefaultBrowser();
+            // When it can't be opened, the screen offers the link to copy.
+            const bool opened = self->openBrowser(link);
             self->browserOpenFailed_ = ! opened;
             if (! opened)
                 self->emitDiagnostic("Couldn't open the browser for activation; pendingBrowserUrl() has the link.");
@@ -519,7 +539,11 @@ void ActivationController::cancelActivation()
     pendingRequest_.reset();
     ++generation_;
     pollInFlight_ = false;
-    showWelcome();
+    // Started from the NotCovered screen to upgrade: back there, not to Welcome.
+    if (notCovered_ && ! license_)
+        setScreen(Screen::NotCovered);
+    else
+        showWelcome();
 }
 
 juce::String ActivationController::pendingBrowserUrl() const
@@ -553,10 +577,14 @@ void ActivationController::refreshLicense(bool force, std::function<void(bool)> 
         return;
     }
 
+    // On the NotCovered screen, the license that doesn't cover this version is
+    // the one to re-check: an upgrade bought since then makes it cover it.
+    const auto* current = license_ ? &*license_ : notCovered_ ? &notCovered_->license : nullptr;
+
     // Nothing to refresh, or an offline license (permanent + server-untracked).
-    if (! license_ || license_->method == moonbase::activation_method::offline)
+    if (current == nullptr || current->method == moonbase::activation_method::offline)
     {
-        if (license_ && license_->method == moonbase::activation_method::offline)
+        if (current != nullptr)
             emitDiagnostic("refreshLicense: offline licenses are not re-validated online.");
         if (onComplete) onComplete(false);
         return;
@@ -564,9 +592,11 @@ void ActivationController::refreshLicense(bool force, std::function<void(bool)> 
 
     ++refreshesInFlight_;
     const auto generation = ++generation_;
-    const auto token = license_->token;
-    const auto currentLicense = *license_; // for the expired-trial case (re-validation can't return it)
-    const bool wasTrial = license_->trial;
+    const auto token = current->token;
+    const auto currentLicense = *current; // for the expired-trial case (re-validation can't return it)
+    const bool wasTrial = current->trial;
+    if (screen_ == Screen::NotCovered)
+        sendChangeMessage(); // isRefreshing() is set now
     const auto gracePeriod = config_.onlineGracePeriod;
     juce::WeakReference<ActivationController> safe(this);
     auto licensing = licensing_;
@@ -593,6 +623,7 @@ void ActivationController::refreshLicense(bool force, std::function<void(bool)> 
         };
 
         std::optional<moonbase::license> refreshed;
+        std::optional<NotCoveredInfo> notCovered;
         bool expired = false;
         bool rejected = false;
         bool pastGrace = false;
@@ -606,7 +637,26 @@ void ActivationController::refreshLicense(bool force, std::function<void(bool)> 
                 // licensing does for its own checks: answers then reach the store
                 // in the order the server gave them, whichever instance asked.
                 auto guard = licensing->store().lock_for_update();
-                refreshed = licensing->client().validate_token_online(token);
+                try
+                {
+                    refreshed = licensing->client().validate_token_online(token);
+                }
+                catch (const moonbase::release_not_covered_error& ex)
+                {
+                    // The copy Moonbase sent with the refusal still covers the
+                    // versions it did, so it is stored the same way.
+                    if (ex.license() && stillCurrent())
+                    {
+                        try
+                        {
+                            licensing->store().store_local_license(*ex.license());
+                        }
+                        catch (const moonbase::storage_error&)
+                        {
+                        }
+                    }
+                    throw;
+                }
                 if (stillCurrent())
                 {
                     try
@@ -633,6 +683,12 @@ void ActivationController::refreshLicense(bool force, std::function<void(bool)> 
             expired = true;
             diag = juce::String::fromUTF8(ex.what());
         }
+        catch (const moonbase::release_not_covered_error& ex)
+        {
+            // Good, but not for this version: this locks, but keeps the license.
+            notCovered = notCoveredFrom(ex, currentLicense);
+            diag = juce::String::fromUTF8(ex.what());
+        }
         catch (const moonbase::license_invalid_error& ex)
         {
             // The server refused the license for good: it was revoked or
@@ -650,7 +706,7 @@ void ActivationController::refreshLicense(bool force, std::function<void(bool)> 
             pastGrace = std::chrono::system_clock::now() - currentLicense.validated_at > gracePeriod;
         }
 
-        juce::MessageManager::callAsync([safe, generation, refreshed, expired, rejected, pastGrace,
+        juce::MessageManager::callAsync([safe, generation, refreshed, notCovered, expired, rejected, pastGrace,
                                          currentLicense, wasTrial, licensing, force, diag, onComplete]() mutable
         {
             auto* self = safe.get();
@@ -660,6 +716,8 @@ void ActivationController::refreshLicense(bool force, std::function<void(bool)> 
             {
                 // Superseded (e.g. deactivate / clearLicense bumped the
                 // generation). Drop the result and, crucially, do not persist.
+                if (self != nullptr && self->screen_ == Screen::NotCovered)
+                    self->sendChangeMessage(); // isRefreshing() may have cleared
                 if (onComplete) onComplete(false);
                 return;
             }
@@ -689,12 +747,36 @@ void ActivationController::refreshLicense(bool force, std::function<void(bool)> 
                 self->applyLicense(std::move(refreshed));
                 if (onComplete) onComplete(true);
             }
+            else if (notCovered && self->isOlderThanHeld(notCovered->license))
+            {
+                // A newer copy arrived while this answer was on its way, such as
+                // a sibling's after the upgrade, and outranks it.
+                self->emitDiagnostic("Dropped a re-validation answer older than the license held: " + diag);
+                if (onComplete) onComplete(false);
+            }
+            else if (notCovered)
+            {
+                // The copy Moonbase sent along was stored on the worker, as a
+                // refreshed license is.
+                self->emitDiagnostic("License doesn't cover this version on re-validation: " + diag);
+                self->showNotCovered(std::move(*notCovered));
+                if (onComplete) onComplete(false);
+            }
             else if (expired && wasTrial)
             {
                 // The trial ended per the server: lock and show the Expired
                 // screen (using the trial we held, since the throw returns none).
                 self->emitDiagnostic("Trial ended on re-validation: " + diag);
                 self->showTrialExpired(currentLicense);
+                if (onComplete) onComplete(false);
+            }
+            else if (! expired && ! rejected && self->notCovered_ && ! self->license_)
+            {
+                // "Check again" on the NotCovered screen got no answer. The
+                // plugin is locked already, so it just says so and stays put.
+                self->emitDiagnostic("Couldn't re-check the license that doesn't cover this version: " + diag);
+                self->setScreen(Screen::NotCovered,
+                                "Couldn't reach Moonbase to check your license. Try again when you're online.");
                 if (onComplete) onComplete(false);
             }
             else if (expired || rejected || pastGrace)
@@ -812,16 +894,8 @@ void ActivationController::onActivationFulfilled(moonbase::license value)
     pendingRequest_.reset();
     ++generation_;
 
-    try
-    {
-        auto guard = licensing_->store().lock_for_update();
-        licensing_->store().store_local_license(value);
-    }
-    catch (const moonbase::storage_error& ex)
-    {
-        // Activated but couldn't persist; still unlock for this session.
-        emitDiagnostic(juce::String("Activated, but couldn't persist the license: ") + ex.what());
-    }
+    // Activated but couldn't persist; still unlock for this session.
+    storeLicense(value, "Activated");
 
     setLicense(std::move(value));
     setScreen(Screen::Success);
@@ -889,19 +963,27 @@ void ActivationController::activateOffline()
     try
     {
         auto licenseValue = licensing_->read_offline_license(contents.trim().toStdString());
-        try
-        {
-            auto guard = licensing_->store().lock_for_update();
-            licensing_->store().store_local_license(licenseValue);
-        }
-        catch (const moonbase::storage_error& ex)
-        {
-            emitDiagnostic(juce::String("Activated offline, but couldn't persist the license: ") + ex.what());
-        }
+        storeLicense(licenseValue, "Activated offline");
 
         setLicense(std::move(licenseValue));
         offlineError_.clear();
         setScreen(Screen::Success);
+    }
+    catch (const moonbase::release_not_covered_error& ex)
+    {
+        // This computer's license, for the versions it covers: kept, but locked.
+        emitDiagnostic(juce::String("Offline license doesn't cover this version: ") + ex.what());
+        offlineError_.clear();
+        if (ex.license())
+        {
+            storeLicense(*ex.license(), "Activated offline");
+            showNotCovered(notCoveredFrom(ex, *ex.license()));
+        }
+        else
+        {
+            offlineError_ = "That license doesn't cover this version.";
+            setScreen(Screen::Offline);
+        }
     }
     catch (const std::exception& ex)
     {
@@ -917,14 +999,17 @@ void ActivationController::deactivate()
     if (! ensureReady())
         return;
 
-    if (! license_)
+    // A license that doesn't cover this version still holds this computer's
+    // seat, which deactivating hands back.
+    const auto* current = license_ ? &*license_ : notCovered_ ? &notCovered_->license : nullptr;
+    if (current == nullptr)
     {
         showWelcome();
         return;
     }
 
     // Offline / trial licenses can't be revoked server-side — local forget.
-    if (license_->method == moonbase::activation_method::offline || license_->trial)
+    if (current->method == moonbase::activation_method::offline || current->trial)
     {
         clearLicense();
         return;
@@ -935,8 +1020,8 @@ void ActivationController::deactivate()
     sendChangeMessage();
 
     const auto generation = ++generation_;
-    const auto token = license_->token;
-    const auto activationId = juce::String(license_->activation_id);
+    const auto token = current->token;
+    const auto activationId = juce::String(current->activation_id);
     juce::WeakReference<ActivationController> safe(this);
     auto licensing = licensing_;
 
@@ -991,7 +1076,7 @@ void ActivationController::deactivate()
                     break;
                 case Outcome::Unreachable:
                     self->emitDiagnostic("revoke_activation failed, license kept: " + diag);
-                    self->setScreen(Screen::Details, userMessage);
+                    self->setScreen(self->screenForCurrentLicense(), userMessage);
                     break;
             }
         });
@@ -1141,13 +1226,26 @@ void ActivationController::checkLicenseFile()
         return;
     }
 
-    if (license_ && onDisk->token == license_->token)
-        return; // our own write, or a sibling's that changed nothing
+    // Our own write, or a sibling's that changed nothing.
+    if ((license_ && onDisk->token == license_->token)
+        || (notCovered_ && onDisk->token == notCovered_->license.token))
+        return;
 
     std::optional<moonbase::license> stored;
+    std::optional<NotCoveredInfo> notCovered;
     try
     {
         stored = licensing_->validate_token_local(onDisk->token);
+    }
+    catch (const moonbase::release_not_covered_error& ex)
+    {
+        // Good, but not for this version: typically a sibling's answer from
+        // Moonbase, stored along with the refusal. Taken like any stored
+        // license, except that it locks.
+        if (! ex.license())
+            return;
+        notCovered = notCoveredFrom(ex, *ex.license());
+        stored = notCovered->license;
     }
     catch (const std::exception&)
     {
@@ -1163,7 +1261,10 @@ void ActivationController::checkLicenseFile()
         && std::chrono::system_clock::now() - stored->validated_at > config_.onlineGracePeriod)
         return;
 
-    adoptStoredLicense(std::move(*stored));
+    if (notCovered)
+        adoptNotCovered(std::move(*notCovered));
+    else
+        adoptStoredLicense(std::move(*stored));
 }
 
 void ActivationController::onLicenseFileRemoved()
@@ -1171,7 +1272,24 @@ void ActivationController::onLicenseFileRemoved()
     // Another instance or process deactivated or forgot this machine's license,
     // so this one locks too.
     if (! license_)
+    {
+        // The license that didn't cover this version is gone as well.
+        if (! notCovered_)
+            return;
+        emitDiagnostic("The license file was removed by another instance or process.");
+        if (activationInFlight())
+        {
+            // As below: the activation in progress carries on and brings a
+            // license of its own.
+            notCovered_.reset();
+            lockReason_ = LockReason::Deactivated;
+            sendChangeMessage();
+            return;
+        }
+        endActivationFlows(); // a "Check again" in flight must not write it back
+        lock(LockReason::Deactivated);
         return;
+    }
 
     if (activationInFlight())
     {
@@ -1191,12 +1309,18 @@ void ActivationController::onLicenseFileRemoved()
     lock(LockReason::Deactivated);
 }
 
+bool ActivationController::isOlderThanHeld(const moonbase::license& copy) const
+{
+    const auto* held = license_ ? &*license_ : notCovered_ ? &notCovered_->license : nullptr;
+    return held != nullptr && held->activation_id == copy.activation_id && copy.validated_at < held->validated_at;
+}
+
 void ActivationController::adoptStoredLicense(moonbase::license stored)
 {
     // Two processes' refreshes can land on disk out of order; never trade the
-    // copy we hold for an older one of the same activation.
-    if (license_ && license_->activation_id == stored.activation_id
-        && stored.validated_at < license_->validated_at)
+    // copy we hold for an older one of the same activation. That includes one
+    // Moonbase said doesn't cover this version, which only a newer copy undoes.
+    if (isOlderThanHeld(stored))
         return;
 
     if (license_ && license_->activation_id == stored.activation_id)
@@ -1216,6 +1340,27 @@ void ActivationController::adoptStoredLicense(moonbase::license stored)
     emitDiagnostic("Picked up a license stored by another instance or process.");
     endActivationFlows();
     applyLicense(std::move(stored));
+}
+
+void ActivationController::adoptNotCovered(NotCoveredInfo info)
+{
+    // As adoptStoredLicense: never an older copy of the activation held here.
+    // An activation in progress brings a license of its own.
+    if (isOlderThanHeld(info.license) || activationInFlight())
+        return;
+
+    const auto* held = license_ ? &*license_ : notCovered_ ? &notCovered_->license : nullptr;
+    const bool sameActivation = held != nullptr && held->activation_id == info.license.activation_id;
+    emitDiagnostic("Another instance or process found that the license doesn't cover this version; locking.");
+
+    // The file holds no upgrade link, so keep the one Moonbase gave here.
+    if (sameActivation && notCovered_ && info.upgradeUrl.isEmpty())
+        info.upgradeUrl = notCovered_->upgradeUrl;
+
+    // A different activation's in-flight work must not land on top of it.
+    if (! sameActivation)
+        endActivationFlows();
+    showNotCovered(std::move(info));
 }
 
 bool ActivationController::activationInFlight() const noexcept
@@ -1375,6 +1520,7 @@ void ActivationController::setPreviewState(Screen screen, std::optional<moonbase
     stopLicenseWatch(); // a preview stays exactly as set
     pollInFlight_ = false;
     busy_ = busy;
+    notCovered_.reset();
     if (screen == Screen::Expired)
     {
         // The Expired screen is locked: keep the license out of license_ so
@@ -1867,7 +2013,7 @@ bool ActivationController::buySubProduct(const juce::String& subProductId)
             continue;
 
         const juce::URL link(juce::String::fromUTF8(entry.buy_url.c_str()));
-        const bool opened = config_.openBrowser ? config_.openBrowser(link) : link.launchInDefaultBrowser();
+        const bool opened = openBrowser(link);
         if (! opened)
         {
             emitDiagnostic("Couldn't open the browser to buy an add-on: " + link.toString(false));
@@ -1919,7 +2065,10 @@ void ActivationController::setLicense(std::optional<moonbase::license> value)
     const bool sameActivation = license_ && value && license_->activation_id == value->activation_id;
     license_ = std::move(value);
     if (license_)
+    {
         lockReason_ = LockReason::None;
+        notCovered_.reset();
+    }
     // The add-ons were listed for the activation that just went or was replaced
     // (an activation here, say), along with anything still on its way for it.
     if (! sameActivation)
@@ -1965,7 +2114,7 @@ void ActivationController::deliverLicenseChange()
 ActivationController::Screen ActivationController::screenForCurrentLicense() const
 {
     if (! license_)
-        return Screen::Welcome;
+        return notCovered_ ? Screen::NotCovered : Screen::Welcome;
     // A backend-granted trial license shows the trial view (days left / unlock);
     // a full license shows the details view.
     return license_->trial ? Screen::Trial : Screen::Details;
@@ -1975,6 +2124,7 @@ void ActivationController::applyLicense(std::optional<moonbase::license> value)
 {
     setLicense(std::move(value));
     expiredTrial_.reset();
+    notCovered_.reset();
     statusMessage_.clear();
 
     // A validated license that outranks the running app routes to the update
@@ -2012,10 +2162,85 @@ void ActivationController::showTrialExpired(moonbase::license expired)
     // The plugin must stay locked, so license_ stays empty; the ended trial is
     // held separately for the Expired screen to show the product + end date.
     expiredTrial_ = std::move(expired);
+    notCovered_.reset();
     lockReason_ = LockReason::Expired;
     setLicense(std::nullopt);
     statusMessage_.clear();
     setScreen(Screen::Expired);
+}
+
+void ActivationController::showNotCovered(NotCoveredInfo info)
+{
+    // Locked like an ended trial, but the license stays stored: it still covers
+    // the versions it did, and an upgrade makes it cover this one.
+    expiredTrial_.reset();
+    notCovered_ = std::move(info);
+    lockReason_ = LockReason::NotCovered;
+    setLicense(std::nullopt);
+    statusMessage_.clear();
+    setScreen(Screen::NotCovered);
+}
+
+ActivationController::NotCoveredInfo ActivationController::notCoveredFrom(
+    const moonbase::release_not_covered_error& error, const moonbase::license& fallback)
+{
+    NotCoveredInfo info;
+    info.license = error.license() ? *error.license() : fallback;
+    info.appVersion = juce::String::fromUTF8(error.app_version().c_str());
+    info.releaseAccess = error.release_access() ? error.release_access() : info.license.release_access;
+    if (error.upgrade_url())
+        info.upgradeUrl = juce::String::fromUTF8(error.upgrade_url()->c_str());
+    return info;
+}
+
+void ActivationController::storeLicense(const moonbase::license& value, const char* context)
+{
+    try
+    {
+        auto guard = licensing_->store().lock_for_update();
+        licensing_->store().store_local_license(value);
+    }
+    catch (const moonbase::storage_error& ex)
+    {
+        emitDiagnostic(juce::String(context) + ", but couldn't persist the license: " + ex.what());
+    }
+}
+
+bool ActivationController::openBrowser(const juce::URL& url)
+{
+    // On Windows this is ShellExecute, which fails when no default browser is
+    // set; config.openBrowser routes the link elsewhere.
+    return config_.openBrowser ? config_.openBrowser(url) : url.launchInDefaultBrowser();
+}
+
+void ActivationController::upgradeLicense()
+{
+    if (! ensureReady())
+        return;
+
+    if (screen_ == Screen::UpdateAvailable)
+    {
+        if (updateInfo_.upgradeUrl.isNotEmpty() && ! openBrowser(juce::URL(updateInfo_.upgradeUrl)))
+            emitDiagnostic("Couldn't open the browser for the upgrade: " + updateInfo_.upgradeUrl);
+        return;
+    }
+
+    if (! notCovered_ || license_)
+        return;
+
+    if (notCovered_->upgradeUrl.isEmpty())
+    {
+        // Only Moonbase knows where to buy the upgrade. Its activation page
+        // offers it to a signed-in customer, then activates this computer.
+        beginOnlineActivation();
+        return;
+    }
+
+    if (! openBrowser(juce::URL(notCovered_->upgradeUrl)))
+    {
+        emitDiagnostic("Couldn't open the browser for the upgrade: " + notCovered_->upgradeUrl);
+        setScreen(Screen::NotCovered, "Couldn't open your browser. Upgrade at " + notCovered_->upgradeUrl);
+    }
 }
 
 //==============================================================================
@@ -2098,6 +2323,13 @@ void ActivationController::fetchUpdateInfo()
             {
                 self->updateInfo_.releaseNotes = juce::String::fromUTF8(info->description.c_str());
                 self->updateInfo_.canDownload = self->licenseCanDownload(*info);
+                // Moonbase judges this by all of the customer's licenses, as
+                // validating the new version does: the seat moves to one that
+                // covers it.
+                self->updateInfo_.covered = info->release_covered;
+                self->updateInfo_.releaseAccess = info->release_access;
+                self->updateInfo_.upgradeUrl = info->upgrade_url ? juce::String::fromUTF8(info->upgrade_url->c_str())
+                                                                 : juce::String();
                 self->updateInfo_.error.clear();
             }
             else
@@ -2137,11 +2369,17 @@ void ActivationController::startUpdateDownload()
     threadPool_.addJob([safe, generation, inventory, token, platformName]() mutable
     {
         std::optional<moonbase::download_target> target;
+        std::optional<NotCoveredInfo> notCovered; // the licenses don't cover the release after all
         juce::String diag;
         juce::String userMessage;
         try
         {
             target = inventory.get_download_url(platformName, token);
+        }
+        catch (const moonbase::release_not_covered_error& ex)
+        {
+            diag = juce::String("startUpdateDownload refused: ") + ex.what();
+            notCovered = notCoveredFrom(ex, {});
         }
         catch (const std::exception& ex)
         {
@@ -2162,7 +2400,7 @@ void ActivationController::startUpdateDownload()
                 userMessage = "Couldn't reach Moonbase to download the update. Try again when online.";
         }
 
-        juce::MessageManager::callAsync([safe, generation, target, diag, userMessage]() mutable
+        juce::MessageManager::callAsync([safe, generation, target, notCovered, diag, userMessage]() mutable
         {
             auto* self = safe.get();
             if (self == nullptr || generation != self->updateGeneration_.load())
@@ -2170,6 +2408,19 @@ void ActivationController::startUpdateDownload()
             if (target)
             {
                 self->beginFileDownload(*target);
+            }
+            else if (notCovered)
+            {
+                // The screen swaps the download for the upgrade.
+                self->emitDiagnostic(diag);
+                auto& info = self->updateInfo_;
+                info.covered = false;
+                info.canDownload = false;
+                info.releaseAccess = notCovered->releaseAccess;
+                info.upgradeUrl = notCovered->upgradeUrl;
+                info.phase = UpdateInfo::Phase::Ready;
+                info.progress = 0.0;
+                self->sendChangeMessage();
             }
             else
             {
@@ -2304,7 +2555,8 @@ void ActivationController::dismissUpdate()
 
 void ActivationController::setPreviewUpdate(UpdateInfo::Phase phase, moonbase::license license,
                                             juce::String releaseNotes, double progressValue,
-                                            juce::String error, bool canDownload)
+                                            juce::String error, bool canDownload, bool covered,
+                                            juce::String upgradeUrl)
 {
     ++generation_;
     ++updateGeneration_;
@@ -2315,6 +2567,7 @@ void ActivationController::setPreviewUpdate(UpdateInfo::Phase phase, moonbase::l
 
     setLicense(std::move(license));
     expiredTrial_.reset();
+    notCovered_.reset();
     statusMessage_.clear();
 
     updateInfo_ = {};
@@ -2325,9 +2578,40 @@ void ActivationController::setPreviewUpdate(UpdateInfo::Phase phase, moonbase::l
     updateInfo_.releaseNotes = std::move(releaseNotes);
     updateInfo_.progress = progressValue;
     updateInfo_.error = std::move(error);
-    updateInfo_.canDownload = canDownload;
+    updateInfo_.canDownload = canDownload && covered;
+    updateInfo_.covered = covered;
+    if (! covered && license_)
+        updateInfo_.releaseAccess = license_->release_access;
+    updateInfo_.upgradeUrl = std::move(upgradeUrl);
 
     screen_ = Screen::UpdateAvailable;
+    sendSynchronousChangeMessage();
+}
+
+void ActivationController::setPreviewNotCovered(moonbase::license license, juce::String upgradeUrl)
+{
+    ++generation_;
+    stopTimer();
+    stopLicenseWatch(); // a preview stays exactly as set
+    pollInFlight_ = false;
+    busy_ = false;
+    pendingRequest_.reset();
+    offlineError_.clear();
+
+    NotCoveredInfo info;
+    if (const auto version = moonbase::parse_app_version(config_.resolvedApplicationVersion().toStdString()))
+        info.appVersion << juce::String(version->major) << "." << juce::String(version->minor) << "."
+                        << juce::String(version->patch);
+    info.releaseAccess = license.release_access;
+    info.license = std::move(license);
+    info.upgradeUrl = std::move(upgradeUrl);
+
+    expiredTrial_.reset();
+    notCovered_ = std::move(info);
+    lockReason_ = LockReason::NotCovered;
+    setLicense(std::nullopt);
+    statusMessage_.clear();
+    screen_ = Screen::NotCovered;
     sendSynchronousChangeMessage();
 }
 

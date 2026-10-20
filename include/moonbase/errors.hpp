@@ -28,6 +28,9 @@ enum class error_type {
     store_closed,
     /// The customer has no license of an add-on with a seat free for this device.
     no_eligible_license,
+    /// The license is valid but doesn't cover this version of the app; see
+    /// release_not_covered_error in release_access.hpp.
+    release_not_covered,
 };
 
 class moonbase_error : public std::runtime_error {
@@ -96,7 +99,8 @@ public:
 
 protected:
     // For subclasses that are a more specific kind of "this license is not
-    // usable here" and want their own error_type.
+    // usable here" and want their own error_type: license_device_mismatch_error
+    // below, and release_not_covered_error in release_access.hpp.
     license_invalid_error(error_type type, const std::string& message)
         : moonbase_error(type, message)
     {

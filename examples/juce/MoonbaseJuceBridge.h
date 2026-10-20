@@ -375,7 +375,12 @@ public:
                         std::move(onComplete));
                 return;
             }
-            local = licensing_->validate_token_local(stored->token);
+            // Whether an online license covers this app version is Moonbase's
+            // call in step 2: it knows of an upgrade bought since the token was
+            // issued. Only an offline license is judged here.
+            local = licensing_->validator().validate_token_ignoring_release_access(stored->token);
+            if (local->method == moonbase::activation_method::offline)
+                licensing_->validator().ensure_covers_application_version(*local);
         }
         catch (const std::exception&)
         {
@@ -393,8 +398,19 @@ public:
 
         // Optimistic unlock from the local check, marshalled to the message
         // thread (no callback yet). The final state may override this once
-        // the online check resolves.
-        deliver({AsyncValidationOutcome::Refreshed, *local}, {});
+        // the online check resolves. Not for a version the license doesn't
+        // cover on this computer: that waits for Moonbase's answer.
+        bool coveredHere = true;
+        try
+        {
+            licensing_->validator().ensure_covers_application_version(*local);
+        }
+        catch (const moonbase::release_not_covered_error&)
+        {
+            coveredHere = false;
+        }
+        if (coveredHere)
+            deliver({AsyncValidationOutcome::Refreshed, *local}, {});
 
         // Step 2: online check on a background thread.
         auto licensingHandle = licensing_;

@@ -20,6 +20,7 @@
 #include "moonbase/detail/url.hpp"
 #include "moonbase/errors.hpp"
 #include "moonbase/http.hpp"
+#include "moonbase/release_access.hpp"
 #include "moonbase/types.hpp"
 
 namespace moonbase {
@@ -32,6 +33,15 @@ struct release_info {
     bool has_downloads = false;
     bool downloads_need_user = false;      // download requires an authenticated customer
     bool downloads_need_ownership = false; // download requires owning / subscribing to the product
+
+    // Whether the customer's licenses cover this release. False only when
+    // Moonbase says they don't, for a license that covers only some versions;
+    // downloading it is then refused with release_not_covered_error.
+    bool release_covered = true;
+    // What the customer's licenses cover, when that isn't every release.
+    std::optional<license_release_access> release_access;
+    // Where to buy the upgrade or renewal, while the store sells one.
+    std::optional<std::string> upgrade_url;
 };
 
 // A resolved, ready-to-fetch installer URL. `url` is a short-lived presigned
@@ -47,9 +57,12 @@ struct download_target {
 // access flags (from release_info). Mirrors the backend's release access control:
 // a full (non-trial) license owns or subscribes to the product, a trial does not;
 // an authenticated customer has a real user id, while an anonymous trial carries
-// the nil GUID.
+// the nil GUID; and an owner gets only a release their licenses cover.
 inline bool can_download(const license& lic, const release_info& info)
 {
+    if (!info.release_covered) {
+        return false;
+    }
     const bool owns = !lic.trial;
     const bool has_user = !lic.issued_to.id.empty()
         && lic.issued_to.id != "00000000-0000-0000-0000-000000000000";
@@ -171,7 +184,9 @@ public:
     //
     // Every failure throws api_error with the HTTP status. These endpoints never
     // refuse the license itself: a token they cannot use just makes the request
-    // anonymous, so a private product then answers 404.
+    // anonymous, so a private product then answers 404. For a customer whose
+    // licenses don't cover every release, the result says whether they cover
+    // this one (release_covered) and where to upgrade.
     [[nodiscard]] release_info get_release(std::string_view version,
                                            std::string_view license_token) const
     {
@@ -208,6 +223,15 @@ public:
                 && !json.at("downloads").empty();
             info.downloads_need_user = json.value("downloadsNeedsUser", false);
             info.downloads_need_ownership = json.value("downloadsNeedsOwnership", false);
+            // Present only when the customer's licenses don't cover every release.
+            if (json.contains("releaseAccess") && json.at("releaseAccess").is_object()) {
+                const auto& access = json.at("releaseAccess");
+                if (access.contains("coversRelease") && access.at("coversRelease").is_boolean()) {
+                    info.release_covered = access.at("coversRelease").get<bool>();
+                }
+                info.release_access = detail::release_access_from(json);
+                info.upgrade_url = detail::problem_string(access, "upgradeUrl");
+            }
             return info;
         } catch (const std::exception& ex) {
             throw api_error(static_cast<int>(response.status_code),
@@ -219,7 +243,9 @@ public:
     // resolves the latest installer for the platform to a presigned URL.
     // `platform_name` is the backend Platform enum name (e.g. "Mac", "Windows").
     // Throws api_error: 404 when no installer exists for the platform or the
-    // product has no release, 403 when this license may not download it.
+    // product has no release, 403 when this license may not download it, and
+    // release_not_covered_error, with the upgrade link, when the customer's
+    // licenses don't cover the release.
     [[nodiscard]] download_target get_download_url(std::string_view platform_name,
                                                    std::string_view license_token) const
     {

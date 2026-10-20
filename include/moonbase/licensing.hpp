@@ -25,6 +25,7 @@
 #include "moonbase/http_curl.hpp"
 #endif
 #include "moonbase/moonbase_device_id_resolver.hpp"
+#include "moonbase/release_access.hpp"
 #include "moonbase/store.hpp"
 #include "moonbase/types.hpp"
 #include "moonbase/validator.hpp"
@@ -90,14 +91,17 @@ public:
         return client_->get_requested_activation(activation);
     }
 
+    // Signature, device binding, expiry and, for a license that covers only some
+    // versions, application_version (release_not_covered_error), with no network.
     [[nodiscard]] license validate_token_local(std::string_view token) const
     {
         return validator_->validate_token(token);
     }
 
-    // Same as validate_token_local but does not throw on a past `exp`. Lets a
-    // caller inspect an aged-out token (e.g. to learn its activation method and
-    // expiry) and decide what to do with it, rather than only seeing the throw.
+    // Same as validate_token_local but does not throw on a past `exp`, nor for a
+    // version the license doesn't cover. Lets a caller inspect an aged-out token
+    // (e.g. to learn its activation method and expiry) and decide what to do
+    // with it, rather than only seeing the throw.
     [[nodiscard]] license validate_token_local_allow_expired(std::string_view token) const
     {
         return validator_->validate_token_allow_expired(token);
@@ -128,18 +132,22 @@ public:
 
     // Reads back the offline-activated license token the customer downloaded
     // from the portal (the raw JWT contents of the license file). Validates it
-    // locally — signature, audience, issuer, device fingerprint, and expiry —
-    // and requires the token to have been issued via offline activation.
+    // locally (signature, audience, issuer, device fingerprint, expiry and
+    // application_version) and requires the token to have been issued via
+    // offline activation.
     // Offline tokens are never re-validated against the API, so there is no
     // online counterpart. Persist the result with
     // store().store_local_license(...), mirroring the online flow.
     [[nodiscard]] license read_offline_license(std::string_view token) const
     {
-        auto local = validator_->validate_token(token);
+        // The version is judged last, so release_not_covered_error only ever
+        // carries an offline license for this device, safe to store.
+        auto local = validator_->validate_token_ignoring_release_access(token);
         if (local.method != activation_method::offline) {
             throw license_invalid_error(
                 "License token is not an offline-activated license");
         }
+        validator_->ensure_covers_application_version(local);
         return local;
     }
 
@@ -153,13 +161,23 @@ public:
     // racing clearLicense() either bumped its flag before the predicate read
     // (we skip), or after (we persist and the clear's own delete-under-lock
     // runs strictly after our release).
+    //
+    // A license that doesn't cover application_version throws
+    // release_not_covered_error. Moonbase judges that for an online license,
+    // since it knows of an upgrade bought since the token was issued, which the
+    // device cannot; the device judges it only when Moonbase isn't asked (an
+    // offline license, the min_interval throttle, the grace period). When
+    // Moonbase refused, the fresh copy it sent along is persisted first (subject
+    // to should_persist), as a refreshed license is: it still covers the
+    // versions it did.
     [[nodiscard]] license validate_token_online(
         std::string_view token,
         std::function<bool()> should_persist = {}) const
     {
-        auto local = validator_->validate_token(token);
+        auto local = validator_->validate_token_ignoring_release_access(token);
 
         if (local.method == activation_method::offline) {
+            validator_->ensure_covers_application_version(local);
             return local;
         }
 
@@ -183,7 +201,7 @@ public:
         try {
             if (auto stored = store_->load_local_license();
                 stored && stored->activation_id == local.activation_id) {
-                auto candidate = validator_->validate_token(stored->token);
+                auto candidate = validator_->validate_token_ignoring_release_access(stored->token);
                 if (candidate.validated_at > freshest.validated_at) {
                     freshest = std::move(candidate);
                 } else if (candidate.validated_at == freshest.validated_at && candidate.token != freshest.token) {
@@ -203,6 +221,7 @@ public:
         // check" past its advertised limit.
         if (!undecided && age < options_.online_validation_min_interval
             && age <= options_.online_validation_grace_period) {
+            validator_->ensure_covers_application_version(freshest);
             return freshest;
         }
 
@@ -219,6 +238,14 @@ public:
                 }
             }
             return refreshed;
+        } catch (const release_not_covered_error& ex) {
+            if (ex.license() && (!should_persist || should_persist())) {
+                try {
+                    store_->store_local_license(*ex.license());
+                } catch (const storage_error&) {
+                }
+            }
+            throw;
         } catch (const license_invalid_error&) {
             throw;
         } catch (const license_expired_error&) {
@@ -226,6 +253,7 @@ public:
         } catch (const std::exception&) {
             // store_closed_error included: it is not signed, so it relaxes nothing.
             if (age <= options_.online_validation_grace_period) {
+                validator_->ensure_covers_application_version(freshest);
                 return freshest;
             }
             throw;
@@ -294,7 +322,9 @@ public:
     // from the local trial check, and api_error for an answer that isn't the list.
     [[nodiscard]] sub_product_catalog list_sub_products(std::string_view token) const
     {
-        static_cast<void>(validator_->validate_token(token));
+        // Not against the app's version: add-ons are managed on the license
+        // whatever version runs, as revoking is.
+        static_cast<void>(validator_->validate_token_ignoring_release_access(token));
         return client_->list_sub_products(token);
     }
 
@@ -376,7 +406,7 @@ private:
     // so this saves the round trip and says so plainly.
     void require_license_for_sub_products(std::string_view token) const
     {
-        if (validator_->validate_token(token).trial) {
+        if (validator_->validate_token_ignoring_release_access(token).trial) {
             throw operation_not_supported_error(
                 "Add-ons are activated and tried from a license, not from a trial");
         }

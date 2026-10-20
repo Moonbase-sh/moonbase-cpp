@@ -1,10 +1,16 @@
 #!/usr/bin/env bash
 #
-# Refresh the vendored device-fingerprint conformance artifacts from the canonical
-# copies published with @moonbase.sh/licensing:
+# Refresh the vendored conformance artifacts from the canonical copies published
+# with @moonbase.sh/licensing:
 #
 #   FINGERPRINT_SPEC.md            <- packages/licensing/FINGERPRINT_SPEC.md
 #   tests/vectors/fingerprint-vectors.json  <- packages/licensing/fingerprint-vectors.json
+#   tests/vectors/release-access-vectors.json <- packages/licensing/release-access-vectors.json
+#
+# The release access vectors pin down which app versions a license that covers
+# only some of them covers (tests/release_access_tests.cpp). They are copied
+# verbatim and looked up beside the fingerprint vectors; a source that predates
+# them (an older npm package, say) skips them with a note rather than failing.
 #
 # The vectors are the executable half of the spec: when the prose and the vectors
 # disagree, the vectors win, because they are what every SDK can actually run.
@@ -38,6 +44,7 @@ set -euo pipefail
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 vectors_dst="${repo_root}/tests/vectors/fingerprint-vectors.json"
+release_dst="${repo_root}/tests/vectors/release-access-vectors.json"
 spec_dst="${repo_root}/FINGERPRINT_SPEC.md"
 js_root="${MOONBASE_JS_ROOT:-${repo_root}/../moonbase.js}"
 vectors_src="${js_root}/packages/licensing/fingerprint-vectors.json"
@@ -71,6 +78,7 @@ while [[ $# -gt 0 ]]; do
 done
 
 spec_src="$(dirname "${vectors_src}")/FINGERPRINT_SPEC.md"
+release_src="$(dirname "${vectors_src}")/release-access-vectors.json"
 
 if [[ ! -f "${vectors_src}" ]]; then
     if [[ "${check_only}" -eq 1 ]]; then
@@ -115,9 +123,19 @@ HDR
 
 vectors_in_sync=0
 spec_in_sync=0
+release_in_sync=0
 
 if [[ -f "${vectors_dst}" ]] && diff -q "${vectors_src}" "${vectors_dst}" >/dev/null 2>&1; then
     vectors_in_sync=1
+fi
+
+if [[ -f "${release_src}" ]]; then
+    if [[ -f "${release_dst}" ]] && diff -q "${release_src}" "${release_dst}" >/dev/null 2>&1; then
+        release_in_sync=1
+    fi
+else
+    echo "note: no release-access-vectors.json beside ${vectors_src}; skipping the release access vectors."
+    release_in_sync=1
 fi
 
 if [[ "${vectors_only}" -eq 1 ]]; then
@@ -143,19 +161,28 @@ if [[ "${check_only}" -eq 1 ]]; then
         echo "error: ${spec_dst} differs from the rendered ${spec_src}." >&2
         status=1
     fi
+    if [[ "${release_in_sync}" -eq 0 ]]; then
+        echo "error: ${release_dst} differs from ${release_src}." >&2
+        status=1
+    fi
     if [[ "${status}" -ne 0 ]]; then
         echo "       run scripts/sync-fingerprint-vectors.sh and commit the result," >&2
         echo "       then re-run the conformance tests: a changed vector file may mean" >&2
         echo "       the spec moved and this SDK has to move with it." >&2
         exit 1
     fi
-    echo "fingerprint spec and vectors are in sync."
+    echo "fingerprint spec and conformance vectors are in sync."
     exit 0
 fi
 
 mkdir -p "$(dirname "${vectors_dst}")"
 cp "${vectors_src}" "${vectors_dst}"
 echo "synced ${vectors_src} -> ${vectors_dst}"
+
+if [[ -f "${release_src}" ]]; then
+    cp "${release_src}" "${release_dst}"
+    echo "synced ${release_src} -> ${release_dst}"
+fi
 
 if [[ "${vectors_only}" -eq 0 && -f "${spec_src}" ]]; then
     render_spec "${spec_src}" > "${spec_dst}"

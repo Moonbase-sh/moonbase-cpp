@@ -1,0 +1,150 @@
+{
+  "$comment": "Conformance suite for which app versions a license's release access covers, read from the license token's l:rel:until (seconds since epoch), l:rel:major and l:rel:upto claims. The Moonbase backend and every SDK must agree on every case. A token with none of the claims covers every version. A version that can't be read is not checked, so it counts as covered. Reading a version: an optional leading v, two to four numbers (missing ones are 0, a fourth is ignored), and any -pre-release or +build suffix dropped.",
+  "version": 1,
+  "cases": [
+    {
+      "description": "no release access claims cover every version",
+      "updatesUntil": null,
+      "upToMajor": null,
+      "upToVersion": null,
+      "now": "2027-01-01T00:00:00Z",
+      "version": "99.0.0",
+      "covered": true
+    },
+    {
+      "description": "a version within the covered major",
+      "updatesUntil": null,
+      "upToMajor": 2,
+      "upToVersion": null,
+      "now": "2027-01-01T00:00:00Z",
+      "version": "2.9.9",
+      "covered": true
+    },
+    {
+      "description": "an older major",
+      "updatesUntil": null,
+      "upToMajor": 2,
+      "upToVersion": null,
+      "now": "2027-01-01T00:00:00Z",
+      "version": "1.0.0",
+      "covered": true
+    },
+    {
+      "description": "the next major is an upgrade",
+      "updatesUntil": null,
+      "upToMajor": 2,
+      "upToVersion": null,
+      "now": "2027-01-01T00:00:00Z",
+      "version": "3.0.0",
+      "covered": false
+    },
+    {
+      "description": "a pre-release of the next major is judged as that major",
+      "updatesUntil": null,
+      "upToMajor": 2,
+      "upToVersion": null,
+      "now": "2027-01-01T00:00:00Z",
+      "version": "v3.0.0-beta.2",
+      "covered": false
+    },
+    {
+      "description": "a four-part assembly version is judged by its first three",
+      "updatesUntil": null,
+      "upToMajor": 2,
+      "upToVersion": null,
+      "now": "2027-01-01T00:00:00Z",
+      "version": "2.4.1.0",
+      "covered": true
+    },
+    {
+      "description": "a two-part version",
+      "updatesUntil": null,
+      "upToMajor": 2,
+      "upToVersion": null,
+      "now": "2027-01-01T00:00:00Z",
+      "version": "3.1",
+      "covered": false
+    },
+    {
+      "description": "a version that can't be read is not checked",
+      "updatesUntil": null,
+      "upToMajor": 2,
+      "upToVersion": null,
+      "now": "2027-01-01T00:00:00Z",
+      "version": "nightly",
+      "covered": true
+    },
+    {
+      "description": "while updates last, every version is covered",
+      "updatesUntil": "2027-06-01T00:00:00Z",
+      "upToMajor": null,
+      "upToVersion": null,
+      "now": "2027-01-01T00:00:00Z",
+      "version": "9.0.0",
+      "covered": true
+    },
+    {
+      "description": "after updates ended, the last version published before is covered",
+      "updatesUntil": "2026-06-01T00:00:00Z",
+      "upToMajor": null,
+      "upToVersion": "2.3.0",
+      "now": "2027-01-01T00:00:00Z",
+      "version": "2.3.0",
+      "covered": true
+    },
+    {
+      "description": "after updates ended, an older version is covered",
+      "updatesUntil": "2026-06-01T00:00:00Z",
+      "upToMajor": null,
+      "upToVersion": "2.3.0",
+      "now": "2027-01-01T00:00:00Z",
+      "version": "2.2.9",
+      "covered": true
+    },
+    {
+      "description": "after updates ended, a newer version is not",
+      "updatesUntil": "2026-06-01T00:00:00Z",
+      "upToMajor": null,
+      "upToVersion": "2.3.0",
+      "now": "2027-01-01T00:00:00Z",
+      "version": "2.3.1",
+      "covered": false
+    },
+    {
+      "description": "after updates ended with nothing published before, every version is covered",
+      "updatesUntil": "2026-06-01T00:00:00Z",
+      "upToMajor": null,
+      "upToVersion": null,
+      "now": "2027-01-01T00:00:00Z",
+      "version": "5.0.0",
+      "covered": true
+    },
+    {
+      "description": "the instant updates end still counts as within them",
+      "updatesUntil": "2027-01-01T00:00:00Z",
+      "upToMajor": null,
+      "upToVersion": "1.0.0",
+      "now": "2027-01-01T00:00:00Z",
+      "version": "4.0.0",
+      "covered": true
+    },
+    {
+      "description": "both limits cover what either covers: the major",
+      "updatesUntil": "2026-06-01T00:00:00Z",
+      "upToMajor": 3,
+      "upToVersion": "2.3.0",
+      "now": "2027-01-01T00:00:00Z",
+      "version": "3.4.0",
+      "covered": true
+    },
+    {
+      "description": "both limits cover what either covers: neither",
+      "updatesUntil": "2026-06-01T00:00:00Z",
+      "upToMajor": 3,
+      "upToVersion": "2.3.0",
+      "now": "2027-01-01T00:00:00Z",
+      "version": "4.0.0",
+      "covered": false
+    }
+  ]
+}
