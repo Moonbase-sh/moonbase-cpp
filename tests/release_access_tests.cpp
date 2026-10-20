@@ -313,10 +313,10 @@ TEST_CASE("an end of updates past what the clock holds is held to its limit, not
     // Moonbase covers while updates last.
     auto claims = up_to_major_two();
     claims["l:rel:until"] = 10413792000LL; // 2300-01-01, past where some clocks end
-    const auto far = parse(claims);
-    REQUIRE(far.release_access.has_value());
-    REQUIRE(far.release_access->updates_until.has_value());
-    CHECK(covers_version(far, "3.0.0"));
+    const auto distant = parse(claims);
+    REQUIRE(distant.release_access.has_value());
+    REQUIRE(distant.release_access->updates_until.has_value());
+    CHECK(covers_version(distant, "3.0.0"));
 
     claims["l:rel:until"] = 9223372036854775807LL;
     CHECK(covers_version(parse(claims), "3.0.0"));
@@ -330,7 +330,7 @@ TEST_CASE("an end of updates past what the clock holds is held to its limit, not
     CHECK(covers_version(ancient, "2.0.0"));
 
     // Still a date the store can write and read back.
-    const auto restored = nlohmann::json(far).get<license>();
+    const auto restored = nlohmann::json(distant).get<license>();
     REQUIRE(restored.release_access.has_value());
     CHECK(restored.release_access->updates_until.has_value());
 }
