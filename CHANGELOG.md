@@ -1,3 +1,10 @@
+# [4.13.0](https://github.com/Moonbase-sh/moonbase-cpp/compare/v4.12.0...v4.13.0) (2026-10-20)
+
+
+### Features
+
+* support licenses that cover only some versions ([#46](https://github.com/Moonbase-sh/moonbase-cpp/issues/46)) ([b916da3](https://github.com/Moonbase-sh/moonbase-cpp/commit/b916da33530d09ff56b16a87ffe5e55b9898eb3b))
+
 # [4.12.0](https://github.com/Moonbase-sh/moonbase-cpp/compare/v4.11.0...v4.12.0) (2026-10-20)
 
 
