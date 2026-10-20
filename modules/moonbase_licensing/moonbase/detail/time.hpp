@@ -141,6 +141,42 @@ inline std::chrono::system_clock::time_point parse_iso8601_utc(const std::string
     return std::chrono::system_clock::from_time_t(epoch);
 }
 
+// A time in one of the API's JSON answers, where .NET writes it with a Z, with an
+// offset, or with neither for a time it holds without a kind. The API keeps every
+// time in UTC, so one without a zone is read as UTC. License tokens never take
+// this path: their times are epoch seconds.
+inline std::chrono::system_clock::time_point parse_api_timestamp(const std::string& value)
+{
+    // Date, time and any fraction run up to the zone designator.
+    auto end = std::size_t{19};
+    if (value.size() < end) {
+        throw std::runtime_error("Invalid ISO-8601 timestamp");
+    }
+    if (end < value.size() && value[end] == '.') {
+        ++end;
+        while (end < value.size() && std::isdigit(static_cast<unsigned char>(value[end]))) {
+            ++end;
+        }
+    }
+
+    const auto local = value.substr(0, end);
+    const auto zone = value.substr(end);
+    if (zone.empty() || zone == "Z") {
+        return parse_iso8601_utc(local + "Z");
+    }
+    if (zone.size() == 6 && (zone[0] == '+' || zone[0] == '-') && zone[3] == ':') {
+        const auto hours = parse_fixed_digits(zone, 1, 2);
+        const auto minutes = parse_fixed_digits(zone, 4, 2);
+        if (hours > 23 || minutes > 59) {
+            throw std::runtime_error("Invalid ISO-8601 timestamp");
+        }
+        const auto offset = std::chrono::hours{hours} + std::chrono::minutes{minutes};
+        const auto utc = parse_iso8601_utc(local + "Z");
+        return zone[0] == '+' ? utc - offset : utc + offset;
+    }
+    throw std::runtime_error("Invalid ISO-8601 timestamp");
+}
+
 inline std::string format_iso8601_utc(std::chrono::system_clock::time_point time)
 {
     const auto epoch = std::chrono::system_clock::to_time_t(time);

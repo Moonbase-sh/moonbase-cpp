@@ -180,6 +180,7 @@ if(NOT MOONBASE_JUCE_MODULE_ONLY)
             tests/licensing_tests.cpp
             tests/process_dedup_tests.cpp
             tests/store_tests.cpp
+            tests/sub_product_tests.cpp
             tests/validator_tests.cpp
             tests/version_tests.cpp
             tests/live_tests.cpp)

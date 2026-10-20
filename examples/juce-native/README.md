@@ -12,8 +12,9 @@ brings it back. That is the
 shape most plugins want, so the file doubles as reference wiring.
 
 It also exercises the config surface beyond the three required fields: product and
-manufacturer names, an accent colour, `applicationVersion` for the update screen, the
-analytics opt-in, a custom `metadata` field, and an `onDiagnostic` sink.
+manufacturer names, an accent colour, `applicationVersion` for the update screen,
+`showAddOns` for the add-ons screen, the analytics opt-in, a custom `metadata` field, and
+an `onDiagnostic` sink.
 
 The screenshots in the [module README](../../modules/moonbase_licensing/README.md) are
 renders of this app.

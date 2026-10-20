@@ -337,6 +337,105 @@ moonbase::license makeUpdateTrialLicense()
     return lic;
 }
 
+// A full license holding two add-ons here, for the license view's "Add-ons" row.
+moonbase::license makeAddOnLicense()
+{
+    auto lic = makeLicense(false);
+    lic.sub_products = {
+        { "pack", true, false, false, std::nullopt, moonbase::sub_product_seats{ 3, 2, 1 } },
+        { "keys", true, true, false, kPreviewNow + std::chrono::hours(24 * 5), std::nullopt },
+    };
+    return lic;
+}
+
+moonbase::sub_product_catalog_entry makeAddOn(const char* id, const char* name, const char* tagline)
+{
+    moonbase::sub_product_catalog_entry entry;
+    entry.id = id;
+    entry.product.id = std::string("demo-app.") + id;
+    entry.product.name = name;
+    entry.product.tagline = tagline;
+    entry.included_in_license = true;
+    return entry;
+}
+
+moonbase::sub_product_pricing makePrice(double amount, const char* cycle = nullptr)
+{
+    moonbase::sub_product_pricing pricing;
+    pricing.id = cycle != nullptr ? "monthly" : "one-off";
+    pricing.name = "Standard";
+    pricing.price = { { "EUR", amount } };
+    pricing.original_price = pricing.price;
+    if (cycle != nullptr)
+        pricing.recurrence = moonbase::sub_product_recurrence{ "Recurring", cycle };
+    else
+        pricing.recurrence = moonbase::sub_product_recurrence{ "OneOff", "" };
+    return pricing;
+}
+
+// Every state an add-on row has: owned and active, a running trial, one to try,
+// one deactivated here, one with every seat in use, a subscription for sale and
+// an ended trial. Seven rows, so the list scrolls.
+ActivationController::AddOnsInfo makeAddOns()
+{
+    using Status = moonbase::sub_product_trial_status;
+    ActivationController::AddOnsInfo info;
+    info.phase = ActivationController::AddOnsInfo::Phase::Ready;
+    info.currency = "EUR";
+
+    auto pack = makeAddOn("pack", "Laniakea Pack", "48 presets from the Laniakea sessions");
+    pack.product.owned = true;
+    pack.active = true;
+    pack.seats = moonbase::sub_product_seats{ 3, 2, 1 };
+
+    auto keys = makeAddOn("keys", "Keys", "Felt, electric and toy pianos");
+    keys.active = true;
+    keys.expires_at = kPreviewNow + std::chrono::hours(24 * 5);
+    keys.trial = moonbase::sub_product_trial_offer{ Status::active, 14, keys.expires_at, false };
+    keys.product.default_variation = makePrice(29);
+    keys.buy_url = "https://demo.moonbase.sh/buy/demo-app.keys";
+
+    auto strings = makeAddOn("strings", "Strings", "Bowed and plucked");
+    strings.trial = moonbase::sub_product_trial_offer{ Status::available, 7, std::nullopt, false };
+    strings.product.default_variation = makePrice(39);
+    strings.buy_url = "https://demo.moonbase.sh/buy/demo-app.strings";
+
+    auto brass = makeAddOn("brass", "Brass", "Section and solo brass");
+    brass.product.owned = true;
+    brass.revoked = true;
+    brass.seats = moonbase::sub_product_seats{ 2, 1, 1 };
+
+    auto mallets = makeAddOn("mallets", "Mallets", "Marimba, vibes and glockenspiel");
+    mallets.product.owned = true;
+    mallets.seats = moonbase::sub_product_seats{ 1, 1, 0 };
+
+    auto choir = makeAddOn("choir", "Choir", "Twelve voices, four syllables");
+    choir.product.default_variation = makePrice(4.99, "Monthly");
+    choir.buy_url = "https://demo.moonbase.sh/buy/demo-app.choir";
+
+    auto organ = makeAddOn("organ", "Organ", "Pipe and drawbar");
+    organ.trial = moonbase::sub_product_trial_offer{ Status::expired, 7, kPreviewNow - std::chrono::hours(48), false };
+    organ.product.default_variation = makePrice(19);
+    organ.buy_url = "https://demo.moonbase.sh/buy/demo-app.organ";
+
+    info.addOns = { pack, keys, strings, brass, mallets, choir, organ };
+    return info;
+}
+
+// Three add-ons that fit without scrolling, the way the docs show the screen:
+// one active, one in its trial, one to try or buy.
+ActivationController::AddOnsInfo makeShortAddOns()
+{
+    auto info = makeAddOns();
+    auto drumKit = makeAddOn("drum-kit", "Drum Kit", "Twelve kits, recorded dry and in the room");
+    drumKit.trial = moonbase::sub_product_trial_offer{ moonbase::sub_product_trial_status::available, 7,
+                                                       std::nullopt, false };
+    drumKit.product.default_variation = makePrice(39);
+    drumKit.buy_url = "https://demo.moonbase.sh/buy/demo-app.drum-kit";
+    info.addOns = { info.addOns[0], info.addOns[1], drumKit };
+    return info;
+}
+
 int gSnapW = ActivationComponent::defaultWidth;
 int gSnapH = ActivationComponent::defaultHeight;
 
@@ -612,6 +711,164 @@ int main(int argc, char* argv[])
                       { c.setPreviewUpdate(UpdatePhase::Ready, makeUpdateTrialLicense(), notes, 0.0,
                                            {}, /*canDownload*/ false); },
                       cfg);
+    }
+
+    //== Add-ons ==============================================================
+    {
+        auto cfg = demoConfig();
+        cfg.showAddOns = true;
+
+        // The license view's "Add-ons" row, under the card's other rows.
+        writeSnapshot(outDir, "23-details-add-ons",
+                      [](ActivationController& c) { c.setPreviewState(Screen::Details, makeAddOnLicense()); },
+                      cfg);
+
+        writeSnapshot(outDir, "23b-details-add-ons-error",
+                      [](ActivationController& c)
+                      { c.setPreviewState(Screen::Details, makeAddOnLicense(),
+                                          "Couldn't reach Moonbase to deactivate. Try again when online."); },
+                      cfg);
+
+        writeSnapshot(outDir, "24-add-ons",
+                      [](ActivationController& c) { c.setPreviewAddOns(makeAddOnLicense(), makeAddOns()); },
+                      cfg);
+
+        writeSnapshot(outDir, "24-add-ons-short",
+                      [](ActivationController& c) { c.setPreviewAddOns(makeAddOnLicense(), makeShortAddOns()); },
+                      cfg);
+
+        // Keys' trial ran out after the list loaded, which still calls it active:
+        // the row goes by the license, which says it has ended.
+        writeSnapshot(outDir, "24-add-ons-trial-ran-out",
+                      [](ActivationController& c)
+                      {
+                          auto license = makeAddOnLicense();
+                          license.sub_products[1].expires_at = kPreviewNow - std::chrono::hours(1);
+                          auto info = makeShortAddOns();
+                          info.addOns[1].expires_at = license.sub_products[1].expires_at;
+                          info.addOns[1].trial->expires_at = license.sub_products[1].expires_at;
+                          c.setPreviewAddOns(std::move(license), std::move(info));
+                      },
+                      cfg);
+
+        // Rows that are easy to get wrong: an add-on bought during its trial (the
+        // trial still unlocks it; a seat is the customer's to take), one whose only
+        // seat is in use elsewhere, a trial behind a newsletter sign-up the customer
+        // hasn't given, and a name too long for its row.
+        writeSnapshot(outDir, "24-add-ons-edges",
+                      [](ActivationController& c)
+                      {
+                          using Status = moonbase::sub_product_trial_status;
+                          const auto trialEnds = kPreviewNow + std::chrono::hours(24 * 3);
+                          auto license = makeAddOnLicense();
+                          license.sub_products.push_back({ "tape-echo", true, true, false, trialEnds, std::nullopt });
+
+                          ActivationController::AddOnsInfo info;
+                          info.phase = ActivationController::AddOnsInfo::Phase::Ready;
+                          info.currency = "EUR";
+
+                          auto echo = makeAddOn("tape-echo", "Tape Echo", "Wow, flutter and a worn head");
+                          echo.product.owned = true;
+                          echo.active = true;
+                          echo.expires_at = trialEnds;
+                          echo.trial = moonbase::sub_product_trial_offer{ Status::active, 7, trialEnds, false };
+                          echo.product.default_variation = makePrice(25);
+                          echo.buy_url = "https://demo.moonbase.sh/buy/demo-app.tape-echo";
+
+                          auto mallets = makeAddOn("mallets", "Mallets", "Marimba, vibes and glockenspiel");
+                          mallets.product.owned = true;
+                          mallets.seats = moonbase::sub_product_seats{ 1, 1, 0 };
+
+                          auto choir = makeAddOn("choir", "Choir", "Twelve voices, four syllables");
+                          choir.trial = moonbase::sub_product_trial_offer{ Status::unavailable, 7, std::nullopt, true };
+                          choir.product.default_variation = makePrice(4.99, "Monthly");
+                          choir.buy_url = "https://demo.moonbase.sh/buy/demo-app.choir";
+
+                          auto expansion = makeAddOn("expansion", "Orchestral Percussion Expansion, Volume Two, With Every Extra",
+                                                     "Timpani, bass drum, gongs and more");
+                          expansion.trial = moonbase::sub_product_trial_offer{ Status::available, 14, std::nullopt, false };
+                          expansion.product.default_variation = makePrice(149);
+                          expansion.buy_url = "https://demo.moonbase.sh/buy/demo-app.expansion";
+
+                          info.addOns = { echo, mallets, choir, expansion };
+                          c.setPreviewAddOns(std::move(license), std::move(info));
+                      },
+                      cfg);
+
+        // Drum Kit's trial was started, and has run out, since a list that still
+        // offers it was loaded (reloading it failed): the license says the trial
+        // is used up, so it isn't offered again.
+        writeSnapshot(outDir, "24-add-ons-trial-used-up",
+                      [](ActivationController& c)
+                      {
+                          auto license = makeAddOnLicense();
+                          license.sub_products.push_back(
+                              { "drum-kit", true, true, false, kPreviewNow - std::chrono::hours(2), std::nullopt });
+                          auto info = makeShortAddOns(); // still offers Drum Kit's trial
+                          info.error = "Couldn't reach Moonbase. Check your internet connection and try again.";
+                          c.setPreviewAddOns(std::move(license), std::move(info));
+                      },
+                      cfg);
+
+        writeSnapshot(outDir, "24b-add-ons-busy",
+                      [](ActivationController& c)
+                      {
+                          auto info = makeAddOns();
+                          info.busyId = "strings";
+                          c.setPreviewAddOns(makeAddOnLicense(), std::move(info));
+                      },
+                      cfg);
+
+        writeSnapshot(outDir, "24c-add-ons-no-seat",
+                      [](ActivationController& c)
+                      {
+                          auto info = makeAddOns();
+                          info.actionError = "No seat of Brass is free for this computer. "
+                                             "Free one in your Helio Audio account, or buy one.";
+                          c.setPreviewAddOns(makeAddOnLicense(), std::move(info));
+                      },
+                      cfg);
+
+        writeSnapshot(outDir, "24d-add-ons-loading",
+                      [](ActivationController& c)
+                      {
+                          ActivationController::AddOnsInfo info;
+                          info.phase = ActivationController::AddOnsInfo::Phase::Loading;
+                          c.setPreviewAddOns(makeAddOnLicense(), std::move(info));
+                      },
+                      cfg);
+
+        writeSnapshot(outDir, "24e-add-ons-failed",
+                      [](ActivationController& c)
+                      {
+                          ActivationController::AddOnsInfo info;
+                          info.phase = ActivationController::AddOnsInfo::Phase::Ready;
+                          info.error = "Couldn't reach Moonbase. Check your internet connection and try again.";
+                          c.setPreviewAddOns(makeAddOnLicense(), std::move(info));
+                      },
+                      cfg);
+
+        writeSnapshot(outDir, "24f-add-ons-empty",
+                      [](ActivationController& c)
+                      {
+                          ActivationController::AddOnsInfo info;
+                          info.phase = ActivationController::AddOnsInfo::Phase::Ready;
+                          info.currency = "EUR";
+                          c.setPreviewAddOns(makeAddOnLicense(), std::move(info));
+                      },
+                      cfg);
+
+        auto daylightAddOns = daylightTheme();
+        daylightAddOns.showAddOns = true;
+        writeSnapshot(outDir, "24g-theme-daylight-add-ons",
+                      [](ActivationController& c) { c.setPreviewAddOns(makeAddOnLicense(), makeAddOns()); },
+                      daylightAddOns);
+
+        auto emberAddOns = emberTheme();
+        emberAddOns.showAddOns = true;
+        writeSnapshot(outDir, "24h-theme-ember-add-ons",
+                      [](ActivationController& c) { c.setPreviewAddOns(makeAddOnLicense(), makeAddOns()); },
+                      emberAddOns);
     }
 
     //== Themed renders =======================================================

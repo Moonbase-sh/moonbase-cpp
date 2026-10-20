@@ -26,6 +26,8 @@ enum class error_type {
     activation_request_ended,
     /// The store the product is sold through has closed its Moonbase account.
     store_closed,
+    /// The customer has no license of an add-on with a seat free for this device.
+    no_eligible_license,
 };
 
 class moonbase_error : public std::runtime_error {
@@ -125,6 +127,20 @@ class store_closed_error : public moonbase_error {
 public:
     explicit store_closed_error(const std::string& message)
         : moonbase_error(error_type::store_closed, message)
+    {
+    }
+};
+
+// Taking a seat of an add-on failed because the customer has none to give: they
+// don't own the add-on, or every seat of it is taken on other devices. Offer to
+// buy it, or to free a seat in their account.
+//
+// Not a license_invalid_error: it is about the add-on, and the license the
+// request carried is as good as it was.
+class no_eligible_license_error : public moonbase_error {
+public:
+    explicit no_eligible_license_error(const std::string& message)
+        : moonbase_error(error_type::no_eligible_license, message)
     {
     }
 };

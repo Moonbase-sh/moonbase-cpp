@@ -115,6 +115,13 @@ struct ActivationConfig
     std::chrono::milliseconds httpConnectTimeout{std::chrono::seconds(10)};
     std::chrono::milliseconds httpRequestTimeout{std::chrono::seconds(30)};
 
+    // Whether activating and validating also takes a seat of each add-on (a
+    // sub-product the merchant includes in this product's license) that the
+    // customer owns, so the license reports it. On by default. Turn it off to
+    // take seats yourself with controller().activateSubProduct(); the add-ons
+    // screen (showAddOns) then offers "Activate" for each one owned.
+    bool autoActivateSubProducts = true;
+
     // Where the validated license is persisted. Defaults to a per-user app-data
     // file under "<manufacturer>/<product>/license.mb" when left empty
     // (see resolvedLicenseFile()).
@@ -154,6 +161,13 @@ struct ActivationConfig
     // while it is open (expired, revoked, or deactivated here or in another
     // instance). Set false to decide yourself, from onActivationChanged.
     bool autoPresentOnLock = true;
+
+    // Add an "Add-ons" row to the license view, opening a screen that lists the
+    // product's add-ons with what the customer can do with each: try it, buy it,
+    // or activate it on this computer. Off by default; turn it on when the
+    // product has add-ons. The add-ons a license includes unlock either way:
+    // read them with controller().hasSubProduct().
+    bool showAddOns = false;
 
     // When a validated license reports a newer released version than
     // applicationVersion (the p:rel claim), show the "Update available" screen and
@@ -512,6 +526,7 @@ struct ActivationConfig
         // integration appended (see resolvedClientInfo()).
         options.client_info = resolvedClientInfo().toStdString();
 
+        options.auto_activate_sub_products = autoActivateSubProducts;
         options.online_validation_grace_period = onlineGracePeriod;
         options.online_validation_min_interval = onlineCheckInterval;
         options.http_connect_timeout = httpConnectTimeout;

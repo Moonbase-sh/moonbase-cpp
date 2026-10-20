@@ -93,6 +93,7 @@ extern const char* const check;
 extern const char* const cross;
 extern const char* const downloadTray; // arrow into a tray (update / download)
 extern const char* const copy;         // two stacked squares (copy to clipboard)
+extern const char* const chevronRight; // ">" (a row that opens another screen)
 
 } // namespace icons
 

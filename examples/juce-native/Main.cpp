@@ -36,6 +36,26 @@ ERUn++6CVMPvZo67jVbTY+GCXYfW4gGVZQIDAQAB
     config.accent = juce::Colour(0xff186cdc);
     config.overlayBackdrop = true;  // render as a modal over the plugin editor
     config.applicationVersion = JUCE_APPLICATION_VERSION_STRING;
+    config.showAddOns = true;       // an "Add-ons" row on the license view, opening the add-ons screen
+
+    // Point the sample at your own store without editing it: MOONBASE_ENDPOINT,
+    // MOONBASE_PRODUCT_ID, MOONBASE_PUBLIC_KEY and MOONBASE_PRODUCT_NAME replace
+    // the demo values. Another product keeps its license apart from the demo's.
+    const auto fromEnvironment = [](const char* name, juce::String& value)
+    {
+        const auto set = juce::SystemStats::getEnvironmentVariable(name, {}).trim();
+        if (set.isNotEmpty())
+            value = set;
+    };
+    fromEnvironment("MOONBASE_ENDPOINT", config.endpoint);
+    fromEnvironment("MOONBASE_PRODUCT_ID", config.productId);
+    fromEnvironment("MOONBASE_PUBLIC_KEY", config.publicKey);
+    fromEnvironment("MOONBASE_PRODUCT_NAME", config.productName);
+    if (config.productId != "demo-app")
+        config.licenseFile = juce::File::getSpecialLocation(juce::File::userApplicationDataDirectory)
+                                 .getChildFile("Moonbase Activation Sample")
+                                 .getChildFile(juce::File::createLegalFileName(config.productId))
+                                 .getChildFile("license.mb");
 
     // Telemetry: attach JUCE system/host metadata to activation requests.
     config.analytics.enabled = true;

@@ -125,6 +125,9 @@ your project and use `MoonbaseUnlockStatus` wherever you use
 - **Trials, seats and entitlements.** Trial state, seat counts, expiry, sub-product
   ownership and custom properties all arrive on the validated license, so you can gate
   on more than a boolean.
+- **Add-ons.** Add-ons included in the main license travel in it, with whether each may
+  be unlocked on this device. Start an add-on's trial, take a seat of one, or list them
+  with prices for an in-app store; the module has a screen for it.
 - **In-app updates.** The module surfaces a newer entitled release, shows its notes, and
   downloads the installer for the user's platform with progress.
 
@@ -150,8 +153,8 @@ fallback. It vendors the bridge header verbatim from this repo:
 
 | | |
 | --- | --- |
-| [Core SDK](docs/core-sdk.md) | Install, CMake options, activation, validation, revocation, offline licenses, custom storage |
-| [JUCE module](docs/juce-module.md) | Setup, the flow, gating, theming, updates, diagnostics, telemetry |
+| [Core SDK](docs/core-sdk.md) | Install, CMake options, activation, validation, revocation, add-ons, offline licenses, custom storage |
+| [JUCE module](docs/juce-module.md) | Setup, the flow, gating, add-ons, theming, updates, diagnostics, telemetry |
 | [`OnlineUnlockStatus` bridge](docs/juce.md) | Wiring, async activation, deactivation, gating, metadata |
 | [Device identity](docs/device-identity.md) | What the device id is made of, failure modes, diagnostics |
 | [Fingerprint spec](FINGERPRINT_SPEC.md) | The normative cross-SDK algorithm and stability contract |

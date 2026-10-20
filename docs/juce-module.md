@@ -149,7 +149,9 @@ The screens:
   progress bar; `trialIsEndless()` tells you which one is loaded.
 - **License details** — issued-to / email / plan / activation / expiry, a seat counter,
   and a Deactivate action (server-side `revoke_activation`, with a local-forget fallback
-  for offline or trial licenses).
+  for offline or trial licenses). With `config.showAddOns`, an "Add-ons" row too.
+- **Add-ons** (opt-in): the product's add-ons, each with where it stands on this
+  computer and a Try free, Buy or Activate action. See [Add-ons](#add-ons).
 - **Trial expired** — a locked "trial has ended" screen with Unlock / Activate offline.
 - **Update available.** Shown when a validated license reports a released version
   (the `current_release_version` / `p:rel` claim) newer than the app version. Loads the
@@ -208,9 +210,10 @@ void processBlock (juce::AudioBuffer<float>& b, ...) override
 }
 ```
 
-`controller().license()` is the full `moonbase::license` — `trial`, `expires_at`,
-`issued_to.email`, `owned_sub_product_ids`, custom `properties`, etc. — for richer
-gating decisions (read it on the message thread).
+`controller().license()` is the full `moonbase::license` (`trial`, `expires_at`,
+`issued_to.email`, `owned_sub_product_ids`, `sub_products`, custom `properties` and so
+on) for richer gating decisions; read it on the message thread. For add-ons, see
+[Add-ons](#add-ons).
 
 To react to the license itself (reload features, update your own status), assign
 `onLicenseChanged` before `start()`. It runs on the message thread once `start()` has
@@ -541,6 +544,114 @@ whenever you call `refreshLicense()`, throttled to no more than once per
 since its last successful online validation; the controller's local check (see
 [Expiry and other instances](#expiry-and-other-instances)) enforces that mid-session too,
 with one last online attempt before it locks.
+
+## Add-ons
+
+An add-on (a sub-product, with a product ID like `my-app.drum-kit`) that the merchant
+includes in the product's license travels in it. When a device activates or validates
+the product, it takes a seat of each add-on the customer owns, and the license says
+which ones this device may unlock. Ask the controller, on the message thread:
+
+```cpp
+if (activation.hasSubProduct ("drum-kit"))
+    enableDrumKit();
+```
+
+`hasSubProduct` takes the add-on's own part of its ID or the whole ID, and is true while
+the license lists the add-on as active and it hasn't expired. `activeSubProducts()` lists
+every such add-on. It only knows add-ons the merchant includes in the license: for one
+that is just owned, without seats on devices (the add-ons screen shows it as "Owned"),
+check `license()->owned_sub_product_ids` instead. One bought after activating shows up at the next validation, or right
+away with `refreshLicense (true)`. When an add-on's trial runs out while the plugin is
+open, the license watch notices: `onLicenseChanged` and `onActivationChanged` fire, with
+the license itself still in place. So reading `hasSubProduct` again from those callbacks
+is all a host has to do.
+
+`hasSubProduct` and `activeSubProducts` are for the message thread only: they read the
+license the controller holds there, and allocate (debug builds assert when they're called
+from another thread). For the audio thread, ask for the add-on's `subProductFlag` once,
+on the message thread, keep the pointer, and read it in `processBlock`, as you would a
+parameter from `AudioProcessorValueTreeState::getRawParameterValue`:
+
+```cpp
+const std::atomic<bool>* drumKit = nullptr;   // a member of your processor
+
+// In the processor's constructor:
+drumKit = activation.subProductFlag ("drum-kit");
+
+void processBlock (juce::AudioBuffer<float>& buffer, juce::MidiBuffer& midi) override
+{
+    if (drumKit->load())
+        renderDrumKit (buffer, midi);
+}
+```
+
+The flag is never null and lives as long as the controller. It changes in the same step
+as `licensedFlag()`, and within a couple of seconds of an add-on running out while the
+license carries on. One the license doesn't include stays `false`. To fade an add-on in
+and out without clicks, give it a `LicenseGate` of its own and pass it `drumKit->load()`.
+
+### The add-ons screen
+
+Set `config.showAddOns = true` and the license view gets an "Add-ons" row, with how
+many are active here. It opens a screen listing the product's add-ons the customer can do
+something with (`moonbase::licensing::list_sub_products`), each saying where it stands on
+this computer and offering what makes sense:
+
+- **Try free** for an add-on whose trial the customer can start. One whose trial is for
+  newsletter subscribers says so until the customer joins.
+- **Buy** for one on sale. It opens the add-on's store page in the browser, through
+  `config.openBrowser` when set. When the customer comes back to the app, the license is
+  re-validated, so the new add-on takes its seat, and the add-ons are listed again.
+  "Bought an add-on? Refresh" under the list does the same by hand, for a platform that
+  can't tell when the app is in the background.
+- **Activate** for one the customer owns that this computer holds no seat of: one they
+  deactivated here from their account, or any of them when
+  `config.autoActivateSubProducts` is off.
+
+<p align="center">
+  <img src="../assets/moonbase-juce-license-add-ons.png" width="49%"
+       alt="License details screen with an Add-ons row reading '2 active' and a chevron, under the licensed-to, email, plan, activation and expiry rows.">
+  <img src="../assets/moonbase-juce-add-ons.png" width="49%"
+       alt="Add-ons screen: 'Laniakea Pack' active on this computer, 'Keys' in its trial with 5 days left and a Buy button, and 'Drum Kit' offering a 7-day free trial at €39 with Buy and Try free buttons.">
+</p>
+<p align="center"><em>The license view's Add-ons row, and the add-ons screen it opens.</em></p>
+
+Opening the screen lists the add-ons without checking the license. When the list shows
+one the customer owns, with a seat free, that this computer doesn't hold yet (bought
+since the license was last checked), the license is checked once to take the seat,
+unless `config.autoActivateSubProducts` is off.
+
+A refusal shows under the list in the user's terms (no free seat, an add-on that can't
+be tried here, no connection), and the server's reason goes to `onDiagnostic`. The
+screen opens from a full license only, since add-ons are activated and tried from one.
+
+### A UI of your own
+
+The screen runs on calls you can make yourself:
+
+```cpp
+activation.loadAddOns();   // fills activation.addOns(), then broadcasts a change (can take a seat, see below)
+activation.requestSubProductTrial ("drum-kit", [] (bool started, const juce::String& message) {
+    // message says why, for the user, when it didn't start
+});
+activation.activateSubProduct ("drum-kit");
+activation.buySubProduct ("drum-kit");   // opens its buy link from addOns()
+```
+
+**`loadAddOns()` can take a seat.** It is not read-only while
+`config.autoActivateSubProducts` is on (the default). The list itself changes nothing on
+the server, but when it shows an add-on the customer owns, with a seat free, that this
+computer doesn't hold yet, the controller re-checks the license once, and that check
+takes the seat, as every license check does. With the option off, `loadAddOns()` only
+reads, and seats are taken only through `activateSubProduct`.
+
+`addOns()` holds the list (each a `moonbase::sub_product_catalog_entry`, with prices,
+ownership, trial status and buy link), whether it is loading, why it failed, and which
+add-on is being activated (`busyId`). Activating and trying run one at a time; each
+stores the license that comes back, and lists the add-ons again if they were loaded. When
+the server refuses the license itself (revoked elsewhere, say), the controller re-checks
+it and locks as `refreshLicense` would.
 
 ## App updates
 
