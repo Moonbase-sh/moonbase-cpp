@@ -1,3 +1,10 @@
+## [4.13.2](https://github.com/Moonbase-sh/moonbase-cpp/compare/v4.13.1...v4.13.2) (2026-10-28)
+
+
+### Bug Fixes
+
+* let Moonbase decide whether a release can be downloaded ([#49](https://github.com/Moonbase-sh/moonbase-cpp/issues/49)) ([93e13ac](https://github.com/Moonbase-sh/moonbase-cpp/commit/93e13ac6d19a318669b130574d30796052e26272))
+
 ## [4.13.1](https://github.com/Moonbase-sh/moonbase-cpp/compare/v4.13.0...v4.13.1) (2026-10-28)
 
 
