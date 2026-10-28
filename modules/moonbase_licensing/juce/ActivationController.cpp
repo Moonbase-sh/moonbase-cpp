@@ -2322,7 +2322,9 @@ void ActivationController::fetchUpdateInfo()
             if (info)
             {
                 self->updateInfo_.releaseNotes = juce::String::fromUTF8(info->description.c_str());
-                self->updateInfo_.canDownload = self->licenseCanDownload(*info);
+                const auto& license = self->license_;
+                self->updateInfo_.canDownload = license && moonbase::can_download(*license, *info);
+                self->updateInfo_.needsFullLicense = license && moonbase::download_needs_full_license(*license, *info);
                 // Moonbase judges this by all of the customer's licenses, as
                 // validating the new version does: the seat moves to one that
                 // covers it.
@@ -2341,11 +2343,6 @@ void ActivationController::fetchUpdateInfo()
             self->sendChangeMessage();
         });
     });
-}
-
-bool ActivationController::licenseCanDownload(const moonbase::release_info& info) const
-{
-    return license_ && moonbase::can_download(*license_, info);
 }
 
 void ActivationController::startUpdateDownload()
@@ -2579,6 +2576,17 @@ void ActivationController::setPreviewUpdate(UpdateInfo::Phase phase, moonbase::l
     updateInfo_.progress = progressValue;
     updateInfo_.error = std::move(error);
     updateInfo_.canDownload = canDownload && covered;
+    // A preview that can't download is refused as an owners-only release
+    // refuses this license: a trial needs the full version, while a full
+    // license is one Moonbase keeps the release from.
+    if (! canDownload && license_)
+    {
+        moonbase::release_info ownersOnly;
+        ownersOnly.downloads_need_user = true;
+        ownersOnly.downloads_need_ownership = true;
+        ownersOnly.downloads_allowed = false;
+        updateInfo_.needsFullLicense = moonbase::download_needs_full_license(*license_, ownersOnly);
+    }
     updateInfo_.covered = covered;
     if (! covered && license_)
         updateInfo_.releaseAccess = license_->release_access;

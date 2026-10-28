@@ -2832,8 +2832,9 @@ public:
         };
         addAndMakeVisible(*download);
 
-        // Shown instead of Download when this license can't fetch the installer
-        // (e.g. a trial when the product restricts downloads to owners).
+        // Shown instead of Download when a full license is what this one lacks
+        // to fetch the installer (e.g. a trial when the product restricts
+        // downloads to owners).
         unlock = std::make_unique<StyledButton>(l, StyledButton::Style::accent, "Unlock full version",
                                                 icons::fromStroke(icons::lock, l.palette.onAccent, 1.8f));
         unlock->onClick = [this] { controller.beginOnlineActivation(); };
@@ -2877,12 +2878,13 @@ public:
         const bool busy = info.phase == Phase::Loading || info.phase == Phase::Downloading;
 
         // Once notes have loaded, swap the Download button for an Unlock CTA when
-        // this license isn't entitled to the installer, or for the upgrade when
-        // it doesn't cover the new version.
+        // this license needs the full version for the installer, or for the
+        // upgrade when it doesn't cover the new version. A release Moonbase
+        // keeps from this customer for another reason gets neither.
         const bool gated = info.phase != Phase::Loading && ! info.canDownload;
         const bool notCovered = gated && ! info.covered;
         download->setVisible(! gated);
-        unlock->setVisible(gated && ! notCovered);
+        unlock->setVisible(gated && ! notCovered && info.needsFullLicense);
         upgrade->setVisible(notCovered && info.upgradeUrl.isNotEmpty());
         upgrade->setButtonText(upgradeLabel(info.releaseAccess));
 
@@ -2980,6 +2982,9 @@ private:
         const bool showStatus = info.phase == Phase::Downloading || info.error.isNotEmpty() || gated;
         // Two lines: the version that needs it, and what the license covers.
         const bool tallStatus = gated && ! info.covered && info.error.isEmpty();
+        // Neither unlocking nor an upgrade the store sells would get this
+        // license the update, so there is no button and the notes take its room.
+        const bool noButton = gated && (info.covered ? ! info.needsFullLicense : info.upgradeUrl.isEmpty());
 
         auto r = getLocalBounds();
 
@@ -2991,8 +2996,11 @@ private:
             l.status = r.removeFromBottom(tallStatus ? 34 : 18);
             r.removeFromBottom(10);
         }
-        l.button = r.removeFromBottom(46);
-        r.removeFromBottom(14);
+        if (! noButton)
+        {
+            l.button = r.removeFromBottom(46);
+            r.removeFromBottom(14);
+        }
 
         l.header = r.removeFromTop(40);
         r.removeFromTop(14);
@@ -3060,9 +3068,9 @@ private:
         else if (! info.canDownload)
         {
             const auto& lic = controller.license();
-            const juce::String note = (lic && lic->trial)
-                ? "This update is included with a full license."
-                : juce::String("Sign in to download this update.");
+            const juce::String note = ! info.needsFullLicense ? "This license can't download this update."
+                                    : (lic && lic->trial)     ? "This update is included with a full license."
+                                                              : "Sign in to download this update.";
             g.setColour(lnf.palette.textSecondary);
             g.setFont(lnf.body(12.5f));
             g.drawFittedText(note, row, Justification::centredLeft, 2, 1.0f);

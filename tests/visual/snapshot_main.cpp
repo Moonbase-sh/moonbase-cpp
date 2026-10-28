@@ -772,6 +772,14 @@ int main(int argc, char* argv[])
                                              /*covered*/ false, kPreviewUpgradeUrl);
                       },
                       cfg);
+
+        // A full license Moonbase keeps the release from, such as one limited
+        // to a group of customers: nothing to unlock or buy.
+        writeSnapshot(outDir, "14c-update-not-allowed",
+                      [notes](ActivationController& c)
+                      { c.setPreviewUpdate(UpdatePhase::Ready, makeUpdateLicense(), notes, 0.0,
+                                           {}, /*canDownload*/ false); },
+                      cfg);
     }
 
     //== Add-ons ==============================================================

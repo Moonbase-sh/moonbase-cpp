@@ -276,9 +276,11 @@ if (!moonbase::covers_version(license, latest_version)) {
 other Moonbase SDK. The vendored
 [`release-access-vectors.json`](../tests/vectors/release-access-vectors.json) pins it
 down case by case. For downloads, `inventory_client::get_release` says whether the
-customer's licenses cover a release (`release_covered`, with `release_access` and
-`upgrade_url`), `can_download` takes that into account, and `get_download_url` throws
-`release_not_covered_error` for a release they don't cover. `revoke_activation` and
+customer may download a release (`downloads_allowed`, which an older Moonbase doesn't
+send) and whether their licenses cover it (`release_covered`, with `release_access` and
+`upgrade_url`). `can_download` takes both into account, `download_needs_full_license`
+says whether activating a full license would lift a refusal, and `get_download_url`
+throws `release_not_covered_error` for a release they don't cover. `revoke_activation` and
 the add-on calls never judge the version, so a license can always be deactivated and
 its add-ons managed.
 

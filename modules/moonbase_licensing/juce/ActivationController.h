@@ -81,10 +81,16 @@ public:
         juce::String releaseNotes;    // plain text; empty until loaded
         juce::String error;           // non-empty when a fetch/download failed
         double progress = 0.0;        // 0..1 while Downloading
-        // Whether this license may download the installer, derived from the
-        // product's release access-control level. False e.g. for a trial when the
-        // product restricts downloads to owners. Known once notes have loaded.
+        // Whether this license may download the installer, as Moonbase decides
+        // it (moonbase::can_download). False e.g. for a trial when the product
+        // restricts downloads to owners. Known once notes have loaded.
         bool canDownload = true;
+        // When canDownload is false but covered is true: whether a full license
+        // is what's missing (moonbase::download_needs_full_license), so
+        // unlocking the full version is the way to it. False when Moonbase keeps
+        // the release from this customer for another reason, such as a release
+        // limited to a group of customers.
+        bool needsFullLicense = false;
         // False when Moonbase says the customer's licenses don't cover the new
         // version (canDownload is false then too): it needs an upgrade, bought
         // at upgradeUrl (empty when the store sells none). Known once notes
@@ -355,6 +361,8 @@ public:
     // Force the UpdateAvailable screen with synthetic update state (no network),
     // for previews + snapshot tests. newVersion is read from the license's
     // current_release_version; currentVersion from the config's app version.
+    // canDownload = false previews a release only owners download: a trial is
+    // offered the full version, and a full license is told it can't have it.
     // covered = false previews a new version the license doesn't cover (its
     // release access comes from the license).
     void setPreviewUpdate(UpdateInfo::Phase phase,
@@ -465,9 +473,6 @@ private:
 
     void beginUpdateFlow(Screen destination); // sets UpdateInfo + fetches notes
     void fetchUpdateInfo();
-    // Whether the current license may download the installer, given the product's
-    // release access-control flags (needs-user / needs-ownership).
-    [[nodiscard]] bool licenseCanDownload(const moonbase::release_info& info) const;
     void beginFileDownload(const moonbase::download_target& target);
     void failUpdateDownload(const juce::String& message);
     [[nodiscard]] juce::String defaultInstallerName() const;

@@ -25,14 +25,19 @@
 
 namespace moonbase {
 
-// The plain-text release notes plus enough to know an installer exists and who
-// may download it (the product's release access-control level).
+// The plain-text release notes plus enough to know an installer exists and
+// whether this customer may download it.
 struct release_info {
     std::string version;     // the queried release version (echoed back by the server)
     std::string description; // release notes (plain text); empty when none
     bool has_downloads = false;
     bool downloads_need_user = false;      // download requires an authenticated customer
     bool downloads_need_ownership = false; // download requires owning / subscribing to the product
+    // Whether the customer the license token belongs to may download this
+    // release, as Moonbase decides it with every rule the release has
+    // (ownership, customer groups, the versions their licenses cover). Empty
+    // from an older Moonbase that doesn't send it.
+    std::optional<bool> downloads_allowed;
 
     // Whether the customer's licenses cover this release. False only when
     // Moonbase says they don't, for a license that covers only some versions;
@@ -53,26 +58,53 @@ struct download_target {
     std::string filename;
 };
 
-// Whether `license` may download the installer for a release with the given
-// access flags (from release_info). Mirrors the backend's release access control:
-// a full (non-trial) license owns or subscribes to the product, a trial does not;
-// an authenticated customer has a real user id, while an anonymous trial carries
-// the nil GUID; and an owner gets only a release their licenses cover.
+namespace detail {
+
+// An authenticated customer has a real user id, while an anonymous trial
+// carries the nil GUID.
+inline bool has_signed_in_customer(const license& lic)
+{
+    return !lic.issued_to.id.empty() && lic.issued_to.id != "00000000-0000-0000-0000-000000000000";
+}
+
+} // namespace detail
+
+// Whether `license` may download the installer of a release (from
+// get_release). Moonbase says so itself (downloads_allowed). Without that, from
+// an older Moonbase, it is worked out as Moonbase would for the common rules: a
+// full (non-trial) license owns or subscribes to the product and a trial does
+// not, a signed-in customer has a user id where an anonymous trial has none,
+// and an owner gets only a release their licenses cover.
 inline bool can_download(const license& lic, const release_info& info)
 {
     if (!info.release_covered) {
         return false;
     }
-    const bool owns = !lic.trial;
-    const bool has_user = !lic.issued_to.id.empty()
-        && lic.issued_to.id != "00000000-0000-0000-0000-000000000000";
-    if (info.downloads_need_ownership && !owns) {
+    if (info.downloads_allowed) {
+        return *info.downloads_allowed;
+    }
+    if (info.downloads_need_ownership && lic.trial) {
         return false;
     }
-    if (info.downloads_need_user && !has_user) {
+    if (info.downloads_need_user && !detail::has_signed_in_customer(lic)) {
         return false;
     }
     return true;
+}
+
+// Whether a full license is what keeps `license` from downloading a release its
+// licenses cover: the release is for owners and this is a trial, or for
+// signed-in customers and this license has none. Activating a full license,
+// which signs the customer in too, is then the way to it. False when it can
+// download, and when Moonbase refuses it for another reason, such as a release
+// limited to a group of customers, which a full license doesn't change.
+inline bool download_needs_full_license(const license& lic, const release_info& info)
+{
+    if (!info.release_covered || can_download(lic, info)) {
+        return false;
+    }
+    return (info.downloads_need_ownership && lic.trial)
+        || (info.downloads_need_user && !detail::has_signed_in_customer(lic));
 }
 
 namespace detail {
@@ -184,9 +216,10 @@ public:
     //
     // Every failure throws api_error with the HTTP status. These endpoints never
     // refuse the license itself: a token they cannot use just makes the request
-    // anonymous, so a private product then answers 404. For a customer whose
-    // licenses don't cover every release, the result says whether they cover
-    // this one (release_covered) and where to upgrade.
+    // anonymous, so a private product then answers 404. The result says
+    // whether that customer may download the release (downloads_allowed), and,
+    // for a customer whose licenses don't cover every release, whether they
+    // cover this one (release_covered) and where to upgrade.
     [[nodiscard]] release_info get_release(std::string_view version,
                                            std::string_view license_token) const
     {
@@ -223,6 +256,9 @@ public:
                 && !json.at("downloads").empty();
             info.downloads_need_user = json.value("downloadsNeedsUser", false);
             info.downloads_need_ownership = json.value("downloadsNeedsOwnership", false);
+            if (json.contains("downloadsAllowed") && json.at("downloadsAllowed").is_boolean()) {
+                info.downloads_allowed = json.at("downloadsAllowed").get<bool>();
+            }
             // Present only when the customer's licenses don't cover every release.
             if (json.contains("releaseAccess") && json.at("releaseAccess").is_object()) {
                 const auto& access = json.at("releaseAccess");
