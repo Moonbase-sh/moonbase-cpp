@@ -33,11 +33,6 @@ struct release_info {
     bool has_downloads = false;
     bool downloads_need_user = false;      // download requires an authenticated customer
     bool downloads_need_ownership = false; // download requires owning / subscribing to the product
-    // Whether the customer the license token belongs to may download this
-    // release, as Moonbase decides it with every rule the release has
-    // (ownership, customer groups, the versions their licenses cover). Empty
-    // from an older Moonbase that doesn't send it.
-    std::optional<bool> downloads_allowed;
 
     // Whether the customer's licenses cover this release. False only when
     // Moonbase says they don't, for a license that covers only some versions;
@@ -47,6 +42,15 @@ struct release_info {
     std::optional<license_release_access> release_access;
     // Where to buy the upgrade or renewal, while the store sells one.
     std::optional<std::string> upgrade_url;
+
+    // Fields are only ever appended, so a brace-initialized release_info keeps
+    // its meaning.
+    bool downloads_need_group_membership = false; // download requires belonging to a group of customers
+    // Whether the customer the license token belongs to may download this
+    // release, as Moonbase decides it with every rule the release has
+    // (ownership, customer groups, the versions their licenses cover). Empty
+    // from an older Moonbase that doesn't send it.
+    std::optional<bool> downloads_allowed;
 };
 
 // A resolved, ready-to-fetch installer URL. `url` is a short-lived presigned
@@ -96,11 +100,12 @@ inline bool can_download(const license& lic, const release_info& info)
 // licenses cover: the release is for owners and this is a trial, or for
 // signed-in customers and this license has none. Activating a full license,
 // which signs the customer in too, is then the way to it. False when it can
-// download, and when Moonbase refuses it for another reason, such as a release
-// limited to a group of customers, which a full license doesn't change.
+// download, and when Moonbase may refuse it for something a full license
+// doesn't change: a release limited to a group of customers, which buying
+// doesn't join, or to no one.
 inline bool download_needs_full_license(const license& lic, const release_info& info)
 {
-    if (!info.release_covered || can_download(lic, info)) {
+    if (!info.release_covered || info.downloads_need_group_membership || can_download(lic, info)) {
         return false;
     }
     return (info.downloads_need_ownership && lic.trial)
@@ -256,6 +261,9 @@ public:
                 && !json.at("downloads").empty();
             info.downloads_need_user = json.value("downloadsNeedsUser", false);
             info.downloads_need_ownership = json.value("downloadsNeedsOwnership", false);
+            if (json.contains("downloadsNeedsGroupMembership") && json.at("downloadsNeedsGroupMembership").is_boolean()) {
+                info.downloads_need_group_membership = json.at("downloadsNeedsGroupMembership").get<bool>();
+            }
             if (json.contains("downloadsAllowed") && json.at("downloadsAllowed").is_boolean()) {
                 info.downloads_allowed = json.at("downloadsAllowed").get<bool>();
             }

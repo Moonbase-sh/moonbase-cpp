@@ -85,12 +85,6 @@ public:
         // it (moonbase::can_download). False e.g. for a trial when the product
         // restricts downloads to owners. Known once notes have loaded.
         bool canDownload = true;
-        // When canDownload is false but covered is true: whether a full license
-        // is what's missing (moonbase::download_needs_full_license), so
-        // unlocking the full version is the way to it. False when Moonbase keeps
-        // the release from this customer for another reason, such as a release
-        // limited to a group of customers.
-        bool needsFullLicense = false;
         // False when Moonbase says the customer's licenses don't cover the new
         // version (canDownload is false then too): it needs an upgrade, bought
         // at upgradeUrl (empty when the store sells none). Known once notes
@@ -98,6 +92,12 @@ public:
         bool covered = true;
         std::optional<moonbase::license_release_access> releaseAccess; // what the licenses cover
         juce::String upgradeUrl;
+        // When canDownload is false but covered is true: whether a full license
+        // is what's missing (moonbase::download_needs_full_license), so
+        // unlocking the full version is the way to it. False when Moonbase keeps
+        // the release from this customer for another reason, such as a release
+        // limited to a group of customers.
+        bool needsFullLicense = false;
     };
 
     // State backing the NotCovered screen: a license that is valid, but doesn't

@@ -62,7 +62,7 @@ TEST_CASE("get_release parses the download access-control flags")
     auto transport = std::make_shared<moonbase::tests::recording_transport>(std::deque<http_response>{
         http_response{200, {},
             R"({"id":"demo-app","name":"Solstice","version":"2.4.0",)"
-            R"("downloadsNeedsUser":true,"downloadsNeedsOwnership":true,)"
+            R"("downloadsNeedsUser":true,"downloadsNeedsOwnership":true,"downloadsNeedsGroupMembership":true,)"
             R"("downloads":[{"name":"Solstice-2.4.0.dmg","platform":"Mac"}]})"},
     });
     inventory_client client(make_options(), transport);
@@ -70,6 +70,17 @@ TEST_CASE("get_release parses the download access-control flags")
     const auto info = client.get_release("2.4.0", "tok");
     CHECK(info.downloads_need_user);
     CHECK(info.downloads_need_ownership);
+    CHECK(info.downloads_need_group_membership);
+}
+
+TEST_CASE("release_info keeps its brace-initialized fields in place")
+{
+    // Fields are appended, so a positional initializer written against an
+    // earlier release_info still means what it did.
+    const release_info info{"2.4.0", "notes", true, true, true, false};
+    CHECK(info.downloads_need_ownership);
+    CHECK_FALSE(info.release_covered);
+    CHECK_FALSE(info.downloads_allowed.has_value());
 }
 
 TEST_CASE("can_download enforces the access-control flags against the license")
@@ -178,6 +189,15 @@ TEST_CASE("download_needs_full_license says when unlocking the full version woul
     release_info none;
     none.downloads_allowed = false;
     CHECK_FALSE(download_needs_full_license(trial, none));
+
+    // A full license doesn't join the customer to a group, even where the
+    // release also needs owners or signed-in customers.
+    auto owners_in_group = owners;
+    owners_in_group.downloads_need_group_membership = true;
+    CHECK_FALSE(download_needs_full_license(trial, owners_in_group));
+    auto customers_in_group = customers;
+    customers_in_group.downloads_need_group_membership = true;
+    CHECK_FALSE(download_needs_full_license(anonymous_trial, customers_in_group));
 
     // Nothing is missing when it may download, and a release the licenses
     // don't cover needs the upgrade instead.
