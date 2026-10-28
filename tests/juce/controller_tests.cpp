@@ -422,6 +422,33 @@ TEST_CASE("setPreviewUpdate forces the update screen with synthetic state")
     CHECK(controller.updateInfo().releaseNotes == "What's new");
 }
 
+TEST_CASE("an update preview that can't download offers the full version only to a trial")
+{
+    controller_fixture fx;
+    fx.config.applicationVersion = "2.3.1";
+    ActivationController controller(fx.config, fx.makeLicensing());
+    using Phase = ActivationController::UpdateInfo::Phase;
+
+    auto claims = default_claims();
+    claims["p:rel"] = "2.4.0";
+    auto full = fx.makeLicensing()->validate_token_local_allow_expired(fx.token(claims));
+    claims["trial"] = true;
+    auto trial = fx.makeLicensing()->validate_token_local_allow_expired(fx.token(claims));
+
+    controller.setPreviewUpdate(Phase::Ready, trial, {}, 0.0, {}, /*canDownload*/ false);
+    CHECK_FALSE(controller.updateInfo().canDownload);
+    CHECK(controller.updateInfo().needsFullLicense);
+
+    // A full license that can't download is one Moonbase keeps the release from.
+    controller.setPreviewUpdate(Phase::Ready, full, {}, 0.0, {}, /*canDownload*/ false);
+    CHECK_FALSE(controller.updateInfo().canDownload);
+    CHECK_FALSE(controller.updateInfo().needsFullLicense);
+
+    controller.setPreviewUpdate(Phase::Ready, trial);
+    CHECK(controller.updateInfo().canDownload);
+    CHECK_FALSE(controller.updateInfo().needsFullLicense);
+}
+
 TEST_CASE("dismissing the update is remembered across restarts")
 {
     controller_fixture fx;

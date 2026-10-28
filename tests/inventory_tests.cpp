@@ -62,7 +62,7 @@ TEST_CASE("get_release parses the download access-control flags")
     auto transport = std::make_shared<moonbase::tests::recording_transport>(std::deque<http_response>{
         http_response{200, {},
             R"({"id":"demo-app","name":"Solstice","version":"2.4.0",)"
-            R"("downloadsNeedsUser":true,"downloadsNeedsOwnership":true,)"
+            R"("downloadsNeedsUser":true,"downloadsNeedsOwnership":true,"downloadsNeedsGroupMembership":true,)"
             R"("downloads":[{"name":"Solstice-2.4.0.dmg","platform":"Mac"}]})"},
     });
     inventory_client client(make_options(), transport);
@@ -70,6 +70,17 @@ TEST_CASE("get_release parses the download access-control flags")
     const auto info = client.get_release("2.4.0", "tok");
     CHECK(info.downloads_need_user);
     CHECK(info.downloads_need_ownership);
+    CHECK(info.downloads_need_group_membership);
+}
+
+TEST_CASE("release_info keeps its brace-initialized fields in place")
+{
+    // Fields are appended, so a positional initializer written against an
+    // earlier release_info still means what it did.
+    const release_info info{"2.4.0", "notes", true, true, true, false};
+    CHECK(info.downloads_need_ownership);
+    CHECK_FALSE(info.release_covered);
+    CHECK_FALSE(info.downloads_allowed.has_value());
 }
 
 TEST_CASE("can_download enforces the access-control flags against the license")
@@ -103,6 +114,98 @@ TEST_CASE("can_download enforces the access-control flags against the license")
     CHECK(can_download(full, owners));
     CHECK_FALSE(can_download(trial_owned, owners));
     CHECK_FALSE(can_download(trial_anon, owners));
+}
+
+TEST_CASE("get_release reads whether Moonbase lets this customer download the release")
+{
+    auto transport = std::make_shared<moonbase::tests::recording_transport>(std::deque<http_response>{
+        http_response{200, {}, R"({"id":"demo-app","version":"2.4.0","downloadsAllowed":false})"},
+        http_response{200, {}, R"({"id":"demo-app","version":"2.4.0","downloadsAllowed":true})"},
+        http_response{200, {}, R"({"id":"demo-app","version":"2.4.0","downloadsAllowed":null})"},
+        http_response{200, {}, R"({"id":"demo-app","version":"2.4.0"})"},
+    });
+    inventory_client client(make_options(), transport);
+
+    CHECK(client.get_release("2.4.0", "tok").downloads_allowed == false);
+    CHECK(client.get_release("2.4.0", "tok").downloads_allowed == true);
+    // An older Moonbase doesn't say.
+    CHECK_FALSE(client.get_release("2.4.0", "tok").downloads_allowed.has_value());
+    CHECK_FALSE(client.get_release("2.4.0", "tok").downloads_allowed.has_value());
+}
+
+TEST_CASE("can_download takes Moonbase's answer over the access-control flags")
+{
+    license full;
+    full.issued_to.id = "user-1";
+    license trial = full;
+    trial.trial = true;
+
+    release_info owners;
+    owners.downloads_need_user = true;
+    owners.downloads_need_ownership = true;
+
+    // A release limited to a group of customers this owner isn't in.
+    auto group = owners;
+    group.downloads_allowed = false;
+    CHECK_FALSE(can_download(full, group));
+
+    // A customer trying the product here who owns it on another license.
+    auto owned = owners;
+    owned.downloads_allowed = true;
+    CHECK(can_download(trial, owned));
+
+    // A release the licenses don't cover stays refused.
+    owned.release_covered = false;
+    CHECK_FALSE(can_download(full, owned));
+}
+
+TEST_CASE("download_needs_full_license says when unlocking the full version would help")
+{
+    license full;
+    full.issued_to.id = "user-1";
+    license trial = full;
+    trial.trial = true;
+    license anonymous_trial = trial;
+    anonymous_trial.issued_to.id = "00000000-0000-0000-0000-000000000000";
+
+    release_info owners;
+    owners.downloads_need_user = true;
+    owners.downloads_need_ownership = true;
+    release_info customers;
+    customers.downloads_need_user = true;
+
+    // Refused on the device's own rules (an older Moonbase) or by Moonbase.
+    CHECK(download_needs_full_license(trial, owners));
+    CHECK(download_needs_full_license(anonymous_trial, customers));
+    owners.downloads_allowed = false;
+    customers.downloads_allowed = false;
+    CHECK(download_needs_full_license(trial, owners));
+    CHECK(download_needs_full_license(anonymous_trial, customers));
+
+    // Refused for something a full license doesn't change, such as a release
+    // limited to a group of customers, or to none.
+    CHECK_FALSE(download_needs_full_license(full, owners));
+    CHECK_FALSE(download_needs_full_license(trial, customers));
+    release_info none;
+    none.downloads_allowed = false;
+    CHECK_FALSE(download_needs_full_license(trial, none));
+
+    // A full license doesn't join the customer to a group, even where the
+    // release also needs owners or signed-in customers.
+    auto owners_in_group = owners;
+    owners_in_group.downloads_need_group_membership = true;
+    CHECK_FALSE(download_needs_full_license(trial, owners_in_group));
+    auto customers_in_group = customers;
+    customers_in_group.downloads_need_group_membership = true;
+    CHECK_FALSE(download_needs_full_license(anonymous_trial, customers_in_group));
+
+    // Nothing is missing when it may download, and a release the licenses
+    // don't cover needs the upgrade instead.
+    owners.downloads_allowed = true;
+    CHECK_FALSE(download_needs_full_license(trial, owners));
+    owners.downloads_allowed = false;
+    owners.release_covered = false;
+    CHECK_FALSE(download_needs_full_license(trial, owners));
 }
 
 TEST_CASE("get_release tolerates a release with no notes or downloads")

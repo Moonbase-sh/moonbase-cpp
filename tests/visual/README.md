@@ -52,8 +52,9 @@ PNG per state:
 | `11-update-ready` | Update available, notes loaded (download button) |
 | `12-update-downloading` | Update installer downloading (progress bar) |
 | `13-update-error` | Update details failed to load (error) |
-| `14-update-gated` | Update the license can't download (Unlock CTA) |
+| `14-update-gated` | Update a trial can't download (Unlock CTA) |
 | `14b-update-not-covered` | Update the license doesn't cover (upgrade CTA, what it covers) |
+| `14c-update-not-allowed` | Update Moonbase keeps from a full license, e.g. one limited to a group of customers (no CTA) |
 | `15-theme-ember-welcome` | Welcome, "Ember" theme (warm near-black, amber, monospaced) |
 | `15b-theme-ember-welcome-error` | The longest welcome error copy in Ember's monospaced face, where it runs widest |
 | `15c-theme-ember-welcome-license-invalid` | The longest lock-reason copy in Ember's monospaced face |

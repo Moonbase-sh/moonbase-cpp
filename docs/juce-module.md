@@ -693,15 +693,21 @@ Details / Trial screen (it never interrupts the locked Expired screen). It then:
    `GET /api/customer/inventory/products/{productId}/download/{platform}/latest?redirect=false`
    and downloads it into `config.downloadDirectory` with progress, then reveals it.
 
-**Download gating.** The product response reports the release access-control level
-(`downloadsNeedsUser` / `downloadsNeedsOwnership`). `moonbase::can_download(license, info)`
-applies it: a full (non-trial) license owns the product and can download; a trial cannot
-download from an owners-only product (the default). When the license isn't entitled, the
-screen swaps the Download button for an **Unlock full version** CTA and a short note, so
-the user never hits a 403 (`updateInfo().canDownload`). When Moonbase says the customer's
-licenses don't cover the new version, the screen offers the upgrade instead and says what
-they cover (`updateInfo().covered`, `releaseAccess` and `upgradeUrl`; see
-[Licenses that cover some versions](#licenses-that-cover-some-versions)).
+**Download gating.** The product response says whether this customer may download the
+release (`downloadsAllowed`), which Moonbase decides with every rule the release has:
+owning the product, belonging to a group of customers it is limited to, and the versions
+their licenses cover. `moonbase::can_download(license, info)` uses that answer. An older
+Moonbase doesn't send it, so there it applies the release access-control level
+(`downloadsNeedsUser` / `downloadsNeedsOwnership`) itself: a full (non-trial) license owns
+the product and can download; a trial cannot download from an owners-only product (the
+default). When the license can't download it, the screen swaps the Download button for a
+short note, so the user never hits a 403 (`updateInfo().canDownload`). When a full license
+is what's missing, as for a trial, it offers an **Unlock full version** CTA
+(`updateInfo().needsFullLicense`); for a release Moonbase keeps from this customer for
+another reason, it says the license can't download it and offers nothing. When Moonbase
+says the customer's licenses don't cover the new version, the screen offers the upgrade
+instead and says what they cover (`updateInfo().covered`, `releaseAccess` and
+`upgradeUrl`; see [Licenses that cover some versions](#licenses-that-cover-some-versions)).
 
 Both inventory requests authenticate with the license token via the
 `Authorization: LicenseToken <jwt>` scheme (`moonbase::inventory_client`). Observe
