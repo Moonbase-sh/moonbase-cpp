@@ -9,7 +9,8 @@ juce_add_gui_app(MoonbaseActivationNative
     PRODUCT_NAME "Moonbase Activation"
     COMPANY_NAME "Moonbase"
     BUNDLE_ID "sh.moonbase.activation.native"
-    VERSION "0.0.1")
+    VERSION "0.0.1"
+    NEEDS_CURL TRUE)
 
 target_sources(MoonbaseActivationNative PRIVATE Main.cpp)
 
@@ -17,7 +18,6 @@ target_compile_features(MoonbaseActivationNative PRIVATE cxx_std_17)
 
 target_compile_definitions(MoonbaseActivationNative PRIVATE
     JUCE_WEB_BROWSER=0
-    JUCE_USE_CURL=0
     JUCE_APPLICATION_NAME_STRING="$<TARGET_PROPERTY:MoonbaseActivationNative,JUCE_PROJECT_NAME>"
     JUCE_APPLICATION_VERSION_STRING="$<TARGET_PROPERTY:MoonbaseActivationNative,JUCE_VERSION>")
 

@@ -1,9 +1,10 @@
 #pragma once
 
 // HTTP transport for the Moonbase SDK built on juce::WebInputStream, so the
-// module needs no CURL. Build JUCE with JUCE_USE_CURL=0 to keep CURL out
-// entirely (the transport uses the platform stack: WinHTTP / NSURLSession /
-// libcurl-free POSIX backends).
+// module brings no HTTP library of its own. WebInputStream uses the platform
+// stack (WinINet / NSURLSession / HttpURLConnection on Android), except on Linux,
+// where JUCE makes HTTPS requests through libcurl: moonbase_licensing.cpp fails
+// the build when JUCE_USE_CURL is off there.
 
 #include <map>
 #include <string>

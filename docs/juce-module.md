@@ -22,13 +22,15 @@ This one is too — it has **no third-party dependencies**:
 
 | Concern | How |
 | --- | --- |
-| HTTP | `juce::WebInputStream` (`juce_http_transport`) — no CURL |
+| HTTP | `juce::WebInputStream` (`juce_http_transport`), so no HTTP library of its own |
 | JSON | bundled `nlohmann/json` single header (in the module's `vendor/`) |
 | RS256 JWT verification | OS-native: **Security.framework** (macOS/iOS), **CNG/bcrypt** (Windows), system **libcrypto** (Linux) |
 
-So a downstream project adds the module and builds — nothing to `brew` / `vcpkg` /
-`apt` install. *(The only platform caveat: on Linux the module links the
-always-present system `libcrypto`. macOS and Windows need nothing beyond the OS.)*
+So a downstream project adds the module and builds, with nothing to `brew` or
+`vcpkg` install. *(Linux is the one platform with caveats: the module links the
+always-present system `libcrypto`, and JUCE needs libcurl there for HTTPS, as the
+[Linux note](#linux-needs-libcurl) below explains. macOS and Windows need nothing
+beyond the OS.)*
 
 The module sets `MOONBASE_CRYPTO_NATIVE` and `MOONBASE_DISABLE_CURL_TRANSPORT`
 itself; the core SDK keeps its OpenSSL + CURL defaults for non-JUCE consumers, so
@@ -44,7 +46,6 @@ Add this repository as a git submodule, then point your build at the module fold
 juce_add_module(external/moonbase-cpp/modules/moonbase_licensing)
 
 target_link_libraries(MyPlugin PRIVATE moonbase_licensing)
-target_compile_definitions(MyPlugin PRIVATE JUCE_USE_CURL=0)
 ```
 
 **CMake, through FetchContent**
@@ -65,7 +66,6 @@ set(MOONBASE_JUCE_MODULE_ONLY ON)
 FetchContent_MakeAvailable(moonbase_cpp)  # after JUCE
 
 target_link_libraries(MyPlugin PRIVATE moonbase_licensing)
-target_compile_definitions(MyPlugin PRIVATE JUCE_USE_CURL=0)
 ```
 
 **Projucer** — *Modules → Add a module from a specified folder…* → select
@@ -83,6 +83,19 @@ worth knowing about: it renames the two system-header names that would otherwise
 be ambiguous with JUCE's, Carbon's `Point` and GDI's `Rectangle()`, so neither is
 reachable under its own name once you include the module header. Define
 `MOONBASE_DISABLE_SYSTEM_NAME_SHIM` if you need them.
+
+### Linux needs libcurl
+
+On Linux, `juce::WebInputStream` makes HTTPS requests through libcurl. Without it
+JUCE can only reach `http://` URLs, so the module could never reach the Moonbase
+API. Leave `JUCE_USE_CURL` on (JUCE's default), install libcurl's development
+package (`libcurl4-openssl-dev` on Debian and Ubuntu), and pass `NEEDS_CURL TRUE`
+to `juce_add_plugin()` or `juce_add_gui_app()` so JUCE links it. In the Projucer,
+leave `JUCE_USE_CURL` enabled in `juce_core`'s module settings.
+
+With `JUCE_USE_CURL=0` the module fails to compile on Linux, rather than build a
+product that can never activate. Other platforms use the OS's own HTTP stack and
+ignore the flag.
 
 ## Configure + show it
 

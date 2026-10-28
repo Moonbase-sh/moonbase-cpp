@@ -16,6 +16,15 @@
 
 #include "moonbase_licensing.h"
 
+// On Linux, juce::WebInputStream makes HTTPS requests through libcurl. With
+// JUCE_USE_CURL=0 it falls back to a plain-socket client that only speaks
+// http://, so every call to the Moonbase API would fail at runtime and the
+// product could never activate. Stop the build instead. Other platforms use the
+// OS's own HTTP stack and ignore JUCE_USE_CURL.
+#if (JUCE_LINUX || JUCE_BSD) && ! JUCE_USE_CURL
+ #error "moonbase_licensing needs JUCE_USE_CURL on Linux: without libcurl, JUCE cannot make HTTPS requests to the Moonbase API. Remove JUCE_USE_CURL=0 and, with CMake, pass NEEDS_CURL TRUE to juce_add_plugin() or juce_add_gui_app()."
+#endif
+
 //==============================================================================
 #include "juce/ActivationController.cpp"
 #include "juce/ui/ActivationLookAndFeel.cpp"

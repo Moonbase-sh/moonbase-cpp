@@ -20,7 +20,8 @@ if(NOT TARGET doctest::doctest)
 endif()
 
 juce_add_console_app(MoonbaseJuceTests
-    PRODUCT_NAME "Moonbase JUCE Tests")
+    PRODUCT_NAME "Moonbase JUCE Tests"
+    NEEDS_CURL TRUE)
 
 target_sources(MoonbaseJuceTests PRIVATE
     controller_tests.cpp
@@ -32,7 +33,6 @@ target_compile_features(MoonbaseJuceTests PRIVATE cxx_std_17)
 
 target_compile_definitions(MoonbaseJuceTests PRIVATE
     JUCE_WEB_BROWSER=0
-    JUCE_USE_CURL=0
     JUCE_STANDALONE_APPLICATION=1
     JUCE_MODAL_LOOPS_PERMITTED=1  # exposes MessageManager::runDispatchLoopUntil for pumping
     JUCE_APPLICATION_NAME_STRING="Moonbase JUCE Tests"

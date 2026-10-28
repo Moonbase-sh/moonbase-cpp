@@ -50,10 +50,10 @@ Add the module, fill in three fields, show one component.
   the plugin opens, stays reachable from an "Update available" badge on the license
   screen, and "Skip this update" is remembered until a newer version ships. Opt out with
   `config.enableUpdatePrompt = false`.
-- **Zero third-party dependencies.** HTTP over `juce::WebInputStream` (no CURL), JSON
+- **Zero third-party dependencies.** HTTP over `juce::WebInputStream`, JSON
   via a bundled `nlohmann/json`, and RS256 verification via OS-native crypto:
   Security.framework (macOS/iOS), CNG/bcrypt (Windows), system libcrypto (Linux).
-  Nothing to `brew`/`vcpkg`/`apt` install.
+  Nothing to `brew`/`vcpkg` install. On Linux, JUCE itself needs libcurl for HTTPS.
 - **Batteries included.** Persists the license to a per-user file, fails loud on
   misconfiguration, exposes a diagnostics sink for field debugging, and can attach
   JUCE system/host telemetry to requests. Brandable end to end.
@@ -86,8 +86,11 @@ Add this repository (as a git submodule, say) and point your build at the module
 juce_add_module(path/to/moonbase-cpp/modules/moonbase_licensing)
 
 target_link_libraries(MyPlugin PRIVATE moonbase_licensing)
-target_compile_definitions(MyPlugin PRIVATE JUCE_USE_CURL=0)  # keep the zero-dep HTTP path
 ```
+
+On Linux, leave `JUCE_USE_CURL` on and pass `NEEDS_CURL TRUE` to `juce_add_plugin()`:
+JUCE makes HTTPS requests through libcurl there, and the module fails to compile
+without it. See [the JUCE module guide](../../docs/juce-module.md#linux-needs-libcurl).
 
 Prefer `FetchContent` to a submodule? Set `MOONBASE_JUCE_MODULE_ONLY` and the
 repository adds just this module, with no OpenSSL or CURL lookups. See
