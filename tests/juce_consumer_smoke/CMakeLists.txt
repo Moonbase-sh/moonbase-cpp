@@ -29,15 +29,15 @@ add_subdirectory(${CMAKE_CURRENT_LIST_DIR}/../.. moonbase_cpp)
 
 juce_add_console_app(MoonbaseJuceConsumerSmoke
     PRODUCT_NAME "Moonbase JUCE Consumer Smoke"
-    VERSION "1.0.0")
+    VERSION "1.0.0"
+    NEEDS_CURL TRUE)
 
 target_sources(MoonbaseJuceConsumerSmoke PRIVATE main.cpp)
 
 target_compile_features(MoonbaseJuceConsumerSmoke PRIVATE cxx_std_17)
 
 target_compile_definitions(MoonbaseJuceConsumerSmoke PRIVATE
-    JUCE_WEB_BROWSER=0
-    JUCE_USE_CURL=0)
+    JUCE_WEB_BROWSER=0)
 
 target_link_libraries(MoonbaseJuceConsumerSmoke PRIVATE
     moonbase_licensing

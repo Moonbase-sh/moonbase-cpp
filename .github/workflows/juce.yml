@@ -9,7 +9,9 @@ name: JUCE module
 # native backend, i.e. a real cross-backend RS256 round-trip on each OS. The
 # suite needs nothing from the core SDK target, so the build configures with
 # -DMOONBASE_JUCE_MODULE_ONLY=ON, which also skips its CURL lookup. OpenSSL is
-# still installed because the suite signs its test tokens with it.
+# still installed because the suite signs its test tokens with it, and libcurl
+# on Linux because JUCE makes HTTPS requests through it there: the module fails
+# the build when JUCE_USE_CURL is off on Linux.
 #
 # JUCE 9 runs on every OS too. It is the current major line, and it changes
 # platform code as well as the API (its Linux build needs libxi-dev, for one).
@@ -58,7 +60,7 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y \
-            libssl-dev \
+            libssl-dev libcurl4-openssl-dev \
             libx11-dev libxext-dev libxinerama-dev libxrandr-dev libxcursor-dev \
             libxcomposite-dev libxrender-dev libxi-dev libfreetype6-dev libfontconfig1-dev \
             libasound2-dev libglu1-mesa-dev mesa-common-dev xvfb
