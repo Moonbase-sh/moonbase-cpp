@@ -1,3 +1,10 @@
+## [4.13.1](https://github.com/Moonbase-sh/moonbase-cpp/compare/v4.13.0...v4.13.1) (2026-10-28)
+
+
+### Bug Fixes
+
+* **juce:** fail the build on Linux when JUCE is built without curl ([#48](https://github.com/Moonbase-sh/moonbase-cpp/issues/48)) ([f9b49ef](https://github.com/Moonbase-sh/moonbase-cpp/commit/f9b49efa2681dcb2a1c4fc7cdc0e80ff15512e35)), closes [#error](https://github.com/Moonbase-sh/moonbase-cpp/issues/error) [#error](https://github.com/Moonbase-sh/moonbase-cpp/issues/error)
+
 # [4.13.0](https://github.com/Moonbase-sh/moonbase-cpp/compare/v4.12.0...v4.13.0) (2026-10-20)
 
 

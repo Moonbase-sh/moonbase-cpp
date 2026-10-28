@@ -61,7 +61,7 @@ for you.
 include(FetchContent)
 FetchContent_Declare(moonbase_cpp
     GIT_REPOSITORY https://github.com/Moonbase-sh/moonbase-cpp.git
-    GIT_TAG v4.13.0)
+    GIT_TAG v4.13.1)
 set(MOONBASE_JUCE_MODULE_ONLY ON)
 FetchContent_MakeAvailable(moonbase_cpp)  # after JUCE
 
