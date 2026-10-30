@@ -6,6 +6,10 @@
 
 #include <fstream>
 
+#if JUCE_MAC
+ #include <sys/sysctl.h> // sysctlbyname, to tell a process running under Rosetta
+#endif
+
 namespace moonbase::juce_integration {
 
 namespace {
@@ -112,6 +116,81 @@ juce::String addOnFailure(const std::exception& ex, const juce::String& lead, co
         case Failure::Unexpected:  break;
     }
     return unexpectedFailure(lead, ex);
+}
+
+// A license the moonbase_JUCEClient module wrote: three lines (the user, base64
+// of the license's XML, base64 of its signature) where this module writes JSON.
+struct JuceClientLicense
+{
+    std::string text;              // the file as it is, which Moonbase converts
+    juce::String productId;
+    juce::String computerSignature; // the device id it is bound to
+};
+
+// The license in the file at `path`, when it is one the moonbase_JUCEClient
+// module wrote. Only read: the store deletes a file it can't parse, which would
+// cost a build still on that module its license.
+std::optional<JuceClientLicense> readJuceClientLicense(const std::filesystem::path& path)
+{
+    std::ifstream in(path, std::ios::binary);
+    if (! in)
+        return std::nullopt;
+
+    // A license is a few kilobytes; anything far bigger is something else.
+    constexpr std::streamsize kMaxBytes = 256 * 1024;
+    std::string bytes(static_cast<size_t>(kMaxBytes), '\0');
+    in.read(bytes.data(), kMaxBytes);
+    if (in.gcount() >= kMaxBytes)
+        return std::nullopt;
+    bytes.resize(static_cast<size_t>(in.gcount()));
+
+    const auto text = juce::String::fromUTF8(bytes.data(), static_cast<int>(bytes.size()));
+    if (text.trimStart().startsWithChar('{'))
+        return std::nullopt;
+
+    auto lines = juce::StringArray::fromLines(text);
+    lines.trim();
+    lines.removeEmptyStrings();
+    if (lines.size() != 3)
+        return std::nullopt;
+
+    const auto isBase64 = [](const juce::String& line)
+    {
+        return line.containsOnly("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/=");
+    };
+    if (! isBase64(lines[1]) || ! isBase64(lines[2]))
+        return std::nullopt;
+
+    // juce::Base64 rather than MemoryBlock::fromBase64Encoding, which reads JUCE's
+    // own size-prefixed format.
+    juce::MemoryOutputStream metadata;
+    if (! juce::Base64::convertFromBase64(metadata, lines[1]))
+        return std::nullopt;
+    const auto xml = juce::parseXML(metadata.toString());
+    if (xml == nullptr || ! xml->hasTagName("metadata"))
+        return std::nullopt;
+
+    const auto field = [&xml](const char* name)
+    {
+        const auto* element = xml->getChildByName(name);
+        return element != nullptr ? element->getAllSubText().trim() : juce::String();
+    };
+    return JuceClientLicense{ std::move(bytes), field("productId"), field("computerSignature") };
+}
+
+// The file the moonbase_JUCEClient module read in this process. An Intel build
+// running under Rosetta kept its license beside the configured one, as
+// "<name>_Rosetta<extension>".
+juce::File juceClientLicenseFileForThisProcess(const juce::File& configured)
+{
+#if JUCE_MAC
+    int translated = 0;
+    size_t size = sizeof(translated);
+    if (sysctlbyname("sysctl.proc_translated", &translated, &size, nullptr, 0) == 0 && translated == 1)
+        return configured.getSiblingFile(configured.getFileNameWithoutExtension() + "_Rosetta"
+                                         + configured.getFileExtension());
+#endif
+    return configured;
 }
 } // namespace
 
@@ -304,17 +383,137 @@ void ActivationController::start()
     juce::WeakReference<ActivationController> safe(this);
     auto licensing = licensing_;
 
-    threadPool_.addJob([safe, generation, licensing]() mutable
+    // The moonbase_JUCEClient license to convert while nothing is stored here,
+    // unless one was converted, or refused for good, before.
+    std::optional<std::filesystem::path> convertFrom;
+    if (config_.juceClientLicenseFile != juce::File() && state_ && ! state_->juceClientLicenseSettled())
+        convertFrom = compat::toFilesystemPath(juceClientLicenseFileForThisProcess(config_.juceClientLicenseFile));
+
+    threadPool_.addJob([safe, generation, generations = generations_, licensing, licensePath = watchedFile_,
+                        convertFrom, productId = config_.productId]() mutable
     {
         std::optional<moonbase::license> result;
         std::optional<moonbase::license> expiredTrial;
         std::optional<NotCoveredInfo> notCovered;
         bool deleteExpiredOffline = false;
         auto reason = LockReason::None; // why a stored license didn't load
+        bool refused = false; // the moonbase_JUCEClient license, by Moonbase, for good
         juce::String diag;
         try
         {
-            auto stored = licensing->store().load_local_license();
+            // Not through the store, which would delete it (see readJuceClientLicense).
+            const bool licenseFileIsJuceClients = licensePath && readJuceClientLicense(*licensePath).has_value();
+            std::optional<moonbase::license> stored;
+            if (! licenseFileIsJuceClients)
+                stored = licensing->store().load_local_license();
+
+            // Nothing stored here yet: carry over the license the
+            // moonbase_JUCEClient module left, if there is one. When that is the
+            // license file itself, the converted license replaces it.
+            std::optional<JuceClientLicense> legacy;
+            if (! stored && convertFrom)
+                legacy = readJuceClientLicense(*convertFrom);
+            if (licenseFileIsJuceClients && ! legacy)
+                diag = "The license file holds a license from the moonbase_JUCEClient module, which this "
+                       "module can't read, so it was left in place. Name it in "
+                       "ActivationConfig::juceClientLicenseFile to convert it, or give licenseFile a file of "
+                       "its own. See docs/migration-juceclient.md.";
+            if (legacy && legacy->productId != productId)
+            {
+                diag = "The moonbase_JUCEClient license is for product \"" + legacy->productId + "\", not \""
+                     + productId + "\", so it was not converted.";
+            }
+            else if (legacy)
+            {
+                try
+                {
+                    // Moonbase can't tell that the id the license is bound to and
+                    // this device's are one computer; only this device can.
+                    const auto& resolver = licensing->device_resolver();
+                    const auto boundTo = legacy->computerSignature.toStdString();
+                    if (boundTo.empty() || (resolver.device_id() != boundTo && ! resolver.accepts_device_id(boundTo)))
+                    {
+                        diag = "The moonbase_JUCEClient license is bound to a device id that "
+                               "ActivationConfig::deviceIdResolver neither returns nor accepts, so it was not "
+                               "converted: it was copied from another computer, this JUCE derives the id "
+                               "differently, or the old module used its own salt or id. See "
+                               "docs/migration-juceclient.md.";
+                    }
+                    else
+                    {
+                        // Under the store's lock from the look to the write, so of
+                        // instances starting together one converts the license
+                        // and the others find it, as they would a sibling's
+                        // validation. Not looked at through load_local_license
+                        // while it is the old module's, which that would delete.
+                        auto guard = licensing->store().lock_for_update();
+                        if (! (licensePath && readJuceClientLicense(*licensePath)))
+                            stored = licensing->store().load_local_license();
+                        if (! stored)
+                        {
+                            // Stored unless this start was superseded. A failed
+                            // save leaves it for the next start to convert again,
+                            // which Moonbase answers the same way.
+                            const auto save = [&](const moonbase::license& value)
+                            {
+                                if (generations->load() != generation)
+                                    return;
+                                try
+                                {
+                                    licensing->store().store_local_license(value);
+                                }
+                                catch (const moonbase::storage_error& ex)
+                                {
+                                    diag = "The converted moonbase_JUCEClient license couldn't be saved, so the "
+                                           "next start converts it again: " + describeError(ex);
+                                }
+                            };
+                            try
+                            {
+                                result = licensing->client().convert_legacy_license(legacy->text);
+                                save(*result);
+                            }
+                            catch (const moonbase::release_not_covered_error& ex)
+                            {
+                                // Good for the versions it covers, so kept, as a
+                                // validation keeps it.
+                                if (ex.license())
+                                    save(*ex.license());
+                                throw;
+                            }
+                        }
+                    }
+                }
+                catch (const moonbase::release_not_covered_error& ex)
+                {
+                    diag = "The converted moonbase_JUCEClient license doesn't cover this version: " + describeError(ex);
+                    if (ex.license())
+                        notCovered = notCoveredFrom(ex, *ex.license());
+                }
+                catch (const moonbase::license_expired_error& ex)
+                {
+                    diag = "The moonbase_JUCEClient license has expired: " + describeError(ex);
+                    reason = LockReason::Expired;
+                    refused = true;
+                }
+                catch (const moonbase::license_invalid_error& ex)
+                {
+                    diag = "Moonbase refused to convert the moonbase_JUCEClient license: " + describeError(ex);
+                    reason = LockReason::Invalid;
+                    refused = true;
+                }
+                catch (const moonbase::store_closed_error& ex)
+                {
+                    diag = "Moonbase refused to convert the moonbase_JUCEClient license: " + describeError(ex);
+                    refused = true;
+                }
+                catch (const std::exception& ex)
+                {
+                    // No answer from Moonbase: the next start() tries again.
+                    diag = "Converting the moonbase_JUCEClient license failed; the next start tries again: "
+                         + describeError(ex);
+                }
+            }
             if (stored)
             {
                 // Peek without throwing on a past `exp` so we can tell an expired
@@ -433,13 +632,15 @@ void ActivationController::start()
         }
 
         juce::MessageManager::callAsync([safe, generation, result, expiredTrial, notCovered, deleteExpiredOffline,
-                                         reason, diag]() mutable
+                                         reason, refused, diag]() mutable
         {
             auto* self = safe.get();
             if (self == nullptr || generation != self->generation_.load())
                 return;
             if (diag.isNotEmpty())
                 self->emitDiagnostic(diag);
+            if (refused)
+                self->settleJuceClientLicense();
             if (deleteExpiredOffline)
                 self->deleteStoredLicense();
             if (expiredTrial)
@@ -1090,8 +1291,17 @@ void ActivationController::clearLicense()
     lock(LockReason::Deactivated);
 }
 
+void ActivationController::settleJuceClientLicense()
+{
+    if (config_.juceClientLicenseFile != juce::File() && state_ && ! state_->juceClientLicenseSettled())
+        state_->settleJuceClientLicense();
+}
+
 void ActivationController::deleteStoredLicense()
 {
+    // A license this module removes, by deactivating, forgetting or expiry, is
+    // not brought back from the moonbase_JUCEClient one.
+    settleJuceClientLicense();
     try
     {
         auto guard = licensing_->store().lock_for_update();
@@ -1104,6 +1314,7 @@ void ActivationController::deleteStoredLicense()
 
 void ActivationController::deleteStoredMatching(const juce::String& activationId)
 {
+    settleJuceClientLicense(); // as deleteStoredLicense does
     try
     {
         auto guard = licensing_->store().lock_for_update();
@@ -2068,6 +2279,7 @@ void ActivationController::setLicense(std::optional<moonbase::license> value)
     {
         lockReason_ = LockReason::None;
         notCovered_.reset();
+
     }
     // The add-ons were listed for the activation that just went or was replaced
     // (an activation here, say), along with anything still on its way for it.

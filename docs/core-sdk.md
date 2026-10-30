@@ -418,7 +418,7 @@ How each call maps what the API returns:
 | | 404 (no such product or account) | `api_error` |
 | `get_requested_activation` | 204 or 404 | `std::nullopt` |
 | | 400 | `activation_request_error` |
-| `validate_token_online`, `revoke_activation` | 400 | `license_invalid_error` (`license_expired_error` when `errorType` is `LicenseExpired`, `release_not_covered_error` when it is `ReleaseNotCovered`) |
+| `validate_token_online`, `revoke_activation`, `convert_legacy_license` | 400 | `license_invalid_error` (`license_expired_error` when `errorType` is `LicenseExpired`, `release_not_covered_error` when it is `ReleaseNotCovered`) |
 | | 403 or 404 | `api_error`, covered by the grace period |
 | `activate_sub_product`, `request_sub_product_trial`, `list_sub_products` | 400 with `errorType` `LicenseInvalid`, `LicenseRevoked` or `LicenseActivationRevoked` | `license_invalid_error` (`license_expired_error` for `LicenseExpired`) |
 | | 400 with `errorType: NoEligibleLicense` | `no_eligible_license_error` |
@@ -501,6 +501,36 @@ requires the token to have been issued via offline activation, throwing
 `validate_token_local` — offline tokens are never re-validated against the API
 and [cannot be revoked](#revoking-an-activation); they stay valid until the
 machine's device fingerprint changes.
+
+## Converting a `moonbase_JUCEClient` license
+
+An app moving from Moonbase's earlier JUCE module can turn the license that module left,
+a three-line file in Moonbase's earlier format, into one of its own, so the user doesn't
+activate again:
+
+```cpp
+std::ifstream file(old_license_path, std::ios::binary);
+const std::string legacy((std::istreambuf_iterator<char>(file)),
+                         std::istreambuf_iterator<char>());
+
+auto license = licensing.convert_legacy_license(legacy); // stored, as a validation is
+```
+
+Pass the file's contents unchanged: trimming them can break its signature. Moonbase
+validates the license as `validate_token_online` would, and it throws as that does,
+without the grace period, since there is no token yet to fall back on.
+
+When this device's id is a Moonbase device id (`mbd2_` and the like) of a newer
+fingerprint version than the one the license is bound to, Moonbase moves the device's
+online activation, or its trial, to it, keeping the seat and the days left. Otherwise the
+token stays bound to the old id, as an offline license always does, and the resolver has
+to accept that id for it to validate. Moonbase moves a device only to one of its own ids,
+so a custom resolver's id isn't sent at all. Moonbase can't tell that both ids belong to
+one computer either, so convert only a license bound to an id your resolver returns or
+accepts.
+
+The JUCE module does all of this from `ActivationConfig::juceClientLicenseFile`; see
+[Migrating from `moonbase_JUCEClient`](migration-juceclient.md).
 
 ## Custom storage and device resolvers
 

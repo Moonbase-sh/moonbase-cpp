@@ -524,6 +524,7 @@ private:
     void deliverLicenseChange();
     void deleteStoredMatching(const juce::String& activationId);
     void deleteStoredLicense(); // best-effort delete of the local license file
+    void settleJuceClientLicense(); // never convert the moonbase_JUCEClient license from here on
     void setDeviceLabel(juce::String deviceName);
     void emitDiagnostic(const juce::String& message); // message-thread only
     bool ensureReady(); // false (+ Error screen) when misconfigured / not built

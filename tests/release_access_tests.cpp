@@ -418,6 +418,28 @@ TEST_CASE("validate_token_online reads ReleaseNotCovered with the license Moonba
     REQUIRE(fixture.transport->requests.size() == 1);
 }
 
+TEST_CASE("convert_legacy_license stores the license Moonbase sends with ReleaseNotCovered")
+{
+    facade_fixture fixture;
+    auto fresh = updates_ended();
+    fresh["validated"] = tests::now_seconds();
+    const auto fresh_token = fixture.token(fresh);
+    fixture.transport->responses.push_back(http_response{400, {}, not_covered_problem(fresh_token)});
+
+    try {
+        (void)fixture.instance->convert_legacy_license("legacy");
+        FAIL("expected the version to be refused");
+    } catch (const release_not_covered_error& ex) {
+        REQUIRE(ex.license().has_value());
+        CHECK(ex.license()->token == fresh_token);
+    }
+
+    // Kept: it covers the versions it did, so the next launch starts from it.
+    const auto stored = fixture.instance->store().load_local_license();
+    REQUIRE(stored.has_value());
+    CHECK(stored->token == fresh_token);
+}
+
 TEST_CASE("validate_token_online leaves the store alone on ReleaseNotCovered when told not to persist")
 {
     facade_fixture fixture;

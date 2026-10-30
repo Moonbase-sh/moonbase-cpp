@@ -260,6 +260,45 @@ public:
         }
     }
 
+    // Converts a license the moonbase_JUCEClient module left, in Moonbase's earlier
+    // three-line format, into a license token, so the device moves to this SDK
+    // without activating again (see license_client::convert_legacy_license for
+    // how its device id is handled). Moonbase validates it as it would on
+    // validate_token_online, and the result is stored as that stores its own:
+    // under the same locks, best-effort, and only when should_persist, if given,
+    // returns true under them. That includes the license Moonbase sends with
+    // release_not_covered_error.
+    //
+    // Throws as validate_token_online does, except that nothing here falls back
+    // on a grace period: there is no token yet to fall back on.
+    [[nodiscard]] license convert_legacy_license(
+        std::string_view legacy_license,
+        std::function<bool()> should_persist = {}) const
+    {
+        std::lock_guard<std::mutex> in_process_guard(validate_mutex_);
+        auto cross_process_guard = store_->lock_for_update();
+
+        const auto persist = [&](const license& value) {
+            if (!should_persist || should_persist()) {
+                try {
+                    store_->store_local_license(value);
+                } catch (const storage_error&) {
+                }
+            }
+        };
+
+        try {
+            auto converted = client_->convert_legacy_license(legacy_license);
+            persist(converted);
+            return converted;
+        } catch (const release_not_covered_error& ex) {
+            if (ex.license()) {
+                persist(*ex.license());
+            }
+            throw;
+        }
+    }
+
     // Takes a seat of one of the product's add-ons for this device, from the
     // license the device holds for the product, and returns that license again,
     // reporting the add-on in sub_products. The add-on must be included in the

@@ -16,6 +16,7 @@
 #include "moonbase/detail/url.hpp"
 #include "moonbase/device_id_resolver.hpp"
 #include "moonbase/errors.hpp"
+#include "moonbase/fingerprint_spec.hpp"
 #include "moonbase/http.hpp"
 #include "moonbase/types.hpp"
 #include "moonbase/validator.hpp"
@@ -87,6 +88,14 @@ inline std::string revoke_path(const licensing_options& options)
         "/api/client/licenses/" +
         url_encode(options.product_id) +
         "/revoke";
+}
+
+inline std::string convert_path(const licensing_options& options)
+{
+    return trim_trailing_slashes(options.endpoint) +
+        "/api/client/licenses/" +
+        url_encode(options.product_id) +
+        "/convert";
 }
 
 inline std::string sub_products_path(const licensing_options& options)
@@ -594,22 +603,7 @@ public:
         query["method"] = to_string(method);
         const auto url = detail::append_query(detail::request_path(options_), query);
 
-        // The API refuses a blank device name or id outright. The name is only a
-        // label, so stand in for one the host could not supply (a failed host
-        // name lookup, a custom resolver), and let a byte in it that is not UTF-8
-        // cost a replacement character rather than the activation. The id is the
-        // binding itself, and a resolver that returns none, or one that is not
-        // UTF-8, is misconfigured.
-        auto device_name = detail::replace_invalid_utf8(device_ids_->device_name());
-        if (detail::trim_ascii_whitespace(device_name).empty()) {
-            device_name = "Unknown device";
-        }
-        const auto device_id = device_ids_->device_id();
-        if (detail::trim_ascii_whitespace(device_id).empty()) {
-            throw configuration_error("The device id resolver returned an empty device id");
-        }
-        detail::require_utf8_device_id(device_id);
-
+        const auto [device_name, device_id] = device_name_and_id();
         const auto payload = nlohmann::json{
             {"deviceName", device_name},
             {"deviceSignature", device_id},
@@ -654,6 +648,53 @@ public:
         request.connect_timeout = options_.http_connect_timeout;
         request.request_timeout = options_.http_request_timeout;
         request.body = std::string(token);
+
+        const auto response = transport_->send(request);
+        if (response.status_code < 200 || response.status_code >= 300) {
+            throw_for_license_problem(response);
+        }
+        detail::ensure_token_response(response);
+        return validator_->validate_token(response.body);
+    }
+
+    // Turns a license in Moonbase's earlier format, the three-line file the
+    // moonbase_JUCEClient module keeps, into a license token, validated as
+    // validate_token_online validates one. When this device's id is a Moonbase
+    // device id (mbd2_ and the like) of a newer fingerprint version than the id
+    // the license is bound to, Moonbase moves the device's online activation, or
+    // its trial, to it, so the device keeps its seat and its trial days.
+    // Otherwise, as for an offline activation, the token stays bound to the id
+    // the license had, and the resolver has to accept that id for it to validate
+    // here.
+    //
+    // Moonbase can't tell that both ids belong to this computer. Convert only a
+    // license bound to an id this device's resolver returns or accepts.
+    [[nodiscard]] license convert_legacy_license(std::string_view legacy_license) const
+    {
+        const auto url = detail::append_query(
+            detail::convert_path(options_),
+            detail::client_query(options_));
+
+        const auto [device_name, device_id] = device_name_and_id();
+        auto payload = nlohmann::json{
+            {"token", std::string(legacy_license)},
+            {"deviceName", device_name},
+        };
+        // Moonbase moves a device only to one of its own device ids, and refuses
+        // any other id that differs from the bound one. Leaving such an id out
+        // converts the license where it is instead, which is also all that
+        // sending the id the license is already bound to does.
+        if (fingerprint_spec::parse_device_id_stamp(device_id)) {
+            payload["deviceSignature"] = device_id;
+        }
+
+        http_request request;
+        request.method = "POST";
+        request.url = url;
+        request.headers = detail::default_headers(options_, "application/json");
+        request.connect_timeout = options_.http_connect_timeout;
+        request.request_timeout = options_.http_request_timeout;
+        request.body = payload.dump();
 
         const auto response = transport_->send(request);
         if (response.status_code < 200 || response.status_code >= 300) {
@@ -789,6 +830,26 @@ public:
     }
 
 private:
+    // The API refuses a blank device name or id outright. The name is only a
+    // label, so stand in for one the host could not supply (a failed host name
+    // lookup, a custom resolver), and let a byte in it that is not UTF-8 cost a
+    // replacement character rather than the request. The id is the binding
+    // itself, and a resolver that returns none, or one that is not UTF-8, is
+    // misconfigured.
+    [[nodiscard]] std::pair<std::string, std::string> device_name_and_id() const
+    {
+        auto device_name = detail::replace_invalid_utf8(device_ids_->device_name());
+        if (detail::trim_ascii_whitespace(device_name).empty()) {
+            device_name = "Unknown device";
+        }
+        auto device_id = device_ids_->device_id();
+        if (detail::trim_ascii_whitespace(device_id).empty()) {
+            throw configuration_error("The device id resolver returned an empty device id");
+        }
+        detail::require_utf8_device_id(device_id);
+        return {std::move(device_name), std::move(device_id)};
+    }
+
     [[nodiscard]] license post_for_sub_product(std::string_view token,
                                                std::string_view sub_product_id,
                                                const char* action) const

@@ -14,6 +14,7 @@
 #include <doctest/doctest.h>
 
 #include <moonbase_licensing/moonbase_licensing.h>
+#include <juce_cryptography/juce_cryptography.h> // juce::SHA256, to check the JUCE client id against
 
 #include <atomic>
 #include <chrono>
@@ -166,6 +167,24 @@ struct gated_transport : moonbase::http_transport
 
     void release() { gate.signal(); }
 };
+
+// A store that can't save, as on a full disk or a read-only folder.
+struct unsavable_store : moonbase::license_store
+{
+    std::optional<moonbase::license> load_local_license() override { return std::nullopt; }
+    void store_local_license(const moonbase::license&) override { throw moonbase::storage_error("disk full"); }
+    void delete_local_license() override {}
+};
+
+// A license as the moonbase_JUCEClient module writes it: the user, base64 of its
+// XML, and base64 of the signature, which only Moonbase checks.
+juce::String juceClientLicense(const juce::String& productId, const juce::String& boundTo)
+{
+    const auto xml = "<metadata>\n    <id>activation-123</id>\n    <productId>" + productId
+        + "</productId>\n    <trial>false</trial>\n    <computerSignature>" + boundTo
+        + "</computerSignature>\n</metadata>";
+    return "jane@example.com\n" + juce::Base64::toBase64(xml) + "\n" + juce::Base64::toBase64("0A1B2C3D") + "\n";
+}
 
 } // namespace
 
@@ -2726,6 +2745,421 @@ TEST_CASE("a migrating resolver keeps a license bound under the old id working")
     CHECK(controller.screen() == Screen::Details);
 }
 
+TEST_CASE("the JUCE client resolver reproduces the moonbase_JUCEClient device id")
+{
+    using resolver = juce_client_device_id_resolver;
+
+    // Vectors computed outside the SDK (shasum -a 256) over letter + salt + id.
+    CHECK(resolver::hash('M', "moonsalt_1", "D41D8CD98F00B204E9800998ECF8427E")
+          == "1ab39c5a3edb364bd05438458803eb346ed1bf2c617f45303a280d8b20212c33");
+    CHECK(resolver::hash('W', "pepper", "uid-123")
+          == "6b48f1668c1c18b703d17a55b15f0e1874bdad6ff310b51970445ccb8d54db99");
+    CHECK(resolver::platform_letter() != '\0');
+
+    const resolver defaults;
+    CHECK(defaults.device_name() == juce::SystemStats::getComputerName().toStdString());
+
+    if (! resolver::is_available)
+    {
+        CHECK_THROWS_AS((void) defaults.device_id(), moonbase::configuration_error);
+        return;
+    }
+
+    // The old module's own derivation, with JUCE's SHA-256, on this machine.
+    const auto oldModule = [](const juce::String& salt)
+    {
+        const auto material = juce::String::charToString(static_cast<juce::juce_wchar>(resolver::platform_letter()))
+            + salt + juce::String(moonbase::juce_integration::detail::legacyJuceDeviceId());
+        return juce::SHA256(material.toUTF8()).toHexString().toStdString();
+    };
+    CHECK(defaults.device_id() == oldModule("moonsalt_1"));
+    CHECK(resolver("pepper").device_id() == oldModule("pepper"));
+    CHECK(resolver("pepper").device_id() != defaults.device_id());
+}
+
+TEST_CASE("naming a moonbase_JUCEClient license makes the default resolver accept that module's id")
+{
+    using migrating = moonbase::migrating_device_id_resolver;
+    ActivationConfig config;
+    CHECK(std::dynamic_pointer_cast<migrating>(config.resolvedDeviceIdResolver()) == nullptr);
+
+    config.juceClientLicenseFile =
+        juce::File::getSpecialLocation(juce::File::tempDirectory).getChildFile("license.mb");
+    const auto resolver = config.resolvedDeviceIdResolver();
+#if JUCE_ANDROID
+    // Not on Android, where the old module bound the same id on every device.
+    CHECK(std::dynamic_pointer_cast<migrating>(resolver) == nullptr);
+#else
+    if (juce_client_device_id_resolver::is_available)
+    {
+        // Binds the default id and accepts the old one, so licenses convert by
+        // moving each device to the default id.
+        REQUIRE(std::dynamic_pointer_cast<migrating>(resolver) != nullptr);
+        CHECK(resolver->accepts_device_id(juce_client_device_id_resolver().device_id()));
+        CHECK_FALSE(resolver->accepts_device_id(juce_client_device_id_resolver("another salt").device_id()));
+    }
+    else
+    {
+        CHECK(std::dynamic_pointer_cast<migrating>(resolver) == nullptr);
+    }
+#endif
+
+    // Keeping the old id instead: a resolver of your own wins.
+    auto keep = std::make_shared<juce_client_device_id_resolver>();
+    config.deviceIdResolver = keep;
+    CHECK(config.resolvedDeviceIdResolver() == keep);
+}
+
+TEST_CASE("a moonbase_JUCEClient license at the license path is left in place when not named")
+{
+    controller_fixture fx;
+    juce::StringArray diags;
+    fx.config.onDiagnostic = [&](const juce::String& message) { diags.add(message); };
+
+    // Not JSON, so the store would delete it as corrupt.
+    const auto legacy = juceClientLicense("demo-app", "device-id");
+    REQUIRE(fx.licenseFile.replaceWithText(legacy, false, false, "\n"));
+
+    ActivationController controller(fx.config, fx.makeLicensing());
+    controller.start();
+    REQUIRE(pumpUntil([&] { return settled(controller); }));
+
+    CHECK(controller.screen() == Screen::Welcome);
+    CHECK_FALSE(controller.license().has_value());
+    CHECK(controller.lockReason() == LockReason::None);
+    CHECK(fx.licenseFile.loadFileAsString() == legacy);
+    CHECK(fx.transport->requests.empty());
+
+    const auto joined = diags.joinIntoString(" | ");
+    INFO("diagnostics: " << joined);
+    CHECK(joined.contains("moonbase_JUCEClient"));
+    CHECK(joined.contains("ActivationConfig::juceClientLicenseFile"));
+
+    // The license watch reads the file itself and leaves it alone too.
+    pumpFor(2500);
+    CHECK(fx.licenseFile.loadFileAsString() == legacy);
+}
+
+TEST_CASE("a moonbase_JUCEClient license at the license path converts in place")
+{
+    controller_fixture fx;
+    const auto legacy = juceClientLicense("demo-app", "device-id");
+    REQUIRE(fx.licenseFile.replaceWithText(legacy, false, false, "\n"));
+    fx.config.juceClientLicenseFile = fx.licenseFile;
+
+    SUBCASE("replaced by the converted license")
+    {
+        const auto converted = fx.token(default_claims());
+        fx.transport->responses.push_back(moonbase::http_response{ 200, {}, converted });
+
+        ActivationController controller(fx.config, fx.makeLicensing());
+        controller.start();
+        REQUIRE(pumpUntil([&] { return settled(controller); }));
+
+        CHECK(controller.screen() == Screen::Details);
+        REQUIRE(fx.transport->requests.size() == 1);
+        CHECK(nlohmann::json::parse(fx.transport->requests.front().body).at("token") == legacy.toStdString());
+        const auto stored = fx.store->load_local_license();
+        REQUIRE(stored.has_value());
+        CHECK(stored->token == converted);
+    }
+
+    SUBCASE("kept while Moonbase can't be reached")
+    {
+        fx.transport->responses.push_back(moonbase::http_response{ 503, {}, "" });
+
+        ActivationController controller(fx.config, fx.makeLicensing());
+        controller.start();
+        REQUIRE(pumpUntil([&] { return settled(controller); }));
+
+        CHECK(controller.screen() == Screen::Welcome);
+        CHECK(fx.licenseFile.loadFileAsString() == legacy);
+    }
+}
+
+TEST_CASE("a corrupt license file that isn't a moonbase_JUCEClient license is still cleared")
+{
+    controller_fixture fx;
+    REQUIRE(fx.licenseFile.replaceWithText("not a license\nat all\n"));
+
+    ActivationController controller(fx.config, fx.makeLicensing());
+    controller.start();
+    REQUIRE(pumpUntil([&] { return settled(controller); }));
+
+    CHECK(controller.screen() == Screen::Welcome);
+    CHECK_FALSE(fx.licenseFile.existsAsFile());
+}
+
+TEST_CASE("a moonbase_JUCEClient license converts on start, without activating again")
+{
+    controller_fixture fx;
+    const auto legacy = juceClientLicense("demo-app", "device-id");
+    const auto legacyFile = fx.licenseFile.getSiblingFile("juce-client-license.mb");
+    REQUIRE(legacyFile.replaceWithText(legacy, false, false, "\n"));
+    fx.config.juceClientLicenseFile = legacyFile;
+
+    // The same id: Moonbase converts the format and keeps the binding.
+    const auto converted = fx.token(default_claims());
+    fx.transport->responses.push_back(moonbase::http_response{ 200, {}, converted });
+
+    ActivationController controller(fx.config, fx.makeLicensing());
+    controller.start();
+    REQUIRE(pumpUntil([&] { return settled(controller); }));
+
+    CHECK(controller.screen() == Screen::Details);
+    REQUIRE(controller.license().has_value());
+    CHECK(controller.license()->token == converted);
+
+    REQUIRE(fx.transport->requests.size() == 1);
+    const auto& request = fx.transport->requests.front();
+    CHECK(request.url.find("https://demo.moonbase.sh/api/client/licenses/demo-app/convert?") == 0);
+    const auto body = nlohmann::json::parse(request.body);
+    CHECK(body.at("token") == legacy.toStdString());
+    // The id it is bound to already, and not one Moonbase moves devices to: left out.
+    CHECK_FALSE(body.contains("deviceSignature"));
+
+    // Stored as this module's own license, and the old file only read.
+    const auto stored = fx.store->load_local_license();
+    REQUIRE(stored.has_value());
+    CHECK(stored->token == converted);
+    CHECK(legacyFile.loadFileAsString() == legacy);
+
+    // Converted once: a license forgotten here doesn't come back on the next start.
+    controller.clearLicense();
+    ActivationController again(fx.config, fx.makeLicensing());
+    again.start();
+    REQUIRE(pumpUntil([&] { return settled(again); }));
+    CHECK(again.screen() == Screen::Welcome);
+    CHECK(fx.transport->requests.size() == 1);
+}
+
+TEST_CASE("a moonbase_JUCEClient license bound to an id the resolver accepts converts with this device's id")
+{
+    controller_fixture fx;
+    const std::string current = "mbd2_" + std::string(64, 'a');
+    auto resolver = std::make_shared<moonbase::migrating_device_id_resolver>(
+        std::make_shared<moonbase::static_device_id_resolver>("Studio Mac", current),
+        std::make_shared<moonbase::static_device_id_resolver>("Studio Mac", "old-juce-client-id"));
+
+    const auto legacyFile = fx.licenseFile.getSiblingFile("juce-client-license.mb");
+    REQUIRE(legacyFile.replaceWithText(juceClientLicense("demo-app", "old-juce-client-id"), false, false, "\n"));
+    fx.config.juceClientLicenseFile = legacyFile;
+
+    // A newer id than the one the license is bound to: Moonbase moves the seat to it.
+    const auto converted = fx.token(default_claims(current));
+    fx.transport->responses.push_back(moonbase::http_response{ 200, {}, converted });
+
+    ActivationController controller(
+        fx.config,
+        std::make_shared<moonbase::licensing>(fx.config.toLicensingOptions(), fx.store, resolver, fx.transport));
+    controller.start();
+    REQUIRE(pumpUntil([&] { return settled(controller); }));
+
+    CHECK(controller.screen() == Screen::Details);
+    REQUIRE(fx.transport->requests.size() == 1);
+    CHECK(nlohmann::json::parse(fx.transport->requests.front().body).at("deviceSignature") == current);
+}
+
+TEST_CASE("a moonbase_JUCEClient license converts where it is for a custom device id")
+{
+    controller_fixture fx;
+    // A custom current id Moonbase won't move a device to, and the old one accepted.
+    auto resolver = std::make_shared<moonbase::migrating_device_id_resolver>(
+        std::make_shared<moonbase::static_device_id_resolver>("Studio Mac", "custom-device-id"),
+        std::make_shared<moonbase::static_device_id_resolver>("Studio Mac", "old-juce-client-id"));
+
+    const auto legacyFile = fx.licenseFile.getSiblingFile("juce-client-license.mb");
+    REQUIRE(legacyFile.replaceWithText(juceClientLicense("demo-app", "old-juce-client-id"), false, false, "\n"));
+    fx.config.juceClientLicenseFile = legacyFile;
+    fx.transport->responses.push_back(
+        moonbase::http_response{ 200, {}, fx.token(default_claims("old-juce-client-id")) });
+
+    ActivationController controller(
+        fx.config,
+        std::make_shared<moonbase::licensing>(fx.config.toLicensingOptions(), fx.store, resolver, fx.transport));
+    controller.start();
+    REQUIRE(pumpUntil([&] { return settled(controller); }));
+
+    // Sent without the custom id, which Moonbase would refuse, so the license
+    // stays bound to the old one, which the resolver accepts.
+    CHECK(controller.screen() == Screen::Details);
+    REQUIRE(fx.transport->requests.size() == 1);
+    CHECK_FALSE(nlohmann::json::parse(fx.transport->requests.front().body).contains("deviceSignature"));
+}
+
+TEST_CASE("a moonbase_JUCEClient license this device can't vouch for is not converted")
+{
+    controller_fixture fx;
+    juce::StringArray diags;
+    fx.config.onDiagnostic = [&](const juce::String& message) { diags.add(message); };
+    const auto legacyFile = fx.licenseFile.getSiblingFile("juce-client-license.mb");
+    fx.config.juceClientLicenseFile = legacyFile;
+
+    SUBCASE("bound to another device")
+    {
+        REQUIRE(legacyFile.replaceWithText(juceClientLicense("demo-app", "another-computer"), false, false, "\n"));
+    }
+    SUBCASE("for another product")
+    {
+        REQUIRE(legacyFile.replaceWithText(juceClientLicense("other-app", "device-id"), false, false, "\n"));
+    }
+
+    ActivationController controller(fx.config, fx.makeLicensing());
+    controller.start();
+    REQUIRE(pumpUntil([&] { return settled(controller); }));
+
+    CHECK(controller.screen() == Screen::Welcome);
+    CHECK(fx.transport->requests.empty());
+    const auto joined = diags.joinIntoString(" | ");
+    INFO("diagnostics: " << joined);
+    CHECK(joined.contains("not converted"));
+}
+
+TEST_CASE("a moonbase_JUCEClient license converts at the next start when Moonbase can't be reached")
+{
+    controller_fixture fx;
+    juce::StringArray diags;
+    fx.config.onDiagnostic = [&](const juce::String& message) { diags.add(message); };
+    const auto legacyFile = fx.licenseFile.getSiblingFile("juce-client-license.mb");
+    REQUIRE(legacyFile.replaceWithText(juceClientLicense("demo-app", "device-id"), false, false, "\n"));
+    fx.config.juceClientLicenseFile = legacyFile;
+    fx.transport->responses.push_back(moonbase::http_response{ 503, {}, "" });
+    fx.transport->responses.push_back(moonbase::http_response{ 200, {}, fx.token(default_claims()) });
+
+    {
+        ActivationController controller(fx.config, fx.makeLicensing());
+        controller.start();
+        REQUIRE(pumpUntil([&] { return settled(controller); }));
+        CHECK(controller.screen() == Screen::Welcome);
+        CHECK(controller.lockReason() == LockReason::None);
+        CHECK(diags.joinIntoString(" | ").contains("the next start tries again"));
+    }
+
+    ActivationController again(fx.config, fx.makeLicensing());
+    again.start();
+    REQUIRE(pumpUntil([&] { return settled(again); }));
+    CHECK(again.screen() == Screen::Details);
+    CHECK(fx.transport->requests.size() == 2);
+}
+
+TEST_CASE("a moonbase_JUCEClient license isn't converted after this module removed a license of its own")
+{
+    controller_fixture fx;
+    const auto legacyFile = fx.licenseFile.getSiblingFile("juce-client-license.mb");
+    REQUIRE(legacyFile.replaceWithText(juceClientLicense("demo-app", "device-id"), false, false, "\n"));
+    fx.config.juceClientLicenseFile = legacyFile;
+
+    // Activated here before the old license could be converted (the first start
+    // had no connection, say), then deactivated.
+    fx.seedStored(fx.token(default_claims()));
+    {
+        ActivationController controller(fx.config, fx.makeLicensing());
+        controller.start();
+        REQUIRE(pumpUntil([&] { return settled(controller); }));
+        REQUIRE(controller.screen() == Screen::Details);
+        controller.clearLicense();
+    }
+
+    ActivationController again(fx.config, fx.makeLicensing());
+    again.start();
+    REQUIRE(pumpUntil([&] { return settled(again); }));
+    CHECK(again.screen() == Screen::Welcome);
+    CHECK(fx.transport->requests.empty());
+}
+
+TEST_CASE("a converted moonbase_JUCEClient license that couldn't be saved converts again at the next start")
+{
+    controller_fixture fx;
+    juce::StringArray diags;
+    fx.config.onDiagnostic = [&](const juce::String& message) { diags.add(message); };
+    const auto legacyFile = fx.licenseFile.getSiblingFile("juce-client-license.mb");
+    REQUIRE(legacyFile.replaceWithText(juceClientLicense("demo-app", "device-id"), false, false, "\n"));
+    fx.config.juceClientLicenseFile = legacyFile;
+    fx.transport->responses.push_back(moonbase::http_response{ 200, {}, fx.token(default_claims()) });
+    fx.transport->responses.push_back(moonbase::http_response{ 200, {}, fx.token(default_claims()) });
+
+    auto store = std::make_shared<unsavable_store>();
+    const auto makeLicensing = [&]
+    {
+        return std::make_shared<moonbase::licensing>(fx.config.toLicensingOptions(), store, fx.fingerprint, fx.transport);
+    };
+
+    {
+        // Unlocked for this session all the same.
+        ActivationController controller(fx.config, makeLicensing());
+        controller.start();
+        REQUIRE(pumpUntil([&] { return settled(controller); }));
+        CHECK(controller.screen() == Screen::Details);
+        CHECK(diags.joinIntoString(" | ").contains("couldn't be saved"));
+    }
+
+    ActivationController again(fx.config, makeLicensing());
+    again.start();
+    REQUIRE(pumpUntil([&] { return settled(again); }));
+    CHECK(again.screen() == Screen::Details);
+    CHECK(fx.transport->requests.size() == 2);
+}
+
+TEST_CASE("instances starting together convert a moonbase_JUCEClient license once")
+{
+    controller_fixture fx;
+    const auto legacyFile = fx.licenseFile.getSiblingFile("juce-client-license.mb");
+    REQUIRE(legacyFile.replaceWithText(juceClientLicense("demo-app", "device-id"), false, false, "\n"));
+    fx.config.juceClientLicenseFile = legacyFile;
+
+    auto transport = std::make_shared<gated_transport>();
+    transport->responses.push_back(moonbase::http_response{ 200, {}, fx.token(default_claims()) });
+    // Each instance with a store of its own on the shared file, as separate
+    // plugin instances have.
+    const auto makeLicensing = [&]
+    {
+        return std::make_shared<moonbase::licensing>(
+            fx.config.toLicensingOptions(),
+            std::make_shared<moonbase::file_license_store>(compat::toFilesystemPath(fx.licenseFile)),
+            fx.fingerprint,
+            transport);
+    };
+
+    ActivationController first(fx.config, makeLicensing());
+    ActivationController second(fx.config, makeLicensing());
+    first.start();
+    REQUIRE(pumpUntil([&] { return transport->entered.load(); }));
+    second.start();
+    pumpFor(300); // waiting on the store's lock, which the first holds
+    transport->release();
+
+    REQUIRE(pumpUntil([&] { return settled(first) && settled(second); }));
+    CHECK(first.screen() == Screen::Details);
+    CHECK(second.screen() == Screen::Details);
+    CHECK(transport->requests.load() == 1);
+}
+
+TEST_CASE("a moonbase_JUCEClient license Moonbase refuses locks, and isn't sent again")
+{
+    controller_fixture fx;
+    const auto legacyFile = fx.licenseFile.getSiblingFile("juce-client-license.mb");
+    REQUIRE(legacyFile.replaceWithText(juceClientLicense("demo-app", "device-id"), false, false, "\n"));
+    fx.config.juceClientLicenseFile = legacyFile;
+    fx.transport->responses.push_back(moonbase::http_response{
+        400, {}, R"({"title":"Not allowed","detail":"License has been revoked","status":400,"errorType":"LicenseActivationRevoked"})" });
+
+    {
+        ActivationController controller(fx.config, fx.makeLicensing());
+        controller.start();
+        REQUIRE(pumpUntil([&] { return settled(controller); }));
+        CHECK(controller.screen() == Screen::Welcome);
+        CHECK(controller.lockReason() == LockReason::Invalid);
+        CHECK_FALSE(fx.store->load_local_license().has_value());
+    }
+
+    ActivationController again(fx.config, fx.makeLicensing());
+    again.start();
+    REQUIRE(pumpUntil([&] { return settled(again); }));
+    CHECK(again.screen() == Screen::Welcome);
+    CHECK(fx.transport->requests.size() == 1);
+    CHECK(legacyFile.existsAsFile());
+}
+
 TEST_CASE("without a migration, an old binding is diagnosed as a device mismatch")
 {
     controller_fixture fx;
@@ -4118,6 +4552,42 @@ juce::String storedToken(const controller_fixture& fx)
 }
 
 } // namespace
+
+TEST_CASE("a license that doesn't cover this version, once cleared, doesn't bring back the moonbase_JUCEClient one")
+{
+    controller_fixture fx;
+    fx.config.applicationVersion = "3.0.0";
+    const auto legacyFile = fx.licenseFile.getSiblingFile("juce-client-license.mb");
+    REQUIRE(legacyFile.replaceWithText(juceClientLicense("demo-app", "device-id"), false, false, "\n"));
+    fx.config.juceClientLicenseFile = legacyFile;
+
+    auto fresh = upToMajorTwo();
+    fresh["validated"] = now_seconds();
+    fx.transport->responses.push_back(notCoveredResponse(fx.token(fresh)));
+
+    SUBCASE("converted from it") {}
+    SUBCASE("activated here")
+    {
+        auto stale = upToMajorTwo();
+        stale["validated"] = now_seconds() - 3600; // past the throttle, so start() asks Moonbase
+        fx.seedStored(fx.token(stale));
+    }
+
+    {
+        ActivationController controller(fx.config, fx.makeLicensing());
+        controller.start();
+        REQUIRE(pumpUntil([&] { return settled(controller); }));
+        CHECK(controller.screen() == Screen::NotCovered);
+        CHECK(fx.store->load_local_license().has_value()); // kept, as a validation keeps it
+        controller.clearLicense();
+    }
+
+    ActivationController again(fx.config, fx.makeLicensing());
+    again.start();
+    REQUIRE(pumpUntil([&] { return settled(again); }));
+    CHECK(again.screen() == Screen::Welcome);
+    CHECK(fx.transport->requests.size() == 1);
+}
 
 TEST_CASE("a license that doesn't cover this version locks, keeps the license and offers the upgrade")
 {

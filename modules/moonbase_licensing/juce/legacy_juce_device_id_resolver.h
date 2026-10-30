@@ -52,20 +52,23 @@ struct has_unique_device_id<Stats, std::void_t<decltype(Stats::getUniqueDeviceID
 };
 
 // Stats is a template parameter so the call is dependent, and the branch that
-// does not compile on this JUCE is never instantiated.
+// does not compile on this JUCE is never instantiated. `resolver` names the
+// resolver asking, for the error.
 template <typename Stats = juce::SystemStats>
-[[nodiscard]] std::string legacyJuceDeviceId()
+[[nodiscard]] std::string legacyJuceDeviceId(const char* resolver = "legacy_juce_device_id_resolver")
 {
     if constexpr (has_unique_device_id<Stats>::value)
     {
+        juce::ignoreUnused(resolver);
         return Stats::getUniqueDeviceID().toStdString();
     }
     else
     {
         throw moonbase::configuration_error(
-            "legacy_juce_device_id_resolver needs juce::SystemStats::getUniqueDeviceID(), which this "
-            "JUCE does not have (it was added in JUCE 7.0.5). No license can have been bound with it "
-            "by a build on this JUCE, so remove the resolver from your migration chain.");
+            std::string(resolver)
+            + " needs juce::SystemStats::getUniqueDeviceID(), which this JUCE does not have (it was "
+              "added in JUCE 7.0.5). No license can have been bound with it by a build on this JUCE, "
+              "so don't configure this resolver here.");
     }
 }
 

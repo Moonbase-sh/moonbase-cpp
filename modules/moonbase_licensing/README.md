@@ -190,6 +190,24 @@ out, say) locks too, but stays stored, and the modal offers the upgrade.
 See [`docs/juce-module.md`](../../docs/juce-module.md) for the full guide and
 [`examples/juce-native/`](../../examples/juce-native/) for a runnable sample app.
 
+## Moving from `moonbase_JUCEClient`
+
+Coming from Moonbase's earlier JUCE module? Name the license it kept, and on its first
+start the module has Moonbase convert it, so your users don't activate again and keep
+their seats and trials. Each device moves to the cross-SDK device id as it converts:
+
+```cpp
+// licenseFileLocation in the old module's moonbase_api_config.json
+config.juceClientLicenseFile = juce::File::getSpecialLocation (juce::File::userApplicationDataDirectory)
+                                   .getChildFile ("Your Company/Your Plugin/license.mb");
+```
+
+When that is the same file as `config.licenseFile`, the converted license replaces it.
+
+[Migrating from `moonbase_JUCEClient`](../../docs/migration-juceclient.md) covers the
+rest: keeping the old device id instead, the configuration and API mapping, running both
+side by side, and what to test.
+
 ## Upgrading from 3.x
 
 The device id changed in 4.0.0: the module now computes the cross-SDK
