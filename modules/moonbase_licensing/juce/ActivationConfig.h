@@ -26,6 +26,7 @@
 #include "JuceMetadata.h"
 // Named by resolvedDeviceIdResolver(). Included here rather than relied on from
 // the module umbrella so this header stays usable on its own.
+#include "juce_client_device_id_resolver.h"
 #include "legacy_juce_device_id_resolver.h"
 
 // Normally defined by the module umbrella header; fall back so this header is
@@ -134,6 +135,23 @@ struct ActivationConfig
     // (see resolvedLicenseFile()).
     juce::File licenseFile;
 
+    // Moving from the moonbase_JUCEClient module: the license file it kept, the
+    // licenseFileLocation in its moonbase_api_config.json under the user's
+    // application data folder. While no license is stored here, start() converts
+    // that one through Moonbase into a license of this module's own, so the user
+    // doesn't activate again. Not once Moonbase has refused it for good, nor
+    // after this module removed a license of its own (the user deactivated here,
+    // say). When it is the same file as licenseFile, the converted license
+    // replaces it; otherwise it is only read.
+    //
+    // Only a license bound to this computer converts: to a device id
+    // deviceIdResolver returns or accepts. Left unset, it binds the default id and
+    // accepts the one the old module bound, so each device moves to the default
+    // id as its license converts (see resolvedDeviceIdResolver()). To keep binding
+    // the old id instead, set it to a juce_client_device_id_resolver. See
+    // docs/migration-juceclient.md.
+    juce::File juceClientLicenseFile;
+
     //== Branding / UI =========================================================
     juce::String productName;       // defaults to JucePlugin_Name (see resolvedProductName())
     juce::String manufacturerName;  // defaults to JucePlugin_Manufacturer; shown under the product name
@@ -203,6 +221,9 @@ struct ActivationConfig
     // that already has activated users: the device id changed in 4.0.0, so
     // without one every existing install must re-activate, which consumes a fresh
     // activation seat and resets any device-scoped trial. See docs/migration-3x.md.
+    //
+    // Left null with juceClientLicenseFile set, the default also accepts the id
+    // the moonbase_JUCEClient module bound (see resolvedDeviceIdResolver()).
     std::shared_ptr<moonbase::device_id_resolver> deviceIdResolver;
 
     // Accept a deliberately weaker device id (a hash of the host name, stamped
@@ -514,7 +535,20 @@ struct ActivationConfig
         if (deviceIdResolver != nullptr)
             return deviceIdResolver;
 
-        return defaultDeviceIdResolver(allowDeviceNameFallback);
+        auto resolver = defaultDeviceIdResolver(allowDeviceNameFallback);
+
+        // Moving from moonbase_JUCEClient: bind the default id, and keep accepting
+        // the one that module bound, so its licenses convert, moving each device
+        // to the default id, and the offline ones, which stay on the old id, keep
+        // validating. Not on Android, where getUniqueDeviceID() is the same on
+        // every device, nor on a JUCE without it, where nothing was bound with it.
+#if ! JUCE_ANDROID
+        if (juceClientLicenseFile != juce::File() && juce_client_device_id_resolver::is_available)
+            return std::make_shared<moonbase::migrating_device_id_resolver>(
+                std::move(resolver), std::make_shared<juce_client_device_id_resolver>());
+#endif
+
+        return resolver;
     }
 
     /// The resolver this platform gets when `deviceIdResolver` is left unset.

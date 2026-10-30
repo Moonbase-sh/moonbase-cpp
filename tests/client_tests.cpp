@@ -396,6 +396,112 @@ TEST_CASE("validate_token_online re-validates the refreshed JWT locally")
     CHECK_THROWS_AS((void)fixture.client.validate_token_online("token"), license_invalid_error);
 }
 
+TEST_CASE("convert_legacy_license posts the legacy license and returns the token")
+{
+    client_fixture fixture({});
+    const auto converted = moonbase::tests::make_token(
+        fixture.key.key.get(),
+        moonbase::tests::default_claims());
+    fixture.transport->responses.push_back(http_response{200, {}, converted});
+
+    const std::string legacy = "jane@example.com\nPG1ldGFkYXRhLz4=\nMEExQg==\n";
+    const auto result = fixture.client.convert_legacy_license(legacy);
+
+    CHECK(result.id == "license-123");
+    CHECK(result.token == converted);
+
+    REQUIRE(fixture.transport->requests.size() == 1);
+    const auto& request = fixture.transport->requests.front();
+    CHECK(request.method == "POST");
+    CHECK(request.url.find("https://demo.moonbase.sh/api/client/licenses/demo-app/convert?") == 0);
+    CHECK(request.url.find("method=") == std::string::npos);
+    CHECK(request.url.find("platform=Mac") != std::string::npos);
+    CHECK(request.url.find("appVersion=1.2.3") != std::string::npos);
+    CHECK(request.url.find("meta%5Bchannel%5D=test") != std::string::npos);
+    CHECK(request.headers.at("Content-Type") == "application/json");
+    CHECK(request.headers.at("x-mb-client") == "moonbase-cpp");
+    CHECK(request.connect_timeout == std::chrono::milliseconds{1234});
+    CHECK(request.request_timeout == std::chrono::milliseconds{5678});
+
+    const auto body = nlohmann::json::parse(request.body);
+    CHECK(body.at("token") == legacy);
+    CHECK(body.at("deviceName") == "Test Device");
+    // Not a Moonbase device id, which Moonbase would refuse to move the device
+    // to: left out, so the license converts where it is.
+    CHECK_FALSE(body.contains("deviceSignature"));
+}
+
+TEST_CASE("convert_legacy_license sends a Moonbase device id, so Moonbase can move the device to it")
+{
+    client_fixture fixture({});
+    const std::string current = "mbd2_" + std::string(64, 'a');
+    auto resolver = std::make_shared<static_device_id_resolver>("Test Device", current);
+    license_client client(
+        fixture.make_options(),
+        resolver,
+        std::make_shared<license_validator>(fixture.make_options(), resolver),
+        fixture.transport);
+    fixture.transport->responses.push_back(http_response{
+        200, {}, moonbase::tests::make_token(fixture.key.key.get(), moonbase::tests::default_claims(current))});
+
+    const auto result = client.convert_legacy_license("legacy");
+
+    CHECK(result.id == "license-123");
+    REQUIRE(fixture.transport->requests.size() == 1);
+    const auto body = nlohmann::json::parse(fixture.transport->requests.front().body);
+    CHECK(body.at("deviceSignature") == current);
+    CHECK(body.at("deviceName") == "Test Device");
+}
+
+TEST_CASE("convert_legacy_license maps license problems as validation does")
+{
+    SUBCASE("refused")
+    {
+        client_fixture fixture({
+            http_response{400, {}, R"({"title":"Invalid license","detail":"License is not for this product","status":400,"errorType":"LicenseInvalid"})"},
+        });
+        CHECK_THROWS_WITH_AS(
+            (void)fixture.client.convert_legacy_license("legacy"),
+            "License is not for this product",
+            license_invalid_error);
+    }
+
+    SUBCASE("expired")
+    {
+        client_fixture fixture({
+            http_response{400, {}, R"({"errorType":"LicenseExpired","detail":"The license has expired"})"},
+        });
+        CHECK_THROWS_AS((void)fixture.client.convert_legacy_license("legacy"), license_expired_error);
+    }
+
+    SUBCASE("unavailable")
+    {
+        client_fixture fixture({
+            http_response{503, {}, ""},
+        });
+        CHECK_THROWS_AS((void)fixture.client.convert_legacy_license("legacy"), api_error);
+    }
+
+    SUBCASE("a web page in place of the token")
+    {
+        client_fixture fixture({
+            http_response{200, {}, "<html>Sign in to the network</html>"},
+        });
+        CHECK_THROWS_AS((void)fixture.client.convert_legacy_license("legacy"), api_error);
+    }
+}
+
+TEST_CASE("convert_legacy_license refuses a token bound to a device this resolver doesn't accept")
+{
+    client_fixture fixture({});
+    const auto converted = moonbase::tests::make_token(
+        fixture.key.key.get(),
+        moonbase::tests::default_claims("other-device"));
+    fixture.transport->responses.push_back(http_response{200, {}, converted});
+
+    CHECK_THROWS_AS((void)fixture.client.convert_legacy_license("legacy"), license_invalid_error);
+}
+
 TEST_CASE("revoke_activation posts the JWT to the revoke endpoint")
 {
     client_fixture fixture({

@@ -160,6 +160,7 @@ fallback. It vendors the bridge header verbatim from this repo:
 | [Fingerprint spec](FINGERPRINT_SPEC.md) | The normative cross-SDK algorithm and stability contract |
 | [Security](docs/security.md) | What the SDK guarantees, what it leaves to you, and how to gate well |
 | [Migrating from 3.x](docs/migration-3x.md) | The 4.0.0 device id change, and how to migrate a shipped fleet |
+| [Migrating from `moonbase_JUCEClient`](docs/migration-juceclient.md) | Moving a plugin from Moonbase's earlier JUCE module, converting its users' licenses so nobody activates again |
 | [Contributing](CONTRIBUTING.md) | Build, test, generated files, CI, releases |
 | Samples | [core](examples/activation.cpp), [JUCE module](examples/juce-native/), [bridge](examples/juce/), [UI snapshots](tests/visual/) |
 

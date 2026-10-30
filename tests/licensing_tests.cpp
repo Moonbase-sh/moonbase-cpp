@@ -995,6 +995,57 @@ TEST_CASE("validate_token_online persists when should_persist returns true")
     CHECK(stored->token == refreshed_token);
 }
 
+TEST_CASE("convert_legacy_license stores the license it converts")
+{
+    facade_fixture fixture;
+    const auto converted = fixture.make_token(moonbase::tests::default_claims());
+    fixture.transport->responses.push_back(http_response{200, {}, converted});
+
+    const auto returned = fixture.instance.convert_legacy_license("legacy");
+
+    CHECK(returned.token == converted);
+    const auto stored = fixture.instance.store().load_local_license();
+    REQUIRE(stored.has_value());
+    CHECK(stored->token == converted);
+    REQUIRE(fixture.transport->requests.size() == 1);
+    CHECK(fixture.transport->requests.front().url.find("/api/client/licenses/demo-app/convert") != std::string::npos);
+}
+
+TEST_CASE("convert_legacy_license leaves the store alone when told not to persist")
+{
+    facade_fixture fixture;
+    const auto converted = fixture.make_token(moonbase::tests::default_claims());
+    fixture.transport->responses.push_back(http_response{200, {}, converted});
+
+    int predicate_calls = 0;
+    const auto returned = fixture.instance.convert_legacy_license(
+        "legacy", [&] { ++predicate_calls; return false; });
+
+    CHECK(predicate_calls == 1);
+    CHECK(returned.token == converted);
+    CHECK_FALSE(fixture.instance.store().load_local_license().has_value());
+}
+
+TEST_CASE("convert_legacy_license stores nothing when the conversion fails")
+{
+    SUBCASE("refused")
+    {
+        facade_fixture fixture;
+        fixture.transport->responses.push_back(
+            http_response{400, {}, R"({"title":"Invalid license","detail":"License has been revoked","status":400})"});
+        CHECK_THROWS_AS((void)fixture.instance.convert_legacy_license("legacy"), license_invalid_error);
+        CHECK_FALSE(fixture.instance.store().load_local_license().has_value());
+    }
+
+    SUBCASE("unreachable, with no grace period to fall back on")
+    {
+        facade_fixture fixture;
+        fixture.transport->responses.push_back(http_response{503, {}, ""});
+        CHECK_THROWS_AS((void)fixture.instance.convert_legacy_license("legacy"), api_error);
+        CHECK_FALSE(fixture.instance.store().load_local_license().has_value());
+    }
+}
+
 TEST_CASE("validate_token_online does not invoke should_persist on the throttle fast path")
 {
     facade_fixture fixture;

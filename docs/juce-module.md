@@ -393,6 +393,17 @@ still ships the JUCE version that created it, so do not combine this upgrade wit
 JUCE major bump. Full options in
 [Migrating from 3.x](migration-3x.md).
 
+### Moving from `moonbase_JUCEClient`
+
+A plugin moving from Moonbase's earlier JUCE module names the license that module kept in
+`config.juceClientLicenseFile`, and on its first start the controller has Moonbase
+convert it: the user doesn't activate again, and keeps their seat and their trial. When
+that is the same file as `config.licenseFile`, the converted license replaces it. The
+default resolver then also accepts the device id the old module bound, so conversion
+moves each device to the id above. To keep binding the old id instead, set
+`config.deviceIdResolver` to a `juce_client_device_id_resolver`. See
+[Migrating from `moonbase_JUCEClient`](migration-juceclient.md).
+
 ### iOS and Android use a scoped identity
 
 On iOS and Android the module emits a **scoped** spec id, stamped `mbd2s_`, built

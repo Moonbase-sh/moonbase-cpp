@@ -44,6 +44,23 @@ public:
         setProperty(kIgnoredUpdates, arr);
     }
 
+    //== Moving from moonbase_JUCEClient =======================================
+    // Whether the license that module left is done with: Moonbase refused it for
+    // good, or this module removed a license of its own (deactivated, forgot or
+    // expired it), which converting the old one would bring back. Read from disk,
+    // as another instance may have settled it.
+    [[nodiscard]] bool juceClientLicenseSettled()
+    {
+        load();
+        return static_cast<bool>(root_.getProperty(kJuceClientLicenseSettled, false));
+    }
+
+    void settleJuceClientLicense()
+    {
+        load(); // read-modify-write so a concurrent instance's entries survive
+        setProperty(kJuceClientLicenseSettled, true);
+    }
+
     //== Generic escape hatch for future state =================================
     [[nodiscard]] juce::var get(const juce::Identifier& key) const
     {
@@ -54,6 +71,7 @@ public:
 
 private:
     static inline const juce::Identifier kIgnoredUpdates { "ignoredUpdates" };
+    static inline const juce::Identifier kJuceClientLicenseSettled { "juceClientLicenseSettled" };
 
     void load()
     {

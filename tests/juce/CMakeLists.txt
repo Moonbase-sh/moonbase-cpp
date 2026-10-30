@@ -50,6 +50,7 @@ target_link_libraries(MoonbaseJuceTests PRIVATE
     doctest::doctest
     OpenSSL::SSL
     OpenSSL::Crypto
+    juce::juce_cryptography
     juce::juce_gui_extra
     juce::juce_recommended_config_flags
     juce::juce_recommended_warning_flags)
