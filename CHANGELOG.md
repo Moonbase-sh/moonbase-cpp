@@ -1,3 +1,10 @@
+## [4.13.3](https://github.com/Moonbase-sh/moonbase-cpp/compare/v4.13.2...v4.13.3) (2026-11-02)
+
+
+### Bug Fixes
+
+* delete a revoked license so an offline launch can't unlock it ([#50](https://github.com/Moonbase-sh/moonbase-cpp/issues/50)) ([eda1bee](https://github.com/Moonbase-sh/moonbase-cpp/commit/eda1beecf979d283eca32590a4cc63830a9edb0c))
+
 ## [4.13.2](https://github.com/Moonbase-sh/moonbase-cpp/compare/v4.13.1...v4.13.2) (2026-10-28)
 
 
