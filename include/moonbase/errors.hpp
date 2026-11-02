@@ -123,6 +123,34 @@ public:
     }
 };
 
+// Moonbase revoked the license (errorType LicenseRevoked: by hand, or with a
+// refund), or this device's activation of it (LicenseActivationRevoked). A
+// revoked license is never restored, and a revoked activation only comes back by
+// activating the device again, which brings a license of its own. So delete the
+// stored license: kept, it would still unlock an offline launch for as long as
+// the grace period runs.
+//
+// The other refusals are no reason to delete it. A lapsed subscription
+// (license_expired_error) validates again once renewed, and a 400 without one of
+// these codes may be about the request rather than the license.
+//
+// type() stays error_type::license_invalid, so code that switches on it keeps
+// treating a revoked license as an invalid one.
+class license_revoked_error : public license_invalid_error {
+public:
+    license_revoked_error(const std::string& message, bool activation_revoked)
+        : license_invalid_error(message), activation_revoked_(activation_revoked)
+    {
+    }
+
+    /// True when only this device's activation was revoked: the license itself
+    /// may still be good, and activating the device again takes a seat of it.
+    [[nodiscard]] bool activation_revoked() const noexcept { return activation_revoked_; }
+
+private:
+    bool activation_revoked_;
+};
+
 // The merchant has closed their Moonbase account (410 StoreClosed). Not a
 // license_invalid_error: it says nothing against the license, so treat it like
 // being offline. An activated device's validation gets a signed offline license

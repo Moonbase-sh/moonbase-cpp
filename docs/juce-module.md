@@ -541,8 +541,13 @@ successful check. A definitive rejection is not: when the server says the licens
 was revoked or has lapsed, the controller drops it
 and shows the welcome screen, and `onActivationChanged` fires. The same happens when the
 grace period has run out and Moonbase still can't be reached. The license file stays, as it
-does when `start()` meets the same answer, so the next launch checks it again. Offline
-licenses are a no-op (they are permanent and not server-tracked).
+does when `start()` meets the same answer, so the next launch checks it again: a lapsed
+subscription that is renewed unlocks there. A revoked license doesn't stay. Moonbase never
+restores one, and a revoked activation only comes back by activating again, so the
+controller deletes the file when Moonbase says either, at launch as on re-validation. An
+offline launch then has nothing to fall back on, and other instances lock within a couple
+of seconds, as they do for a deactivation. Offline licenses are a no-op (they are
+permanent and not server-tracked).
 
 ### Cadence and timeouts
 

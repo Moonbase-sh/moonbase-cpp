@@ -1278,23 +1278,39 @@ TEST_CASE("refreshLicense keeps the current license when the server is unreachab
     CHECK(controller.screen() == Screen::Details);
 }
 
+namespace {
+const moonbase::http_response licenseRevoked{
+    400, {}, R"({"title":"Invalid state","detail":"License has been revoked","status":400,"errorType":"LicenseRevoked"})"};
+const moonbase::http_response activationRevoked{
+    400, {}, R"({"title":"Not allowed","detail":"License has been revoked","status":400,"errorType":"LicenseActivationRevoked"})"};
+} // namespace
+
 TEST_CASE("refreshLicense locks when the server rejects the license for good")
 {
-    const std::vector<std::pair<const char*, moonbase::http_response>> rejections{
-        {"license revoked",
-         moonbase::http_response{400, {}, R"({"title":"Invalid state","detail":"License has been revoked","status":400,"errorType":"LicenseRevoked"})"}},
+    struct Rejection
+    {
+        const char* name;
+        moonbase::http_response response;
+        bool deleted; // the file goes only when Moonbase revoked the license
+    };
+    const std::vector<Rejection> rejections{
+        {"license revoked", licenseRevoked, true},
+        {"activation revoked", activationRevoked, true},
         {"subscription lapsed",
-         moonbase::http_response{400, {}, R"({"title":"Invalid state","detail":"License has expired","status":400,"errorType":"LicenseExpired"})"}},
+         moonbase::http_response{400, {}, R"({"title":"Invalid state","detail":"License has expired","status":400,"errorType":"LicenseExpired"})"},
+         false},
         {"license no longer active",
-         moonbase::http_response{400, {}, R"({"title":"Invalid state","detail":"License is no longer active","status":400})"}},
-        {"activation revoked",
-         moonbase::http_response{400, {}, R"({"title":"Not allowed","detail":"License has been revoked","status":400,"errorType":"LicenseActivationRevoked"})"}},
+         moonbase::http_response{400, {}, R"({"title":"Invalid state","detail":"License is no longer active","status":400})"},
+         false},
+        {"license invalid",
+         moonbase::http_response{400, {}, R"({"title":"Invalid license","detail":"License is not valid","status":400,"errorType":"LicenseInvalid"})"},
+         false},
     };
 
     for (const auto& entry : rejections)
     {
-        CAPTURE(entry.first);
-        const auto& response = entry.second;
+        CAPTURE(entry.name);
+        const auto& response = entry.response;
         controller_fixture fx;
         juce::StringArray diags;
         fx.config.onDiagnostic = [&](const juce::String& m) { diags.add(m); };
@@ -1311,12 +1327,126 @@ TEST_CASE("refreshLicense locks when the server rejects the license for good")
         CHECK_FALSE(ok);
         CHECK_FALSE(controller.license().has_value());
         CHECK(controller.screen() == Screen::Welcome);
-        CHECK(fx.licenseFile.existsAsFile()); // kept, as start() keeps it, for the next launch to re-check
+        // Kept, as start() keeps it, for the next launch to re-check: a renewal
+        // brings a lapsed subscription back. A revoked license never comes back.
+        CHECK(fx.licenseFile.existsAsFile() != entry.deleted);
         CHECK(diags.joinIntoString(" ").contains("License rejected on re-validation"));
         // A lapsed subscription has ended; everything else was refused.
         CHECK(controller.lockReason()
-              == (juce::String(entry.first) == "subscription lapsed" ? LockReason::Expired : LockReason::Invalid));
+              == (juce::String(entry.name) == "subscription lapsed" ? LockReason::Expired : LockReason::Invalid));
     }
+}
+
+TEST_CASE("a license revoked on re-validation stays locked on an offline launch")
+{
+    for (const auto& response : {licenseRevoked, activationRevoked})
+    {
+        CAPTURE(response.body);
+        controller_fixture fx;
+        auto claims = default_claims();
+        claims["validated"] = now_seconds() - 3600; // past the throttle, well inside the grace period
+        fx.seedStored(fx.token(claims));
+        {
+            // Offline at first: unlocked on the license's last check.
+            ActivationController controller(fx.config, fx.makeLicensing());
+            controller.start();
+            REQUIRE(pumpUntil([&] { return controller.screen() == Screen::Details; }));
+
+            fx.transport->responses.push_back(response);
+            bool done = false;
+            controller.refreshLicense(true, [&](bool) { done = true; });
+            REQUIRE(pumpUntil([&] { return done; }));
+            REQUIRE(controller.lockReason() == LockReason::Invalid);
+        }
+
+        // Launched again with no connection: nothing left to fall back on.
+        ActivationController relaunched(fx.config, fx.makeLicensing());
+        relaunched.start();
+        REQUIRE(pumpUntil([&] { return settled(relaunched); }));
+        CHECK(relaunched.screen() == Screen::Welcome);
+        CHECK_FALSE(relaunched.license().has_value());
+        CHECK_FALSE(relaunched.licensedFlag().load());
+        CHECK_FALSE(fx.licenseFile.existsAsFile());
+    }
+}
+
+TEST_CASE("a license revoked at launch is deleted, and stays locked on an offline launch")
+{
+    for (const auto& response : {licenseRevoked, activationRevoked})
+    {
+        CAPTURE(response.body);
+        controller_fixture fx;
+        auto claims = default_claims();
+        claims["validated"] = now_seconds() - 3600; // past the throttle -> start() checks online
+        fx.seedStored(fx.token(claims));
+        fx.transport->responses.push_back(response);
+        {
+            ActivationController controller(fx.config, fx.makeLicensing());
+            controller.start();
+            REQUIRE(pumpUntil([&] { return settled(controller); }));
+            CHECK(controller.screen() == Screen::Welcome);
+            CHECK(controller.lockReason() == LockReason::Invalid); // says why, not "Deactivated"
+            CHECK_FALSE(fx.licenseFile.existsAsFile());
+        }
+
+        ActivationController relaunched(fx.config, fx.makeLicensing());
+        relaunched.start();
+        REQUIRE(pumpUntil([&] { return settled(relaunched); }));
+        CHECK(relaunched.screen() == Screen::Welcome);
+        CHECK_FALSE(relaunched.license().has_value());
+    }
+}
+
+TEST_CASE("a license refused at launch without being revoked is kept for the next launch")
+{
+    controller_fixture fx;
+    auto claims = default_claims();
+    claims["validated"] = now_seconds() - 3600;
+    fx.seedStored(fx.token(claims));
+    fx.transport->responses.push_back(
+        moonbase::http_response{400, {}, R"({"title":"Invalid state","detail":"License is no longer active","status":400})"});
+
+    ActivationController controller(fx.config, fx.makeLicensing());
+    controller.start();
+    REQUIRE(pumpUntil([&] { return settled(controller); }));
+    CHECK(controller.screen() == Screen::Welcome);
+    CHECK(controller.lockReason() == LockReason::Invalid);
+    CHECK(fx.licenseFile.existsAsFile());
+}
+
+TEST_CASE("a revoked activation is not deleted over this computer's activation since")
+{
+    controller_fixture fx;
+    fx.seedStored(fx.token(default_claims()));
+    auto gated = std::make_shared<gated_transport>();
+    auto licensing = std::make_shared<moonbase::licensing>(
+        fx.config.toLicensingOptions(), fx.store, fx.fingerprint, gated);
+    ActivationController controller(fx.config, licensing, "dev", [gated] { gated->release(); });
+    controller.start();
+    REQUIRE(pumpUntil([&] { return controller.screen() == Screen::Details; }));
+
+    {
+        std::lock_guard<std::mutex> lock(gated->mutex);
+        gated->responses.push_back(activationRevoked);
+    }
+    bool done = false;
+    controller.refreshLicense(true, [&](bool) { done = true; });
+    REQUIRE(pumpUntil([&] { return gated->entered.load(); }));
+
+    // Another instance activates this computer again while the refusal is on its
+    // way. Moonbase gives it the same activation id; only the newer copy differs.
+    auto again = default_claims();
+    again["validated"] = now_seconds();
+    const auto againToken = fx.token(again);
+    std::thread otherInstance([&] { fx.seedStored(againToken); });
+    std::this_thread::sleep_for(std::chrono::milliseconds(100)); // waiting on the lock
+    gated->release();
+    otherInstance.join();
+
+    REQUIRE(pumpUntil([&] { return done; }));
+    auto stored = fx.store->load_local_license();
+    REQUIRE(stored.has_value());
+    CHECK(stored->token == againToken);
 }
 
 namespace {

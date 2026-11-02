@@ -431,6 +431,14 @@ TEST_CASE("revoke_activation maps API errors")
         CHECK_THROWS_AS(fixture.client.revoke_activation("token"), license_invalid_error);
     }
 
+    SUBCASE("already revoked")
+    {
+        client_fixture fixture({
+            http_response{400, {}, R"({"title":"Not allowed","detail":"License has been revoked","status":400,"errorType":"LicenseActivationRevoked"})"},
+        });
+        CHECK_THROWS_AS(fixture.client.revoke_activation("token"), license_revoked_error);
+    }
+
     SUBCASE("server error")
     {
         client_fixture fixture({
@@ -476,10 +484,15 @@ TEST_CASE("validate_token_online reports a revoked license or activation as inva
         client_fixture fixture({
             http_response{400, {}, R"({"title":"Invalid state","detail":"License has been revoked","status":400,"errorType":"LicenseRevoked"})"},
         });
-        CHECK_THROWS_WITH_AS(
-            (void)fixture.client.validate_token_online("token"),
-            "License has been revoked",
-            license_invalid_error);
+        try {
+            (void)fixture.client.validate_token_online("token");
+            FAIL("expected license_revoked_error");
+        } catch (const license_revoked_error& ex) {
+            CHECK(std::string(ex.what()) == "License has been revoked");
+            CHECK_FALSE(ex.activation_revoked());
+            // Still a license_invalid_error to code that switches on the type.
+            CHECK(ex.type() == error_type::license_invalid);
+        }
     }
 
     SUBCASE("activation revoked")
@@ -487,21 +500,50 @@ TEST_CASE("validate_token_online reports a revoked license or activation as inva
         client_fixture fixture({
             http_response{400, {}, R"({"title":"Not allowed","detail":"License has been revoked","status":400,"errorType":"LicenseActivationRevoked"})"},
         });
-        CHECK_THROWS_WITH_AS(
-            (void)fixture.client.validate_token_online("token"),
-            "License has been revoked",
-            license_invalid_error);
+        try {
+            (void)fixture.client.validate_token_online("token");
+            FAIL("expected license_revoked_error");
+        } catch (const license_revoked_error& ex) {
+            CHECK(std::string(ex.what()) == "License has been revoked");
+            CHECK(ex.activation_revoked());
+            CHECK(ex.type() == error_type::license_invalid);
+        }
     }
 
+    // Neither says the license was revoked, so neither is a reason to delete it.
     SUBCASE("license no longer active (a pending license, or an older server)")
     {
         client_fixture fixture({
             http_response{400, {}, R"({"title":"Invalid state","detail":"License is no longer active","status":400})"},
         });
-        CHECK_THROWS_WITH_AS(
-            (void)fixture.client.validate_token_online("token"),
-            "License is no longer active",
-            license_invalid_error);
+        try {
+            (void)fixture.client.validate_token_online("token");
+            FAIL("expected license_invalid_error");
+        } catch (const license_invalid_error& ex) {
+            CHECK(std::string(ex.what()) == "License is no longer active");
+            CHECK(dynamic_cast<const license_revoked_error*>(&ex) == nullptr);
+        }
+    }
+
+    SUBCASE("a token Moonbase can't read as this product's license")
+    {
+        client_fixture fixture({
+            http_response{400, {}, R"({"title":"Invalid license","detail":"License is not valid","status":400,"errorType":"LicenseInvalid"})"},
+        });
+        try {
+            (void)fixture.client.validate_token_online("token");
+            FAIL("expected license_invalid_error");
+        } catch (const license_invalid_error& ex) {
+            CHECK(dynamic_cast<const license_revoked_error*>(&ex) == nullptr);
+        }
+    }
+
+    SUBCASE("a revoked code on another status is no verdict")
+    {
+        client_fixture fixture({
+            http_response{503, {}, R"({"title":"Unavailable","status":503,"errorType":"LicenseRevoked"})"},
+        });
+        CHECK_THROWS_AS((void)fixture.client.validate_token_online("token"), api_error);
     }
 }
 

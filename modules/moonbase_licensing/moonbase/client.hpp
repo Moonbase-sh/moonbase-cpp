@@ -352,6 +352,17 @@ inline std::string app_version_text(const licensing_options& options)
     return *options.application_version;
 }
 
+// A 400 whose errorType says the license or this device's activation was revoked.
+inline void throw_if_revoked(const problem_details& problem, const std::string& message)
+{
+    if (problem.error_type == "LicenseRevoked") {
+        throw license_revoked_error(message, false);
+    }
+    if (problem.error_type == "LicenseActivationRevoked") {
+        throw license_revoked_error(message, true);
+    }
+}
+
 [[noreturn]] inline void throw_api_error(const http_response& response, const problem_details& problem)
 {
     throw api_error(
@@ -364,8 +375,9 @@ inline std::string app_version_text(const licensing_options& options)
 
 // The shared mapping for the license endpoints. A 400 is a definitive refusal of
 // what was sent, so it becomes license_invalid_error (license_expired_error for an
-// expired license); everything else, including rate limiting and 5xx failures,
-// stays an api_error that is worth retrying.
+// expired license, license_revoked_error for a revoked one); everything else,
+// including rate limiting and 5xx failures, stays an api_error that is worth
+// retrying.
 //
 // That includes a 403 or 404, although /validate and /revoke send those for a
 // license that no longer exists or changed hands. Their body is stock ASP.NET
@@ -382,6 +394,7 @@ inline std::string app_version_text(const licensing_options& options)
     }
 
     if (response.status_code == 400) {
+        throw_if_revoked(problem, problem_message(response.status_code, problem));
         // Older servers said "expired" without an errorType. Only trusted on a
         // 400, so a gateway's 5xx page that mentions an expired session can never
         // pass for a definitive license verdict.
@@ -433,8 +446,8 @@ inline std::string app_version_text(const licensing_options& options)
         throw license_expired_error(message);
     }
     if (response.status_code == 400) {
-        if (problem.error_type == "LicenseInvalid" || problem.error_type == "LicenseRevoked" ||
-            problem.error_type == "LicenseActivationRevoked") {
+        throw_if_revoked(problem, message);
+        if (problem.error_type == "LicenseInvalid") {
             throw license_invalid_error(message);
         }
         if (problem.error_type == "NoEligibleLicense") {

@@ -230,9 +230,10 @@ public:
     bool tryLoadStoredLicense(bool online = true)
     {
         ++validationGeneration_;
+        std::optional<moonbase::license> stored;
         try
         {
-            auto stored = licensing_->store().load_local_license();
+            stored = licensing_->store().load_local_license();
             if (!stored)
             {
                 setUnlocked(std::nullopt);
@@ -250,6 +251,12 @@ public:
 
             setUnlocked(std::move(validated));
             return true;
+        }
+        catch (const moonbase::license_revoked_error&)
+        {
+            deleteRevoked(*licensing_, *stored);
+            setUnlocked(std::nullopt);
+            return false;
         }
         catch (const moonbase::license_invalid_error&)
         {
@@ -278,7 +285,8 @@ public:
         OfflineToken,       // Token is offline-activated; no online check performed.
         Refreshed,          // Online check returned a valid license (either freshly refreshed
                             // by the API or, within the grace period, the cached local copy).
-        LockedInvalid,      // Server explicitly rejected the token as invalid.
+        LockedInvalid,      // Server explicitly rejected the token as invalid. A revoked
+                            // license is also deleted from the store.
         LockedExpired,      // Server explicitly rejected the token as expired.
         Unreachable,        // Past grace period; transport failed. Bridge is now locked.
     };
@@ -415,10 +423,11 @@ public:
         // Step 2: online check on a background thread.
         auto licensingHandle = licensing_;
         const auto token = local->token;
+        const auto stored = *local;
         auto cb = std::move(onComplete);
 
         juce::Thread::launch(
-            [licensingHandle, token, generation, safeThis,
+            [licensingHandle, token, stored, generation, safeThis,
              deliver = std::move(deliver), cb = std::move(cb)]() mutable
             {
                 // Veto the SDK-side persist if our generation has been
@@ -441,6 +450,11 @@ public:
                     auto refreshed =
                         licensingHandle->validate_token_online(token, shouldPersist);
                     result = {AsyncValidationOutcome::Refreshed, std::move(refreshed)};
+                }
+                catch (const moonbase::license_revoked_error&)
+                {
+                    deleteRevoked(*licensingHandle, stored);
+                    result = {AsyncValidationOutcome::LockedInvalid, std::nullopt};
                 }
                 catch (const moonbase::license_invalid_error&)
                 {
@@ -933,6 +947,23 @@ public:
     }
 
 private:
+    // Moonbase revoked the stored license, so delete it: kept, it would still
+    // unlock an offline call for as long as the grace period runs. Not when the
+    // file has moved on since: to another license, or to a copy issued after the
+    // refused one (activating this computer again keeps its activation id).
+    static void deleteRevoked(moonbase::licensing& licensing, const moonbase::license& refused)
+    {
+        try
+        {
+            auto guard = licensing.store().lock_for_update();
+            auto stored = licensing.store().load_local_license();
+            if (stored && stored->id == refused.id && stored->activation_id == refused.activation_id
+                && stored->validated_at <= refused.validated_at)
+                licensing.store().delete_local_license();
+        }
+        catch (const moonbase::storage_error&) {}
+    }
+
     // Forgets a browser activation the server refused, unless a newer
     // beginActivation() has already replaced it.
     void dropPendingRequest(const std::string& requestId)
