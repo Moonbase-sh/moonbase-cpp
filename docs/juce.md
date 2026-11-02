@@ -92,6 +92,9 @@ The two `licensing_options` knobs that govern the API call:
 
 Definitive server rejections (`license_invalid_error`, `license_expired_error`)
 always cause `tryLoadStoredLicense()` to return `false` regardless of grace.
+When Moonbase revoked the license, or this computer's activation of it
+(`license_revoked_error`), the bridge also deletes it from the store, so a later
+call made offline can't fall back on it within the grace period.
 Offline-activated tokens (`activation_method::offline`) are validated locally
 even when calling `tryLoadStoredLicense()` — the bridge never contacts the API
 for them.

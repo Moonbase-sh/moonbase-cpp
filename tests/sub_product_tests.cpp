@@ -424,6 +424,10 @@ TEST_CASE("the add-on endpoints tell a refused add-on from a refused license")
             fixture.respond(problem(400, code));
             CHECK_THROWS_AS(call(client), license_invalid_error);
         }
+        fixture.respond(problem(400, "LicenseRevoked"));
+        CHECK_THROWS_AS(call(client), license_revoked_error);
+        fixture.respond(problem(400, "LicenseActivationRevoked"));
+        CHECK_THROWS_AS(call(client), license_revoked_error);
         fixture.respond(problem(400, "LicenseExpired"));
         CHECK_THROWS_AS(call(client), license_expired_error);
 

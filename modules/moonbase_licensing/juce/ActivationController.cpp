@@ -406,9 +406,26 @@ void ActivationController::start()
                         diag = juce::String("Stored license doesn't cover this version: ") + ex.what();
                         notCovered = notCoveredFrom(ex, *peek);
                     }
+                    catch (const moonbase::license_revoked_error& ex)
+                    {
+                        // Revoked -> locked, and deleted: only activating again
+                        // brings it back, and an offline launch would otherwise
+                        // run on it for the rest of the grace period. Deleted
+                        // here, as the store's lock can be held by another
+                        // process for a whole request; the license watch waits
+                        // for this launch to settle, so it can't take the
+                        // removal for another instance's.
+                        diag = juce::String("Re-validating stored license failed: ") + describeError(ex);
+                        reason = LockReason::Invalid;
+                        diag << (deleteRevoked(*licensing, *peek)
+                                     ? " Removed it."
+                                     : " The license file has changed since, so it stays.");
+                    }
                     catch (const moonbase::license_invalid_error& ex)
                     {
-                        // Refused for good, such as revoked -> locked.
+                        // Refused, but not revoked -> locked, and kept: such a
+                        // refusal can be about the request or the app's setup
+                        // rather than the license.
                         diag = juce::String("Re-validating stored license failed: ") + describeError(ex);
                         reason = LockReason::Invalid;
                     }
@@ -626,6 +643,7 @@ void ActivationController::refreshLicense(bool force, std::function<void(bool)> 
         std::optional<NotCoveredInfo> notCovered;
         bool expired = false;
         bool rejected = false;
+        bool revoked = false;
         bool pastGrace = false;
         juce::String diag;
         try
@@ -689,10 +707,17 @@ void ActivationController::refreshLicense(bool force, std::function<void(bool)> 
             notCovered = notCoveredFrom(ex, currentLicense);
             diag = juce::String::fromUTF8(ex.what());
         }
+        catch (const moonbase::license_revoked_error& ex)
+        {
+            // As below, and the stored license goes too (see start()).
+            rejected = true;
+            revoked = true;
+            diag = juce::String::fromUTF8(ex.what());
+        }
         catch (const moonbase::license_invalid_error& ex)
         {
-            // The server refused the license for good: it was revoked or
-            // deleted. Also not a network blip, so this locks too.
+            // The server refused the license for good. Also not a network
+            // blip, so this locks too.
             rejected = true;
             diag = juce::String::fromUTF8(ex.what());
         }
@@ -706,8 +731,9 @@ void ActivationController::refreshLicense(bool force, std::function<void(bool)> 
             pastGrace = std::chrono::system_clock::now() - currentLicense.validated_at > gracePeriod;
         }
 
-        juce::MessageManager::callAsync([safe, generation, refreshed, notCovered, expired, rejected, pastGrace,
-                                         currentLicense, wasTrial, licensing, force, diag, onComplete]() mutable
+        juce::MessageManager::callAsync([safe, generation, refreshed, notCovered, expired, rejected, revoked,
+                                         pastGrace, currentLicense, wasTrial, licensing, force, diag,
+                                         onComplete]() mutable
         {
             auto* self = safe.get();
             if (self != nullptr)
@@ -785,11 +811,30 @@ void ActivationController::refreshLicense(bool force, std::function<void(bool)> 
                 // but leave the file, so the next launch checks it again. A full
                 // license lands here when its subscription lapsed: the server
                 // says LicenseExpired for that, as it does for an ended trial.
+                // A revoked license is deleted, as start() deletes it.
                 self->emitDiagnostic(pastGrace
                                          ? "Couldn't re-validate within the offline grace period: " + diag
                                          : "License rejected on re-validation: " + diag);
                 self->lock(expired ? LockReason::Expired
                                    : rejected ? LockReason::Invalid : LockReason::Unverified);
+                if (revoked)
+                {
+                    // On a worker, as the store's lock can be held by another
+                    // process for a whole request. The license is dropped by
+                    // now, so the license watch won't take the removal for
+                    // another instance's.
+                    self->threadPool_.addJob([safe, licensing, currentLicense]
+                    {
+                        const bool removed = deleteRevoked(*licensing, currentLicense);
+                        juce::MessageManager::callAsync([safe, removed]
+                        {
+                            if (auto* owner = safe.get())
+                                owner->emitDiagnostic(removed ? "Removed the revoked license."
+                                                              : "The license file has changed since the license was "
+                                                                "revoked, so it stays.");
+                        });
+                    });
+                }
                 if (onComplete) onComplete(false);
             }
             else
@@ -1116,6 +1161,30 @@ void ActivationController::deleteStoredMatching(const juce::String& activationId
     catch (const moonbase::storage_error&)
     {
     }
+}
+
+bool ActivationController::deleteRevoked(moonbase::licensing& licensing, const moonbase::license& refused)
+{
+    // Only the refused copy, or an older one of the same license and activation.
+    // Activating this computer again keeps its activation id (Moonbase derives it
+    // from the customer, product and device), so the file may hold that newer
+    // activation instead. A copy validated in the same second may be one too: the
+    // time is in whole seconds, and an add-on call keeps the previous validation's.
+    try
+    {
+        auto guard = licensing.store().lock_for_update();
+        if (auto stored = licensing.store().load_local_license();
+            stored && stored->id == refused.id && stored->activation_id == refused.activation_id
+            && (stored->token == refused.token || stored->validated_at < refused.validated_at))
+        {
+            licensing.store().delete_local_license();
+            return true;
+        }
+    }
+    catch (const moonbase::storage_error&)
+    {
+    }
+    return false;
 }
 
 //==============================================================================

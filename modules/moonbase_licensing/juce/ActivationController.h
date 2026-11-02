@@ -185,11 +185,12 @@ public:
     // on success the license updates, and onLicenseChanged / onActivationChanged
     // fire when the server sent a new token, so you can reload features. `force`
     // bypasses the online-validation throttle (use it right after a purchase).
-    // A revoked or lapsed license locks, and so does one that can't be checked
-    // once the offline grace period has run out; within it a network failure
-    // keeps the license. No-op for offline licenses, and while an online
-    // activation is in progress (it brings a fresh license of its own). The
-    // optional callback runs on the message thread with the outcome.
+    // A revoked or lapsed license locks (a revoked one is deleted from the store
+    // too, so an offline launch can't fall back on it), and so does one that
+    // can't be checked once the offline grace period has run out; within it a
+    // network failure keeps the license. No-op for offline licenses, and while
+    // an online activation is in progress (it brings a fresh license of its
+    // own). The optional callback runs on the message thread with the outcome.
     //
     // On the NotCovered screen it re-checks the license that doesn't cover this
     // version, so once the customer has bought the upgrade it unlocks. While it
@@ -523,6 +524,9 @@ private:
     void notifyLicenseChange();  // coalesced, async onLicenseChanged
     void deliverLicenseChange();
     void deleteStoredMatching(const juce::String& activationId);
+    // Deletes the stored copy of a license Moonbase revoked, unless the file has
+    // moved on since. Waits for the store's lock: never on the message thread.
+    static bool deleteRevoked(moonbase::licensing& licensing, const moonbase::license& refused);
     void deleteStoredLicense(); // best-effort delete of the local license file
     void setDeviceLabel(juce::String deviceName);
     void emitDiagnostic(const juce::String& message); // message-thread only

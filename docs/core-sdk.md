@@ -196,6 +196,16 @@ Definitive server rejections (`license_invalid_error`, `license_expired_error`)
 always propagate regardless of grace. See [Errors](#errors) for what counts as
 definitive.
 
+A rejection stores nothing, so the stored license keeps the time of its last
+successful check, and the next call that can't reach Moonbase falls back on it
+for the rest of the grace period. When Moonbase revoked the license, or this
+device's activation of it (`license_revoked_error`), delete it: a revoked license
+is never restored, and a revoked activation only comes back by activating again,
+which stores a license of its own. Keep it for the other rejections: a lapsed
+subscription validates again once it is renewed (offline, the device still
+enforces the token's own expiry), and a refusal without a revoked code can be
+about the request rather than the license.
+
 Offline-activated tokens (`activation_method::offline`) are validated locally
 even when calling `validate_token_online` — the SDK never contacts the API for
 them. Use `validate_token_local` directly when you want the local-only check
@@ -253,8 +263,10 @@ try {
     // Keep the license. validate_token_online already stored the copy Moonbase
     // sent along with the refusal (ex.license()).
     offer_upgrade(ex.app_version(), ex.release_access(), ex.upgrade_url());
+} catch (const moonbase::license_revoked_error&) {
+    licensing.store().delete_local_license(); // only activating again brings it back
 } catch (const moonbase::license_invalid_error&) {
-    licensing.store().delete_local_license(); // revoked, or not for this device
+    // refused, but not revoked: lock, and keep the license
 }
 ```
 
@@ -401,7 +413,8 @@ trying again can help:
 | Exception | Meaning | What to do |
 | --- | --- | --- |
 | `api_error` | No definitive answer. The API was unreachable (`status_code()` is 0), rate limited (429), failing (5xx, including the gateway's own 502 and 504), or something other than the API answered, such as a captive portal | Retry later; `retry_after()` says when, if the server did |
-| `license_invalid_error` | The API refused the license for good: a bad signature or product, or a revoked license or activation | Lock, and offer to activate again |
+| `license_invalid_error` | The API refused the license for good: a bad signature or product, or a revoked license or activation | Lock, and offer to activate again. Keep the stored license unless it is a `license_revoked_error` |
+| `license_revoked_error` | The license, or this device's activation of it, was revoked. A `license_invalid_error`, whose `type()` is still `error_type::license_invalid`; `activation_revoked()` says which | Lock, delete the stored license, and offer to activate again |
 | `release_not_covered_error` | The license is valid, but doesn't cover `application_version`. A `license_invalid_error` | Lock, keep the license, and [offer the upgrade](#licenses-that-cover-some-versions) |
 | `license_expired_error` | The license has expired: a trial ended, or a subscription lapsed | Lock, and offer to buy |
 | `store_closed_error` | The merchant closed their Moonbase account. No verdict on the license | Treat it like being offline |
@@ -418,9 +431,9 @@ How each call maps what the API returns:
 | | 404 (no such product or account) | `api_error` |
 | `get_requested_activation` | 204 or 404 | `std::nullopt` |
 | | 400 | `activation_request_error` |
-| `validate_token_online`, `revoke_activation` | 400 | `license_invalid_error` (`license_expired_error` when `errorType` is `LicenseExpired`, `release_not_covered_error` when it is `ReleaseNotCovered`) |
+| `validate_token_online`, `revoke_activation` | 400 | `license_invalid_error` (`license_expired_error` when `errorType` is `LicenseExpired`, `release_not_covered_error` when it is `ReleaseNotCovered`, `license_revoked_error` when it is `LicenseRevoked` or `LicenseActivationRevoked`) |
 | | 403 or 404 | `api_error`, covered by the grace period |
-| `activate_sub_product`, `request_sub_product_trial`, `list_sub_products` | 400 with `errorType` `LicenseInvalid`, `LicenseRevoked` or `LicenseActivationRevoked` | `license_invalid_error` (`license_expired_error` for `LicenseExpired`) |
+| `activate_sub_product`, `request_sub_product_trial`, `list_sub_products` | 400 with `errorType` `LicenseInvalid`, `LicenseRevoked` or `LicenseActivationRevoked` | `license_invalid_error` (`license_revoked_error` for the two revoked codes, `license_expired_error` for `LicenseExpired`) |
 | | 400 with `errorType: NoEligibleLicense` | `no_eligible_license_error` |
 | | any other 400 | `operation_not_supported_error` with the server's reason |
 | | 404 | `api_error` |
