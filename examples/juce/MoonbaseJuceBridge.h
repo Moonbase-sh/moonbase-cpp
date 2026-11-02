@@ -948,9 +948,11 @@ public:
 
 private:
     // Moonbase revoked the stored license, so delete it: kept, it would still
-    // unlock an offline call for as long as the grace period runs. Not when the
-    // file has moved on since: to another license, or to a copy issued after the
-    // refused one (activating this computer again keeps its activation id).
+    // unlock an offline call for as long as the grace period runs. Only the
+    // refused copy, or an older one: activating this computer again keeps its
+    // activation id, so the file may hold that newer activation instead, and
+    // validation times are whole seconds, so one from the same second may be it.
+    // Waits for the store's lock, which another process can hold for a request.
     static void deleteRevoked(moonbase::licensing& licensing, const moonbase::license& refused)
     {
         try
@@ -958,7 +960,7 @@ private:
             auto guard = licensing.store().lock_for_update();
             auto stored = licensing.store().load_local_license();
             if (stored && stored->id == refused.id && stored->activation_id == refused.activation_id
-                && stored->validated_at <= refused.validated_at)
+                && (stored->token == refused.token || stored->validated_at < refused.validated_at))
                 licensing.store().delete_local_license();
         }
         catch (const moonbase::storage_error&) {}

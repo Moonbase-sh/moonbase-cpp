@@ -524,7 +524,9 @@ private:
     void notifyLicenseChange();  // coalesced, async onLicenseChanged
     void deliverLicenseChange();
     void deleteStoredMatching(const juce::String& activationId);
-    void deleteRevoked(const moonbase::license& refused); // the stored copy, unless the file has moved on
+    // Deletes the stored copy of a license Moonbase revoked, unless the file has
+    // moved on since. Waits for the store's lock: never on the message thread.
+    static bool deleteRevoked(moonbase::licensing& licensing, const moonbase::license& refused);
     void deleteStoredLicense(); // best-effort delete of the local license file
     void setDeviceLabel(juce::String deviceName);
     void emitDiagnostic(const juce::String& message); // message-thread only
