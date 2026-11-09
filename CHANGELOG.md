@@ -1,3 +1,10 @@
+## [4.13.4](https://github.com/Moonbase-sh/moonbase-cpp/compare/v4.13.3...v4.13.4) (2026-11-09)
+
+
+### Bug Fixes
+
+* count a validation ahead of the device clock as overdue ([#51](https://github.com/Moonbase-sh/moonbase-cpp/issues/51)) ([e17bc4b](https://github.com/Moonbase-sh/moonbase-cpp/commit/e17bc4b4091a890c9a662979d30416819f39a02a))
+
 ## [4.13.3](https://github.com/Moonbase-sh/moonbase-cpp/compare/v4.13.2...v4.13.3) (2026-11-02)
 
 
