@@ -32,6 +32,27 @@
 
 namespace moonbase {
 
+namespace detail {
+
+// How long ago Moonbase last validated the license, by this device's clock: what
+// online_validation_min_interval and online_validation_grace_period are measured
+// against. Moonbase stamps the time with its own clock, so a device clock a little
+// behind it reads a fresh validation as slightly in the future, which counts as
+// just now. Further ahead than that, the device clock is wrong (set back since,
+// say), and how long ago it was can't be known: that reads as the longest time
+// there is, so Moonbase is asked, and the grace period is over if it can't be
+// reached.
+inline std::chrono::system_clock::duration time_since_validation(
+    const license& value,
+    std::chrono::system_clock::time_point now = std::chrono::system_clock::now())
+{
+    constexpr auto clock_skew = std::chrono::minutes(5);
+    const auto elapsed = now - value.validated_at;
+    return elapsed < -clock_skew ? (std::chrono::system_clock::duration::max)() : elapsed;
+}
+
+} // namespace detail
+
 class licensing {
 public:
     explicit licensing(
@@ -213,7 +234,7 @@ public:
             // fall back to the caller-supplied token.
         }
 
-        const auto age = std::chrono::system_clock::now() - freshest.validated_at;
+        const auto age = detail::time_since_validation(freshest);
 
         // The throttle is only allowed to skip the API while we're also
         // inside the grace period — otherwise a min_interval longer than the

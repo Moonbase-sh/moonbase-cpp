@@ -1728,6 +1728,31 @@ TEST_CASE("a license offline past its grace period locks while the plugin is ope
     CHECK(fx.licenseFile.existsAsFile());
 }
 
+TEST_CASE("a license validated ahead of this computer's clock locks while open once Moonbase can't be reached")
+{
+    controller_fixture fx;
+    juce::StringArray diags;
+    fx.config.onDiagnostic = [&](const juce::String& m) { diags.add(m); };
+    // The clock is an hour behind the last validation: within the default 7-day
+    // grace period and the 5-minute throttle, if that counted as no time at all.
+    auto ahead = default_claims();
+    ahead["validated"] = now_seconds() + 60 * 60;
+    fx.seedStored(fx.token(ahead));
+    fx.transport->responses.push_back(moonbase::http_response{200, {}, fx.token(ahead)});
+
+    ActivationController controller(fx.config, fx.makeLicensing());
+    controller.start();
+    REQUIRE(pumpUntil([&] { return controller.screen() == Screen::Details; }));
+    CHECK(fx.transport->requests.size() == 1); // start() asked Moonbase
+
+    // Nothing queued: the watch's re-check can't reach Moonbase.
+    CHECK(pumpUntil([&] { return controller.screen() == Screen::Welcome; }, 10000));
+    CHECK_FALSE(controller.licensedFlag().load());
+    CHECK(controller.lockReason() == LockReason::Unverified);
+    CHECK(fx.transport->requests.size() == 2);
+    CHECK(diags.joinIntoString(" ").contains("offline grace period"));
+}
+
 TEST_CASE("an activation in another instance unlocks this one without a reload")
 {
     controller_fixture fx;
@@ -1844,9 +1869,17 @@ TEST_CASE("a stored license past its grace period is not picked up without a ser
     REQUIRE(pumpUntil([&] { return controller.screen() == Screen::Welcome; }));
 
     // Signed, for this device and unexpired, but last verified 8 days ago: past
-    // the default 7-day grace period.
+    // the default 7-day grace period. Or at a time this computer's clock hasn't
+    // reached, which says nothing about how long ago it was.
     auto stale = default_claims();
-    stale["validated"] = now_seconds() - 8 * 24 * 3600;
+    SUBCASE("verified 8 days ago")
+    {
+        stale["validated"] = now_seconds() - 8 * 24 * 3600;
+    }
+    SUBCASE("verified ahead of the clock")
+    {
+        stale["validated"] = now_seconds() + 60 * 60;
+    }
     fx.seedStored(fx.token(stale));
 
     // Not even for a moment: two watch ticks, and it must never unlock.
