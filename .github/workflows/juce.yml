@@ -43,14 +43,14 @@ jobs:
       matrix:
         include:
           - { os: ubuntu-latest, juce: "8.0.4" }
-          - { os: macos-14, juce: "8.0.4" }
+          - { os: macos-15, juce: "8.0.4" }
           - { os: windows-latest, juce: "8.0.4" }
           - { os: ubuntu-latest, juce: "9.0.4" }
-          - { os: macos-14, juce: "9.0.4" }
+          - { os: macos-15, juce: "9.0.4" }
           - { os: windows-latest, juce: "9.0.4" }
-          - { os: macos-14, juce: "8.0.0" }
-          - { os: macos-14, juce: "7.0.12" }
-          - { os: macos-14, juce: "6.1.3" }
+          - { os: macos-15, juce: "8.0.0" }
+          - { os: macos-15, juce: "7.0.12" }
+          - { os: macos-15, juce: "6.1.3" }
 
     steps:
       - uses: actions/checkout@v4
@@ -84,8 +84,13 @@ jobs:
             -DMOONBASE_BUILD_JUCE_TESTS=ON \
             -DMOONBASE_JUCE_VERSION="${{ matrix.juce }}"
 
+      # Left unset, the deployment target is the SDK's own version, and the macOS
+      # 15 SDK turns a function JUCE before 8.0.4 calls into a compile error. Set
+      # in the environment so JUCE's nested juceaide build picks it up too.
       - name: Configure (macOS)
         if: runner.os == 'macOS'
+        env:
+          MACOSX_DEPLOYMENT_TARGET: "11.0"
         run: |
           cmake -S . -B build \
             -DCMAKE_BUILD_TYPE=Release \
@@ -130,8 +135,8 @@ jobs:
   # that path fails the configure. One OS is enough: the regression is a CMake
   # one, and the module's compile is covered on every OS above.
   module-only-consumer:
-    name: module-only consumer (macos-14)
-    runs-on: macos-14
+    name: module-only consumer (macos-15)
+    runs-on: macos-15
     timeout-minutes: 30
 
     steps:
