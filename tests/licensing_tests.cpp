@@ -612,6 +612,48 @@ TEST_CASE("validate_token_online honors a custom min interval")
     CHECK(fixture.transport->requests.size() == 1);
 }
 
+TEST_CASE("validate_token_online asks Moonbase when the last validation is ahead of the device clock")
+{
+    licensing_options options;
+    options.online_validation_grace_period = std::chrono::hours(24 * 365);
+    facade_fixture fixture(options);
+
+    auto ahead = moonbase::tests::default_claims();
+    ahead["validated"] = moonbase::tests::now_seconds() + (60 * 60); // the clock is an hour behind it
+    const auto ahead_token = fixture.make_token(ahead);
+
+    SUBCASE("Moonbase answers")
+    {
+        auto refreshed = moonbase::tests::default_claims();
+        refreshed["validated"] = moonbase::tests::now_seconds();
+        const auto refreshed_token = fixture.make_token(refreshed);
+        fixture.transport->responses.push_back(http_response{200, {}, refreshed_token});
+
+        CHECK(fixture.instance.validate_token_online(ahead_token).token == refreshed_token);
+        CHECK(fixture.transport->requests.size() == 1);
+    }
+
+    SUBCASE("Moonbase can't be reached, and no grace period covers it")
+    {
+        // No queued response → recording_transport throws std::runtime_error.
+        CHECK_THROWS_AS(
+            (void)fixture.instance.validate_token_online(ahead_token),
+            std::exception);
+        CHECK(fixture.transport->requests.size() == 1);
+    }
+}
+
+TEST_CASE("validate_token_online throttles a validation only a little ahead of the device clock")
+{
+    facade_fixture fixture;
+    auto claims = moonbase::tests::default_claims();
+    claims["validated"] = moonbase::tests::now_seconds() + 30; // Moonbase's clock runs a little ahead
+    const auto token = fixture.make_token(claims);
+
+    CHECK(fixture.instance.validate_token_online(token).token == token);
+    CHECK(fixture.transport->requests.empty());
+}
+
 TEST_CASE("revoke_activation refuses offline tokens without contacting the API")
 {
     facade_fixture fixture;

@@ -728,7 +728,7 @@ void ActivationController::refreshLicense(bool force, std::function<void(bool)> 
             // period that is a network blip; past it the license has gone
             // unverified for longer than the app allows, which locks, as it
             // does at launch.
-            pastGrace = std::chrono::system_clock::now() - currentLicense.validated_at > gracePeriod;
+            pastGrace = moonbase::detail::time_since_validation(currentLicense) > gracePeriod;
         }
 
         juce::MessageManager::callAsync([safe, generation, refreshed, notCovered, expired, rejected, revoked,
@@ -1327,7 +1327,7 @@ void ActivationController::checkLicenseFile()
     // start() would only take it after an online check, so don't unlock on it
     // here either. Whoever re-validates it writes a fresh copy.
     if (stored->method != moonbase::activation_method::offline
-        && std::chrono::system_clock::now() - stored->validated_at > config_.onlineGracePeriod)
+        && moonbase::detail::time_since_validation(*stored) > config_.onlineGracePeriod)
         return;
 
     if (notCovered)
@@ -1488,7 +1488,7 @@ void ActivationController::checkLicenseDeadlines()
     const auto now = std::chrono::system_clock::now();
     const bool expired = license_->expires_at && *license_->expires_at <= now;
     const bool offline = license_->method == moonbase::activation_method::offline;
-    const bool pastGrace = ! offline && now - license_->validated_at > config_.onlineGracePeriod;
+    const bool pastGrace = ! offline && moonbase::detail::time_since_validation(*license_, now) > config_.onlineGracePeriod;
     if (! expired && ! pastGrace)
         return;
 

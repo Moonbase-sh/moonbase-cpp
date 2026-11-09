@@ -566,7 +566,8 @@ whenever you call `refreshLicense()`, throttled to no more than once per
 `onlineCheckInterval`. A license stays usable offline until `onlineGracePeriod` elapses
 since its last successful online validation; the controller's local check (see
 [Expiry and other instances](#expiry-and-other-instances)) enforces that mid-session too,
-with one last online attempt before it locks.
+with one last online attempt before it locks. Both are measured by the computer's clock;
+a last validation more than a few minutes ahead of it counts as past both.
 
 ## Add-ons
 

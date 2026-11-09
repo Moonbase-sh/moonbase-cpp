@@ -192,6 +192,10 @@ much offline tolerance is allowed:
   API failures (network down, 5xx, etc.) fall back to the local result. Beyond
   grace, the failure is propagated.
 
+Both are measured from `validated_at` by the device's clock. A `validated_at` more
+than a few minutes ahead of that clock says nothing about how long ago it was, so it
+counts as past both: the API is called, and a failure to reach it is propagated.
+
 Definitive server rejections (`license_invalid_error`, `license_expired_error`)
 always propagate regardless of grace. See [Errors](#errors) for what counts as
 definitive.
