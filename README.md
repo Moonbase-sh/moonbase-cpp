@@ -122,9 +122,9 @@ your project and use `MoonbaseUnlockStatus` wherever you use
 - **Cross-SDK device identity.** A SHA-256 of stable native hardware identifiers, per
   the [shared spec](FINGERPRINT_SPEC.md). No subprocess, no root-only file, so it works
   inside an App Sandbox and a plugin host and reads the same elevated or not.
-- **Trials, seats and entitlements.** Trial state, seat counts, expiry, sub-product
-  ownership and custom properties all arrive on the validated license, so you can gate
-  on more than a boolean.
+- **Trials, seats and entitlements.** Start a trial on the device without the browser.
+  Trial state, seat counts, expiry, sub-product ownership and custom properties all
+  arrive on the validated license, so you can gate on more than a boolean.
 - **Add-ons.** Add-ons included in the main license travel in it, with whether each may
   be unlocked on this device. Start an add-on's trial, take a seat of one, or list them
   with prices for an in-app store; the module has a screen for it.

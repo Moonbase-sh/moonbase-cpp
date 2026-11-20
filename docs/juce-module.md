@@ -189,6 +189,28 @@ kept hidden in every editor costs nothing. Set `config.reduceMotion` to turn off
 appear animation and the glow. The activating spinner keeps turning, because it is the
 one sign that the wait is still alive.
 
+### Starting a trial without the browser
+
+The built-in screens get a trial through the browser page. For a product whose trials
+need no account, a UI of your own can start one on the computer directly, with no
+browser (`moonbase::licensing::request_trial`):
+
+```cpp
+activation.requestTrial ([] (bool started, const juce::String& message) {
+    // message says why, for the user, when it didn't start
+});
+```
+
+The trial is stored and the Trial screen shows, as for one started in the browser, and
+`onLicenseChanged` fires. `isStartingTrial()` is true until the answer lands. A computer
+gets one trial: one that had it gets it back with the days it has left, or the Expired
+screen once it has ended. Moonbase refuses a trial this call can't start, and the Error
+screen says so. For a product whose trials need a signed-in customer or a newsletter
+opt-in, `beginOnlineActivation()` is the way to its trial, as the browser page offers
+it. The call is ignored while a license is loaded, until `start()` has checked the
+stored one, and while an activation is in progress. A license another instance stores
+while the request is out is kept, and shown, instead of the trial.
+
 ## Gating
 
 For correctness in a plugin, give the **processor** the controller (so license state

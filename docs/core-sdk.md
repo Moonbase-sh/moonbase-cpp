@@ -1,7 +1,7 @@
 # Core SDK: `moonbase::licensing`
 
 The header-only C++17 library at [`include/moonbase/`](../include/moonbase/). It
-covers activation requests, polling for fulfilled activations, local RS256 JWT
+covers activation requests, polling for fulfilled activations, trials, local RS256 JWT
 validation, cross-SDK device fingerprinting, offline (machine-file) activation,
 revocation, and overridable license storage. No UI, no framework, no build step.
 
@@ -215,6 +215,48 @@ even when calling `validate_token_online` — the SDK never contacts the API for
 them. Use `validate_token_local` directly when you want the local-only check
 explicitly.
 
+## Starting a trial
+
+A product whose trials need no account can start one on the device directly,
+without the browser:
+
+```cpp
+moonbase::request_trial_options trial_options;
+trial_options.utm.source = "newsletter"; // optional, see below
+trial_options.utm.campaign = "spring-launch";
+
+try {
+    auto trial = licensing.request_trial(trial_options);
+    licensing.store().store_local_license(trial);
+} catch (const moonbase::trial_expired_error& ex) {
+    // This device had its trial; ex.trial().expires_at says when it ended.
+} catch (const moonbase::operation_not_supported_error&) {
+    // No trial this call can start: see below.
+}
+```
+
+The trial is a license like any other: `trial` is set, and `expires_at` says
+when it ends (empty for a trial that never does). Store it, and validate it on
+startup as you would an activated license.
+
+A device gets one trial of a product, whether it was started here or on the
+browser page. Asking again returns the trial it had, with the days it has left,
+so the call is safe after a reinstall. Once that trial has ended, it throws
+`trial_expired_error`: a `license_expired_error` whose `trial()` is the ended
+trial, verified, for a screen that says when it ended. It unlocks nothing.
+
+Moonbase refuses the trials this call can't start, and each refusal throws
+`operation_not_supported_error` with Moonbase's reason. When your product's
+trials need a signed-in customer (401) or a newsletter opt-in (403), start them
+through `request_activation` instead: the browser page lets the customer sign in
+or opt in, and offers the trial. A product that offers no trials (400) has none
+to start either way.
+
+`utm` is the marketing the trial came from, when the app knows it, such as the
+UTM tags of the link its installer was downloaded from. Moonbase puts the trial
+down to them, so the merchant can see which marketing brings trials. A tag left
+empty is not sent.
+
 ## Licenses that cover some versions
 
 A license bought outright can cover only some versions of your app: the releases
@@ -421,10 +463,11 @@ trying again can help:
 | `license_revoked_error` | The license, or this device's activation of it, was revoked. A `license_invalid_error`, whose `type()` is still `error_type::license_invalid`; `activation_revoked()` says which | Lock, delete the stored license, and offer to activate again |
 | `release_not_covered_error` | The license is valid, but doesn't cover `application_version`. A `license_invalid_error` | Lock, keep the license, and [offer the upgrade](#licenses-that-cover-some-versions) |
 | `license_expired_error` | The license has expired: a trial ended, or a subscription lapsed | Lock, and offer to buy |
+| `trial_expired_error` | `request_trial` found this device's trial has ended. A `license_expired_error`; `trial()` has the ended trial | Say when it ended, and offer to buy |
 | `store_closed_error` | The merchant closed their Moonbase account. No verdict on the license | Treat it like being offline |
 | `activation_request_error` | A browser activation request can never complete | Start a new request |
 | `no_eligible_license_error` | No seat of an add-on to give. No verdict on the license | Offer to buy the add-on or free a seat |
-| `operation_not_supported_error` | The call can't apply to this license: revoking an offline or trial license, or an add-on it can't take | Keep the license |
+| `operation_not_supported_error` | The call can't apply to this license: revoking an offline or trial license, or an add-on it can't take. From `request_trial`: the product offers no trial this call can start | Keep the license. For trials that need an account, use `request_activation` |
 | `configuration_error` | Bad options, or a device id resolver that returned an empty id | Fix the setup |
 
 How each call maps what the API returns:
@@ -433,6 +476,9 @@ How each call maps what the API returns:
 | --- | --- | --- |
 | `request_activation` | 400 (product not active, offline activations disabled, invalid product id, a rejected field) | `license_invalid_error` with the server's reason |
 | | 404 (no such product or account) | `api_error` |
+| `request_trial` | 400, 401 or 403 with Moonbase's problem (no trials, or trials only for a signed-in or opted-in customer) | `operation_not_supported_error` with the server's reason |
+| | 2xx with a trial that has ended | `trial_expired_error` |
+| | 404, or a 400, 401 or 403 that isn't Moonbase's problem, such as the gateway's `{"message": ...}` or a proxy's page | `api_error` |
 | `get_requested_activation` | 204 or 404 | `std::nullopt` |
 | | 400 | `activation_request_error` |
 | `validate_token_online`, `revoke_activation` | 400 | `license_invalid_error` (`license_expired_error` when `errorType` is `LicenseExpired`, `release_not_covered_error` when it is `ReleaseNotCovered`, `license_revoked_error` when it is `LicenseRevoked` or `LicenseActivationRevoked`) |

@@ -178,6 +178,30 @@ public:
     // false. The built-in screen then asks the user to copy the link instead.
     [[nodiscard]] bool browserOpenFailed() const noexcept { return pendingRequest_.has_value() && browserOpenFailed_; }
 
+    //== Trial =================================================================
+    // Starts the product's trial on this device directly, with no browser
+    // (moonbase::licensing::request_trial), for a product whose trials need no
+    // account. The trial is stored and the Trial screen shows. A device gets one
+    // trial, so a device that had one gets it back with the days it has left,
+    // and the Expired screen when it has ended. Moonbase refuses a trial this
+    // can't start, and the Error screen says so. For a product whose trials need
+    // a signed-in customer or a newsletter opt-in, beginOnlineActivation() is
+    // the way to its trial, as the browser page offers it. A license another
+    // instance stores while the request is out is kept, and shown, instead of
+    // the trial.
+    //
+    // Async: isStartingTrial() is true until the answer lands, and onComplete
+    // then runs on the message thread with whether a trial is running here and,
+    // when not, a message for the user (on the Error screen, statusMessage()
+    // has it too, and onDiagnostic the detail). Ignored, with onComplete(false)
+    // and an empty message, while a license is loaded or kept for the versions
+    // it covers, until start() has checked the stored license, and while an
+    // activation or another trial request is in progress.
+    void requestTrial(std::function<void(bool started, const juce::String& message)> onComplete = {});
+
+    // True while a requestTrial() call is waiting for its answer.
+    [[nodiscard]] bool isStartingTrial() const noexcept { return trialInFlight_; }
+
     //== Re-validation =========================================================
     // Re-check the current license against the server and refresh its entitlements
     // (sub-product ownership, properties, expiry, seats) in place. Call this after
@@ -566,6 +590,7 @@ private:
 
     bool busy_ = false;
     bool pollInFlight_ = false;
+    bool trialInFlight_ = false; // a requestTrial() call is waiting for its answer
 
     //== License watch =========================================================
     CallbackTimer licenseWatch_;

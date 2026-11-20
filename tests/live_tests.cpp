@@ -97,3 +97,44 @@ TEST_CASE("live API activation flow")
     CHECK_FALSE(catalog.currency.empty());
     CHECK_THROWS_AS((void)sdk.activate_sub_product(revalidated.token, "demo-app-pro"), operation_not_supported_error);
 }
+
+TEST_CASE("live API trial request")
+{
+    const auto enabled = moonbase::tests::getenv_or("MOONBASE_CPP_LIVE_TESTS", "0");
+    if (enabled != "1" && enabled != "true" && enabled != "TRUE") {
+        return;
+    }
+
+    licensing_options options;
+    options.endpoint = moonbase::tests::getenv_or("MOONBASE_CPP_ENDPOINT", "https://demo.moonbase.sh");
+    options.product_id = moonbase::tests::getenv_or("MOONBASE_CPP_PRODUCT_ID", "demo-app");
+    options.public_key = moonbase::tests::getenv_or("MOONBASE_CPP_PUBLIC_KEY", demo_public_key);
+    const auto account_id = moonbase::tests::getenv_or("MOONBASE_CPP_ACCOUNT_ID", "");
+    if (!account_id.empty()) {
+        options.account_id = account_id;
+    }
+    options.target_platform = platform::unknown;
+    options.application_version = "0.1.0-test";
+    options.metadata = {{"suite", "moonbase-cpp"}};
+    options.online_validation_min_interval = std::chrono::seconds(0);
+
+    const auto unique_id = "moonbase-cpp-trial-test-" + std::to_string(moonbase::tests::now_seconds());
+    auto fingerprints = std::make_shared<static_device_id_resolver>("Moonbase C++ Test", unique_id);
+    licensing sdk(options, nullptr, fingerprints, std::make_shared<curl_http_transport>());
+
+    request_trial_options trial_options;
+    trial_options.utm.source = "moonbase-cpp";
+    trial_options.utm.medium = "live-test";
+    const auto trial = sdk.request_trial(trial_options);
+    CHECK(trial.trial);
+    CHECK(trial.licensed_product.id == options.product_id);
+    CHECK_FALSE(trial.token.empty());
+
+    // A device gets one trial: asking again hands back the same one.
+    const auto again = sdk.request_trial();
+    CHECK(again.activation_id == trial.activation_id);
+
+    const auto revalidated = sdk.validate_token_online(trial.token);
+    CHECK(revalidated.activation_id == trial.activation_id);
+    CHECK(revalidated.trial);
+}
