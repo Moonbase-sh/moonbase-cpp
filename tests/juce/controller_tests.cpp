@@ -5059,6 +5059,99 @@ TEST_CASE("a license another instance stores while a trial request is out wins")
     CHECK(storedToken(fx) == juce::String(full)); // the trial didn't overwrite it
 }
 
+TEST_CASE("a paid license stored just before the trial lands is kept, not written over")
+{
+    controller_fixture fx;
+    juce::StringArray diags;
+    fx.config.onDiagnostic = [&](const juce::String& m) { diags.add(m); };
+    auto gated = std::make_shared<gated_transport>();
+    auto licensing = std::make_shared<moonbase::licensing>(
+        fx.config.toLicensingOptions(), fx.store, fx.fingerprint, gated);
+    ActivationController controller(fx.config, licensing, "dev", [gated] { gated->release(); });
+    controller.start();
+    REQUIRE(pumpUntil([&] { return controller.screen() == Screen::Welcome; }));
+    {
+        std::lock_guard<std::mutex> lock(gated->mutex);
+        gated->responses.push_back(moonbase::http_response{200, {}, fx.token(trialClaims())});
+    }
+
+    bool done = false, started = true;
+    controller.requestTrial([&](bool ok, const juce::String&) { done = true; started = ok; });
+    REQUIRE(pumpUntil([&] { return gated->entered.load(); }));
+
+    // Another instance activates this computer, and the trial's answer arrives
+    // straight after, before the license watch has had a look.
+    const auto full = fx.token(default_claims());
+    fx.seedStored(full);
+    gated->release();
+    REQUIRE(pumpUntil([&] { return done; }));
+
+    CHECK_FALSE(started);
+    CHECK(storedToken(fx) == juce::String(full));
+    // Shown at once, not only at the watch's next look.
+    CHECK(controller.screen() == Screen::Details);
+    REQUIRE(controller.license().has_value());
+    CHECK_FALSE(controller.license()->trial);
+    CHECK(diags.joinIntoString(" ").contains("another instance stored a license meanwhile"));
+
+    pumpFor(2500); // and the watch leaves it so
+    CHECK(storedToken(fx) == juce::String(full));
+    CHECK(controller.screen() == Screen::Details);
+}
+
+TEST_CASE("storing a trial waits for another instance's lock off the message thread")
+{
+    controller_fixture fx;
+    auto gated = std::make_shared<gated_transport>();
+    auto licensing = std::make_shared<moonbase::licensing>(
+        fx.config.toLicensingOptions(), fx.store, fx.fingerprint, gated);
+    ActivationController controller(fx.config, licensing, "dev", [gated] { gated->release(); });
+    controller.start();
+    REQUIRE(pumpUntil([&] { return controller.screen() == Screen::Welcome; }));
+    const auto trial = fx.token(trialClaims());
+    {
+        std::lock_guard<std::mutex> lock(gated->mutex);
+        gated->responses.push_back(moonbase::http_response{200, {}, trial});
+    }
+
+    bool done = false, started = false;
+    controller.requestTrial([&](bool ok, const juce::String&) { done = true; started = ok; });
+    REQUIRE(pumpUntil([&] { return gated->entered.load(); }));
+
+    // Another instance holds the store's lock for the length of its online check.
+    std::atomic<bool> locked{ false };
+    std::thread sibling([&] {
+        auto guard = fx.store->lock_for_update();
+        locked = true;
+        std::this_thread::sleep_for(std::chrono::milliseconds(2000));
+    });
+    while (! locked.load())
+        std::this_thread::sleep_for(std::chrono::milliseconds(5));
+    gated->release();
+
+    // The message loop keeps running while the trial waits for the lock.
+    auto* mm = juce::MessageManager::getInstance();
+    const auto released = juce::Time::getMillisecondCounterHiRes();
+    double longestSliceMs = 0.0;
+    bool waitedForLock = false; // still starting half a second in: the lock held it up
+    while (! done && juce::Time::getMillisecondCounterHiRes() - released < 8000.0)
+    {
+        if (controller.isStartingTrial() && juce::Time::getMillisecondCounterHiRes() - released > 500.0)
+            waitedForLock = true;
+        const auto sliceStart = juce::Time::getMillisecondCounterHiRes();
+        mm->runDispatchLoopUntil(15);
+        longestSliceMs = juce::jmax(longestSliceMs, juce::Time::getMillisecondCounterHiRes() - sliceStart);
+    }
+    sibling.join();
+
+    REQUIRE(done);
+    CHECK(started);
+    CHECK(waitedForLock);
+    CHECK(longestSliceMs < 1000.0);
+    CHECK(controller.screen() == Screen::Trial);
+    CHECK(storedToken(fx) == juce::String(trial));
+}
+
 //==============================================================================
 int main(int argc, char** argv)
 {

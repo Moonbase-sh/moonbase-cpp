@@ -116,11 +116,11 @@ public:
     // returns it. Store it with store().store_local_license(...), as an
     // activated license, and validate it like one from then on.
     //
-    // For a product whose trials need no account. One that offers trials only to
-    // a signed-in customer (or one opted in to the newsletter), like one that
-    // offers none, throws operation_not_supported_error with Moonbase's reason:
-    // request_activation is the way to its trial, since the browser page offers
-    // one.
+    // For a product whose trials need no account. Moonbase refuses the rest with
+    // operation_not_supported_error, carrying its reason: a product that offers
+    // trials only to a signed-in customer, or one opted in to the newsletter,
+    // offers its trial on the browser page, so request_activation is the way to
+    // it, and a product that offers no trials has none to start.
     //
     // A device gets one trial of the product, however it was started. Asking
     // again returns the trial it had, with the days it has left, so calling this

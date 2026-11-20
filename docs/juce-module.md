@@ -204,10 +204,12 @@ activation.requestTrial ([] (bool started, const juce::String& message) {
 The trial is stored and the Trial screen shows, as for one started in the browser, and
 `onLicenseChanged` fires. `isStartingTrial()` is true until the answer lands. A computer
 gets one trial: one that had it gets it back with the days it has left, or the Expired
-screen once it has ended. A product that offers trials only to a signed-in customer, or
-none, refuses, and the Error screen says so; `beginOnlineActivation()` is the way to its
-trial. The call is ignored while a license is loaded, until `start()` has checked the
-stored one, and while an activation is in progress.
+screen once it has ended. Moonbase refuses a trial this call can't start, and the Error
+screen says so. For a product whose trials need a signed-in customer or a newsletter
+opt-in, `beginOnlineActivation()` is the way to its trial, as the browser page offers
+it. The call is ignored while a license is loaded, until `start()` has checked the
+stored one, and while an activation is in progress. A license another instance stores
+while the request is out is kept, and shown, instead of the trial.
 
 ## Gating
 

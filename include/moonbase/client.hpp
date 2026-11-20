@@ -489,19 +489,27 @@ inline void throw_if_revoked(const problem_details& problem, const std::string& 
 // Moonbase refuses one it won't start on the device directly with a problem: a
 // 400 when the product offers no trials, a 401 when its trials need a signed-in
 // customer, and a 403 when they need a newsletter opt-in. Asking again changes
-// none of that, so each is operation_not_supported_error. A refusal without a
-// JSON body could have come from anything in between, and stays an api_error, as
-// does a 404 (no such product, or a request routed elsewhere).
+// none of that, so each is operation_not_supported_error.
+//
+// Only Moonbase's own problem counts: ASP.NET's ProblemDetails, which carries the
+// status it was sent with. The gateway and firewall in front of the API answer a
+// blocked, throttled or misrouted request with {"message": ...} instead, and a
+// proxy with a page of its own. Those, and a 404 (no such product, or a request
+// routed elsewhere), stay an api_error: they say nothing about the product.
 [[noreturn]] inline void throw_for_trial_problem(const http_response& response)
 {
     const auto problem = parse_problem(response.body);
     throw_if_store_closed(problem);
 
     const auto status = response.status_code;
-    const bool from_moonbase = nlohmann::json::accept(response.body)
-        && (!problem.title.empty() || !problem.detail.empty());
-    if (from_moonbase && (status == 400 || status == 401 || status == 403)) {
-        throw operation_not_supported_error(problem_message(status, problem));
+    if (status == 400 || status == 401 || status == 403) {
+        const auto body = problem_object(response.body);
+        const bool from_moonbase = body && body->contains("status") && body->at("status").is_number_integer()
+            && body->at("status").get<long long>() == status
+            && (problem_string(*body, "title") || problem_string(*body, "detail"));
+        if (from_moonbase) {
+            throw operation_not_supported_error(problem_message(status, problem));
+        }
     }
 
     throw_api_error(response, problem);

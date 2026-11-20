@@ -602,12 +602,32 @@ void ActivationController::requestTrial(std::function<void(bool, const juce::Str
     juce::WeakReference<ActivationController> safe(this);
     auto licensing = licensing_;
 
-    threadPool_.addJob([safe, generation, licensing, product, account, onComplete]() mutable
+    threadPool_.addJob([safe, generation, licensing, product, account, onComplete,
+                        generations = generations_]() mutable
     {
         std::optional<moonbase::license> trial;
         std::optional<moonbase::license> ended;
+        bool replaced = false; // another license was stored meanwhile, and kept
         juce::String diag;
         juce::String userMessage;
+
+        // What the store holds before the trial is asked for, so a license
+        // another instance stores while it is out (activating this computer,
+        // say) is never written over. Unknown when the store can't be read, as
+        // it then can't be written either.
+        bool storeRead = false;
+        std::optional<std::string> before;
+        try
+        {
+            auto guard = licensing->store().lock_for_update();
+            if (auto stored = licensing->store().load_local_license())
+                before = stored->token;
+            storeRead = true;
+        }
+        catch (const moonbase::storage_error&)
+        {
+        }
+
         try
         {
             trial = licensing->request_trial();
@@ -655,7 +675,30 @@ void ActivationController::requestTrial(std::function<void(bool, const juce::Str
             }
         }
 
-        juce::MessageManager::callAsync([safe, generation, trial, ended, diag, userMessage, onComplete]() mutable
+        // Stored here, under the store's lock, and not on the message thread,
+        // where waiting for the lock would hold up the host for as long as
+        // another instance's check takes.
+        if (trial)
+        {
+            try
+            {
+                auto guard = licensing->store().lock_for_update();
+                const auto stored = licensing->store().load_local_license();
+                replaced = storeRead && stored && stored->token != before
+                        && stored->activation_id != trial->activation_id;
+                // Not when superseded either: whatever moved the generation on
+                // settles the license.
+                if (! replaced && generations->load() == generation)
+                    licensing->store().store_local_license(*trial);
+            }
+            catch (const moonbase::storage_error& ex)
+            {
+                diag = "Started a trial, but couldn't persist it: " + juce::String::fromUTF8(ex.what());
+            }
+        }
+
+        juce::MessageManager::callAsync([safe, generation, trial, ended, replaced, diag, userMessage,
+                                         onComplete]() mutable
         {
             auto* self = safe.get();
             if (self == nullptr)
@@ -666,7 +709,19 @@ void ActivationController::requestTrial(std::function<void(bool, const juce::Str
             {
                 // Superseded: an activation started, or another instance stored a
                 // license, which this one now shows. The trial stays on the server
-                // for the next request to pick up.
+                // for the next request to pick up. (Superseded only after it was
+                // stored, it is picked up by the license watch.)
+                self->sendChangeMessage(); // isStartingTrial() has cleared
+                if (onComplete) onComplete(false, {});
+                return;
+            }
+
+            if (replaced)
+            {
+                // Another instance stored a license while the trial was out. Show
+                // that one now rather than at the license watch's next look.
+                self->emitDiagnostic("requestTrial: another instance stored a license meanwhile; keeping it.");
+                self->checkLicenseFile();
                 self->sendChangeMessage(); // isStartingTrial() has cleared
                 if (onComplete) onComplete(false, {});
                 return;
@@ -675,8 +730,9 @@ void ActivationController::requestTrial(std::function<void(bool, const juce::Str
             if (trial)
             {
                 ++self->generation_;
-                // Started but couldn't persist; still unlock for this session.
-                self->storeLicense(*trial, "Started a trial");
+                // Couldn't persist: still unlock for this session.
+                if (diag.isNotEmpty())
+                    self->emitDiagnostic(diag);
                 self->applyLicense(std::move(trial));
                 if (onComplete) onComplete(true, {});
                 return;

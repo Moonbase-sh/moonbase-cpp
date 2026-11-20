@@ -252,6 +252,32 @@ TEST_CASE("request_trial keeps a failure that isn't Moonbase's refusal retryable
         fixture.respond(http_response{401, {}, ""});
     }
 
+    // What the gateway and firewall in front of the API answer with: JSON, but
+    // not Moonbase's problem, so no word on the product's trials.
+    SUBCASE("the firewall blocking the request")
+    {
+        expected_status = 403;
+        fixture.respond(http_response{403, {}, R"({"message":"Forbidden"})"});
+    }
+
+    SUBCASE("the gateway refusing a misrouted request")
+    {
+        expected_status = 403;
+        fixture.respond(http_response{403, {}, R"({"message":"Missing Authentication Token"})"});
+    }
+
+    SUBCASE("the gateway's 401")
+    {
+        expected_status = 401;
+        fixture.respond(http_response{401, {}, R"({"message":"Unauthorized"})"});
+    }
+
+    SUBCASE("a problem whose status isn't the response's")
+    {
+        expected_status = 403;
+        fixture.respond(http_response{403, {}, R"({"title":"Bad Request","status":400,"detail":"Not this one"})"});
+    }
+
     SUBCASE("no such product")
     {
         expected_status = 404;
