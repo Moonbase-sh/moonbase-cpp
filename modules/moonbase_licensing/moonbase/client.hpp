@@ -73,6 +73,14 @@ inline std::string request_path(const licensing_options& options)
         "/request";
 }
 
+inline std::string trial_request_path(const licensing_options& options)
+{
+    return trim_trailing_slashes(options.endpoint) +
+        "/api/client/trials/" +
+        url_encode(options.product_id) +
+        "/request";
+}
+
 inline std::string validate_path(const licensing_options& options)
 {
     return trim_trailing_slashes(options.endpoint) +
@@ -125,6 +133,24 @@ inline std::map<std::string, std::string> client_query(const licensing_options& 
         query["autoActivateSubProducts"] = "false";
     }
     return query;
+}
+
+// The tags as Moonbase reads them off the query: utm_source and the rest.
+inline void add_utm_query(std::map<std::string, std::string>& query, const utm_tags& utm)
+{
+    const std::pair<const char*, const std::string*> tags[] = {
+        {"utm_source", &utm.source},
+        {"utm_medium", &utm.medium},
+        {"utm_campaign", &utm.campaign},
+        {"utm_term", &utm.term},
+        {"utm_content", &utm.content},
+        {"utm_referrer", &utm.referrer},
+    };
+    for (const auto& [key, value] : tags) {
+        if (!value->empty()) {
+            query[key] = *value;
+        }
+    }
 }
 
 inline std::map<std::string, std::string> default_headers(const licensing_options& options,
@@ -459,6 +485,28 @@ inline void throw_if_revoked(const problem_details& problem, const std::string& 
     throw_api_error(response, problem);
 }
 
+// The trial endpoint answers about a trial, and no license exists yet to judge.
+// Moonbase refuses one it won't start on the device directly with a problem: a
+// 400 when the product offers no trials, a 401 when its trials need a signed-in
+// customer, and a 403 when they need a newsletter opt-in. Asking again changes
+// none of that, so each is operation_not_supported_error. A refusal without a
+// JSON body could have come from anything in between, and stays an api_error, as
+// does a 404 (no such product, or a request routed elsewhere).
+[[noreturn]] inline void throw_for_trial_problem(const http_response& response)
+{
+    const auto problem = parse_problem(response.body);
+    throw_if_store_closed(problem);
+
+    const auto status = response.status_code;
+    const bool from_moonbase = nlohmann::json::accept(response.body)
+        && (!problem.title.empty() || !problem.detail.empty());
+    if (from_moonbase && (status == 400 || status == 401 || status == 403)) {
+        throw operation_not_supported_error(problem_message(status, problem));
+    }
+
+    throw_api_error(response, problem);
+}
+
 // A 400 from the activation poll means the request will never complete: it
 // expired, was cancelled, or was refused. Kept away from throw_for_problem's
 // text match, which would report "Activation request has expired" as an expired
@@ -575,6 +623,26 @@ inline void require_utf8_device_id(const std::string& device_id)
 
 } // namespace detail
 
+// request_trial found that this device's trial has ended. A device gets one trial
+// of a product, and Moonbase answers a second request with the trial it had.
+// trial() is that trial, verified like any license, for a screen that says it
+// has ended and when. It unlocks nothing.
+//
+// A license_expired_error, whose type() is error_type::license_expired, so code
+// that catches that already treats it as the end of the trial.
+class trial_expired_error : public license_expired_error {
+public:
+    trial_expired_error(const std::string& message, license trial)
+        : license_expired_error(message), trial_(std::move(trial))
+    {
+    }
+
+    [[nodiscard]] const license& trial() const noexcept { return trial_; }
+
+private:
+    license trial_;
+};
+
 class license_client {
 public:
     license_client(
@@ -607,34 +675,13 @@ public:
         query["method"] = to_string(method);
         const auto url = detail::append_query(detail::request_path(options_), query);
 
-        // The API refuses a blank device name or id outright. The name is only a
-        // label, so stand in for one the host could not supply (a failed host
-        // name lookup, a custom resolver), and let a byte in it that is not UTF-8
-        // cost a replacement character rather than the activation. The id is the
-        // binding itself, and a resolver that returns none, or one that is not
-        // UTF-8, is misconfigured.
-        auto device_name = detail::replace_invalid_utf8(device_ids_->device_name());
-        if (detail::trim_ascii_whitespace(device_name).empty()) {
-            device_name = "Unknown device";
-        }
-        const auto device_id = device_ids_->device_id();
-        if (detail::trim_ascii_whitespace(device_id).empty()) {
-            throw configuration_error("The device id resolver returned an empty device id");
-        }
-        detail::require_utf8_device_id(device_id);
-
-        const auto payload = nlohmann::json{
-            {"deviceName", device_name},
-            {"deviceSignature", device_id},
-        };
-
         http_request request;
         request.method = "POST";
         request.url = url;
         request.headers = detail::default_headers(options_, "application/json");
         request.connect_timeout = options_.http_connect_timeout;
         request.request_timeout = options_.http_request_timeout;
-        request.body = payload.dump();
+        request.body = device_payload().dump();
 
         const auto response = transport_->send(request);
         if (response.status_code < 200 || response.status_code >= 300) {
@@ -652,6 +699,43 @@ public:
                 static_cast<int>(response.status_code),
                 std::string("Could not parse activation response: ") + ex.what());
         }
+    }
+
+    // POST /api/client/trials/{product}/request: starts the product's trial on
+    // this device, with no browser and no customer signed in, and returns it. A
+    // device gets one trial: asking again returns the one it had, and once that
+    // has ended, throws trial_expired_error carrying it. Doesn't store it;
+    // licensing::request_trial says more.
+    //
+    // Throws operation_not_supported_error when Moonbase won't start the trial
+    // here: the product offers none, or only to a signed-in customer.
+    [[nodiscard]] license request_trial(const request_trial_options& options = {}) const
+    {
+        auto query = detail::client_query(options_);
+        detail::add_utm_query(query, options.utm);
+
+        http_request request;
+        request.method = "POST";
+        request.url = detail::append_query(detail::trial_request_path(options_), query);
+        request.headers = detail::default_headers(options_, "application/json");
+        request.connect_timeout = options_.http_connect_timeout;
+        request.request_timeout = options_.http_request_timeout;
+        request.body = device_payload().dump();
+
+        const auto response = transport_->send(request);
+        if (response.status_code < 200 || response.status_code >= 300) {
+            detail::throw_for_trial_problem(response);
+        }
+        detail::ensure_token_response(response);
+
+        // Moonbase starts the trial for the version the request named, so the
+        // device doesn't judge it again, as with an activation. Read even when it
+        // has ended, which is how the device learns that it had its trial.
+        auto trial = validator_->validate_token_allow_expired(response.body);
+        if (trial.expires_at && *trial.expires_at < std::chrono::system_clock::now()) {
+            throw trial_expired_error("The trial on this device has ended", std::move(trial));
+        }
+        return trial;
     }
 
     [[nodiscard]] license validate_token_online(std::string_view token) const
@@ -802,6 +886,31 @@ public:
     }
 
 private:
+    // The device an activation request or a trial is for, as both endpoints take
+    // it. The API refuses a blank device name or id outright. The name is only a
+    // label, so stand in for one the host could not supply (a failed host name
+    // lookup, a custom resolver), and let a byte in it that is not UTF-8 cost a
+    // replacement character rather than the request. The id is the binding
+    // itself, and a resolver that returns none, or one that is not UTF-8, is
+    // misconfigured.
+    [[nodiscard]] nlohmann::json device_payload() const
+    {
+        auto device_name = detail::replace_invalid_utf8(device_ids_->device_name());
+        if (detail::trim_ascii_whitespace(device_name).empty()) {
+            device_name = "Unknown device";
+        }
+        const auto device_id = device_ids_->device_id();
+        if (detail::trim_ascii_whitespace(device_id).empty()) {
+            throw configuration_error("The device id resolver returned an empty device id");
+        }
+        detail::require_utf8_device_id(device_id);
+
+        return nlohmann::json{
+            {"deviceName", device_name},
+            {"deviceSignature", device_id},
+        };
+    }
+
     [[nodiscard]] license post_for_sub_product(std::string_view token,
                                                std::string_view sub_product_id,
                                                const char* action) const

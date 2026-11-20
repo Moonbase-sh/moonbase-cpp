@@ -34,7 +34,7 @@ Live-test defaults target the demo setup used by the Node SDK:
 - `MOONBASE_CPP_ACCOUNT_ID`, optional issuer check
 
 Live tests create a unique activation request and try to fulfill it through the
-anonymous trial endpoint.
+anonymous trial endpoint, and start a trial directly with `request_trial`.
 
 The other suites are separate because each pulls in something the core tests do not:
 

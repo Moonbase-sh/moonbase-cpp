@@ -112,6 +112,29 @@ public:
         return client_->get_requested_activation(activation);
     }
 
+    // Starts the product's trial on this device directly, with no browser, and
+    // returns it. Store it with store().store_local_license(...), as an
+    // activated license, and validate it like one from then on.
+    //
+    // For a product whose trials need no account. One that offers trials only to
+    // a signed-in customer (or one opted in to the newsletter), like one that
+    // offers none, throws operation_not_supported_error with Moonbase's reason:
+    // request_activation is the way to its trial, since the browser page offers
+    // one.
+    //
+    // A device gets one trial of the product, however it was started. Asking
+    // again returns the trial it had, with the days it has left, so calling this
+    // after a reinstall is safe. Once that trial has ended, this throws
+    // trial_expired_error, a license_expired_error that carries the ended trial
+    // for display.
+    //
+    // options.utm (optional): the marketing the trial came from, such as the UTM
+    // tags of the link the installer was downloaded from.
+    [[nodiscard]] license request_trial(const request_trial_options& options = {}) const
+    {
+        return client_->request_trial(options);
+    }
+
     // Signature, device binding, expiry and, for a license that covers only some
     // versions, application_version (release_not_covered_error), with no network.
     [[nodiscard]] license validate_token_local(std::string_view token) const

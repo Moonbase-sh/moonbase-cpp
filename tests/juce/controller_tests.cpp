@@ -4813,6 +4813,253 @@ TEST_CASE("the update screen offers the upgrade for a version the license doesn'
 }
 
 //==============================================================================
+// requestTrial(): a trial started on the device, with no browser
+//==============================================================================
+namespace {
+
+// A trial as Moonbase starts one for an anonymous device, ending `endsIn`
+// seconds from now (negative for one that has ended).
+nlohmann::json trialClaims(long long endsIn = 14 * 86400)
+{
+    auto claims = default_claims();
+    claims["trial"] = true;
+    claims["id"] = "trial-123";
+    claims["l:id"] = "trial-123";
+    claims["exp"] = now_seconds() + endsIn;
+    claims["u:id"] = "00000000-0000-0000-0000-000000000000";
+    claims["u:name"] = "";
+    claims["u:email"] = "";
+    return claims;
+}
+
+} // namespace
+
+TEST_CASE("requestTrial starts a trial, stores it and shows the Trial screen")
+{
+    controller_fixture fx;
+    ActivationController controller(fx.config, fx.makeLicensing());
+    std::vector<bool> reports;
+    controller.onLicenseChanged = [&](bool licensed) { reports.push_back(licensed); };
+    controller.start();
+    REQUIRE(pumpUntil([&] { return controller.screen() == Screen::Welcome; }));
+
+    const auto trial = fx.token(trialClaims());
+    fx.transport->responses.push_back(moonbase::http_response{200, {}, trial});
+
+    bool done = false, started = false;
+    juce::String message = "unset";
+    controller.requestTrial([&](bool ok, const juce::String& m) { done = true; started = ok; message = m; });
+    CHECK(controller.isStartingTrial());
+    REQUIRE(pumpUntil([&] { return done; }));
+
+    CHECK(started);
+    CHECK(message.isEmpty());
+    CHECK_FALSE(controller.isStartingTrial());
+    CHECK(controller.screen() == Screen::Trial);
+    REQUIRE(controller.license().has_value());
+    CHECK(controller.license()->trial);
+    CHECK(controller.licensedFlag().load());
+    CHECK(controller.trialDaysRemaining() == 14);
+    CHECK(storedToken(fx) == juce::String(trial));
+
+    REQUIRE(fx.transport->requests.size() == 1);
+    CHECK(fx.transport->requests.front().url.find("https://demo.moonbase.sh/api/client/trials/demo-app/request?") == 0);
+
+    REQUIRE(pumpUntil([&] { return reports.size() == 2; }));
+    CHECK(reports == std::vector<bool>{false, true});
+
+    // Its own write: the license watch leaves it be.
+    pumpFor(2500);
+    CHECK(controller.screen() == Screen::Trial);
+}
+
+TEST_CASE("requestTrial shows the Expired screen when this device's trial has ended")
+{
+    controller_fixture fx;
+    juce::StringArray diags;
+    fx.config.onDiagnostic = [&](const juce::String& m) { diags.add(m); };
+    ActivationController controller(fx.config, fx.makeLicensing());
+    controller.start();
+    REQUIRE(pumpUntil([&] { return controller.screen() == Screen::Welcome; }));
+
+    fx.transport->responses.push_back(moonbase::http_response{200, {}, fx.token(trialClaims(-3 * 86400))});
+
+    bool done = false, started = true;
+    juce::String message;
+    controller.requestTrial([&](bool ok, const juce::String& m) { done = true; started = ok; message = m; });
+    REQUIRE(pumpUntil([&] { return done; }));
+
+    CHECK_FALSE(started);
+    CHECK(message.contains("Your trial of Solstice has ended"));
+    CHECK(controller.screen() == Screen::Expired);
+    CHECK(controller.lockReason() == LockReason::Expired);
+    CHECK_FALSE(controller.license().has_value());
+    CHECK_FALSE(controller.licensedFlag().load());
+    REQUIRE(controller.expiredTrial().has_value());
+    CHECK(controller.expiredTrial()->activation_id == "trial-123");
+    CHECK_FALSE(fx.licenseFile.existsAsFile()); // shown, not stored: it unlocks nothing
+    CHECK(diags.joinIntoString(" ").contains("request_trial failed"));
+}
+
+TEST_CASE("a trial that can't start says why on the Error screen")
+{
+    struct expectation
+    {
+        const char* name;
+        std::optional<moonbase::http_response> response; // none: the connection fails
+        const char* copy;
+    };
+    const std::vector<expectation> cases{
+        {"connection failed", std::nullopt, "Couldn't reach Moonbase to start your trial"},
+        {"server error", moonbase::http_response{500, {}, ""}, "Try again in a minute"},
+        {"trials need an account",
+         moonbase::http_response{401, {}, R"({"title":"Not authenticated","status":401,"detail":"You need to be logged in to request trials for this product"})"},
+         "A free trial of Solstice can't be started here. Activate it with your Helio Audio account instead."},
+        {"no trials",
+         moonbase::http_response{400, {}, R"({"title":"Not allowed","status":400,"detail":"Product does not allow trials"})"},
+         "can't be started here"},
+        {"store closed",
+         moonbase::http_response{410, {}, R"({"title":"Store closed","status":410,"detail":"This store has closed.","errorType":"StoreClosed"})"},
+         "This store has closed, so trials aren't available"},
+    };
+
+    for (const auto& c : cases)
+    {
+        CAPTURE(c.name);
+        controller_fixture fx;
+        juce::StringArray diags;
+        fx.config.onDiagnostic = [&](const juce::String& m) { diags.add(m); };
+        if (c.response)
+            fx.transport->responses.push_back(*c.response);
+        // With nothing queued, the recording transport fails as a dropped
+        // connection would, which the SDK reports as an api_error.
+        struct failing_transport : moonbase::http_transport
+        {
+            moonbase::http_response send(const moonbase::http_request&) override
+            {
+                throw moonbase::api_error(0, "Couldn't connect to https://demo.moonbase.sh");
+            }
+        };
+        auto licensing = c.response ? fx.makeLicensing()
+                                    : std::make_shared<moonbase::licensing>(
+                                          fx.config.toLicensingOptions(), fx.store, fx.fingerprint,
+                                          std::make_shared<failing_transport>());
+
+        ActivationController controller(fx.config, licensing);
+        controller.start();
+        REQUIRE(pumpUntil([&] { return controller.screen() == Screen::Welcome; }));
+
+        bool done = false, started = true;
+        juce::String message;
+        controller.requestTrial([&](bool ok, const juce::String& m) { done = true; started = ok; message = m; });
+        REQUIRE(pumpUntil([&] { return done; }));
+
+        CHECK_FALSE(started);
+        CHECK(message.contains(c.copy));
+        CHECK(controller.screen() == Screen::Error);
+        CHECK(controller.statusMessage() == message);
+        CHECK_FALSE(controller.license().has_value());
+        CHECK_FALSE(controller.isStartingTrial());
+        CHECK_FALSE(fx.licenseFile.existsAsFile());
+        CHECK(diags.joinIntoString(" ").contains("request_trial failed"));
+    }
+}
+
+TEST_CASE("requestTrial is ignored while a license is held or a request is out")
+{
+    SUBCASE("a license is loaded")
+    {
+        controller_fixture fx;
+        fx.seedStored(fx.token(default_claims()));
+        ActivationController controller(fx.config, fx.makeLicensing());
+        controller.start();
+        REQUIRE(pumpUntil([&] { return controller.screen() == Screen::Details; }));
+
+        bool done = false, started = true;
+        juce::String message = "unset";
+        controller.requestTrial([&](bool ok, const juce::String& m) { done = true; started = ok; message = m; });
+        CHECK(done); // at once
+        CHECK_FALSE(started);
+        CHECK(message.isEmpty());
+        CHECK_FALSE(controller.isStartingTrial());
+        CHECK(controller.screen() == Screen::Details);
+        CHECK(fx.transport->requests.empty());
+    }
+
+    SUBCASE("before start() has checked the stored license")
+    {
+        controller_fixture fx;
+        ActivationController controller(fx.config, fx.makeLicensing());
+        bool started = true;
+        controller.requestTrial([&](bool ok, const juce::String&) { started = ok; });
+        CHECK_FALSE(started);
+        CHECK(fx.transport->requests.empty());
+    }
+
+    SUBCASE("a trial request is already out")
+    {
+        controller_fixture fx;
+        auto gated = std::make_shared<gated_transport>();
+        auto licensing = std::make_shared<moonbase::licensing>(
+            fx.config.toLicensingOptions(), fx.store, fx.fingerprint, gated);
+        ActivationController controller(fx.config, licensing, "dev", [gated] { gated->release(); });
+        controller.start();
+        REQUIRE(pumpUntil([&] { return controller.screen() == Screen::Welcome; }));
+        {
+            std::lock_guard<std::mutex> lock(gated->mutex);
+            gated->responses.push_back(moonbase::http_response{200, {}, fx.token(trialClaims())});
+        }
+
+        bool firstDone = false, firstStarted = false;
+        controller.requestTrial([&](bool ok, const juce::String&) { firstDone = true; firstStarted = ok; });
+        bool secondDone = false, secondStarted = true;
+        controller.requestTrial([&](bool ok, const juce::String&) { secondDone = true; secondStarted = ok; });
+        CHECK(secondDone);
+        CHECK_FALSE(secondStarted);
+
+        REQUIRE(pumpUntil([&] { return gated->entered.load(); }));
+        gated->release();
+        REQUIRE(pumpUntil([&] { return firstDone; }));
+        CHECK(firstStarted);
+        CHECK(gated->requests.load() == 1);
+        CHECK(controller.screen() == Screen::Trial);
+    }
+}
+
+TEST_CASE("a license another instance stores while a trial request is out wins")
+{
+    controller_fixture fx;
+    auto gated = std::make_shared<gated_transport>();
+    auto licensing = std::make_shared<moonbase::licensing>(
+        fx.config.toLicensingOptions(), fx.store, fx.fingerprint, gated);
+    ActivationController controller(fx.config, licensing, "dev", [gated] { gated->release(); });
+    controller.start();
+    REQUIRE(pumpUntil([&] { return controller.screen() == Screen::Welcome; }));
+    {
+        std::lock_guard<std::mutex> lock(gated->mutex);
+        gated->responses.push_back(moonbase::http_response{200, {}, fx.token(trialClaims())});
+    }
+
+    bool done = false, started = true;
+    controller.requestTrial([&](bool ok, const juce::String&) { done = true; started = ok; });
+    REQUIRE(pumpUntil([&] { return gated->entered.load(); }));
+
+    // Another instance activates this computer meanwhile.
+    const auto full = fx.token(default_claims());
+    fx.seedStored(full);
+    REQUIRE(pumpUntil([&] { return controller.screen() == Screen::Details; }, 6000));
+
+    gated->release();
+    REQUIRE(pumpUntil([&] { return done; }));
+    CHECK_FALSE(started);
+    CHECK_FALSE(controller.isStartingTrial());
+    CHECK(controller.screen() == Screen::Details);
+    REQUIRE(controller.license().has_value());
+    CHECK_FALSE(controller.license()->trial);
+    CHECK(storedToken(fx) == juce::String(full)); // the trial didn't overwrite it
+}
+
+//==============================================================================
 int main(int argc, char** argv)
 {
     juce::ScopedJuceInitialiser_GUI gui; // gives this thread a MessageManager

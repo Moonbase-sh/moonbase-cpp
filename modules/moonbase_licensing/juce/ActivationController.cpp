@@ -568,6 +568,130 @@ juce::String ActivationController::pendingBrowserUrl() const
     return pendingRequest_ ? juce::String(pendingRequest_->browser_url) : juce::String();
 }
 
+//==============================================================================
+void ActivationController::requestTrial(std::function<void(bool, const juce::String&)> onComplete)
+{
+    if (! ensureReady())
+    {
+        if (onComplete) onComplete(false, statusMessage_);
+        return;
+    }
+
+    // The trial would take the place of a license held here, in the store too,
+    // and one that doesn't cover this version still covers the ones it did.
+    const char* skipped = license_                ? "a license is loaded"
+                        : notCovered_             ? "a license is kept for the versions it covers"
+                        : screen_ == Screen::Loading ? "the stored license is still being checked"
+                        : activationInFlight()    ? "an online activation is in progress"
+                        : trialInFlight_          ? "a trial request is already in progress"
+                                                  : nullptr;
+    if (skipped != nullptr)
+    {
+        emitDiagnostic(juce::String("requestTrial: skipped while ") + skipped + ".");
+        if (onComplete) onComplete(false, {});
+        return;
+    }
+
+    trialInFlight_ = true;
+    statusMessage_.clear();
+    sendChangeMessage(); // isStartingTrial() is set now
+
+    const auto generation = ++generation_;
+    const auto product = config_.resolvedProductName();
+    const auto account = config_.brandAccountName();
+    juce::WeakReference<ActivationController> safe(this);
+    auto licensing = licensing_;
+
+    threadPool_.addJob([safe, generation, licensing, product, account, onComplete]() mutable
+    {
+        std::optional<moonbase::license> trial;
+        std::optional<moonbase::license> ended;
+        juce::String diag;
+        juce::String userMessage;
+        try
+        {
+            trial = licensing->request_trial();
+        }
+        catch (const moonbase::trial_expired_error& ex)
+        {
+            // This device had its trial, and it has ended.
+            ended = ex.trial();
+            diag = juce::String::fromUTF8(ex.what());
+            userMessage = "Your trial of " + product + " has ended.";
+        }
+        catch (const moonbase::operation_not_supported_error& ex)
+        {
+            // Trials of this product need a signed-in customer, or there are none.
+            diag = juce::String::fromUTF8(ex.what());
+            userMessage = "A free trial of " + product + " can't be started here. Activate it with your "
+                        + account + " account instead.";
+        }
+        catch (const std::exception& ex)
+        {
+            diag = describeError(ex);
+            switch (classifyFailure(ex))
+            {
+                case Failure::Unreachable:
+                    userMessage = "Couldn't reach Moonbase to start your trial. "
+                                  "Check your internet connection and try again.";
+                    break;
+                case Failure::Busy:
+                    userMessage = "Moonbase couldn't start your trial right now. Try again in a minute.";
+                    break;
+                case Failure::Refused:
+                    userMessage = "Your trial couldn't be started on this computer. "
+                                  "If this keeps happening, contact the developer.";
+                    break;
+                case Failure::StoreClosed:
+                    userMessage = "This store has closed, so trials aren't available.";
+                    break;
+                case Failure::NoIdentity:
+                    userMessage = "This computer can't be identified, so a trial can't be started. "
+                                  "Contact the developer for help.";
+                    break;
+                case Failure::Unexpected:
+                    userMessage = unexpectedFailure("Your trial couldn't start", ex);
+                    break;
+            }
+        }
+
+        juce::MessageManager::callAsync([safe, generation, trial, ended, diag, userMessage, onComplete]() mutable
+        {
+            auto* self = safe.get();
+            if (self == nullptr)
+                return;
+            self->trialInFlight_ = false;
+
+            if (generation != self->generation_.load())
+            {
+                // Superseded: an activation started, or another instance stored a
+                // license, which this one now shows. The trial stays on the server
+                // for the next request to pick up.
+                self->sendChangeMessage(); // isStartingTrial() has cleared
+                if (onComplete) onComplete(false, {});
+                return;
+            }
+
+            if (trial)
+            {
+                ++self->generation_;
+                // Started but couldn't persist; still unlock for this session.
+                self->storeLicense(*trial, "Started a trial");
+                self->applyLicense(std::move(trial));
+                if (onComplete) onComplete(true, {});
+                return;
+            }
+
+            self->emitDiagnostic("request_trial failed: " + diag);
+            if (ended)
+                self->showTrialExpired(std::move(*ended)); // shown, not stored: it unlocks nothing
+            else
+                self->setScreen(Screen::Error, userMessage);
+            if (onComplete) onComplete(false, userMessage);
+        });
+    });
+}
+
 void ActivationController::refreshLicense(bool force, std::function<void(bool)> onComplete)
 {
     if (! ensureReady())

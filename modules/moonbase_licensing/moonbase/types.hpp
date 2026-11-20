@@ -208,6 +208,24 @@ struct activation_request {
     activation_method method = activation_method::online;
 };
 
+// The UTM tags of a link, and the site that referred the visitor to it. A tag
+// left empty is not sent.
+struct utm_tags {
+    std::string source;
+    std::string medium;
+    std::string campaign;
+    std::string term;
+    std::string content;
+    std::string referrer;
+};
+
+struct request_trial_options {
+    // The marketing the trial came from, when the app knows it: the tags of the
+    // link its installer was downloaded from, say. Moonbase puts the trial down
+    // to them, so the merchant can see which marketing brings trials.
+    utm_tags utm;
+};
+
 // How a price recurs: "OneOff", or "Recurring" with how often it renews
 // ("Daily", "Weekly", "Monthly", "Quarterly" or "Yearly").
 struct sub_product_recurrence {
