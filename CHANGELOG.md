@@ -1,3 +1,10 @@
+# [4.14.0](https://github.com/Moonbase-sh/moonbase-cpp/compare/v4.13.4...v4.14.0) (2026-11-20)
+
+
+### Features
+
+* start a trial on the device without the browser ([#53](https://github.com/Moonbase-sh/moonbase-cpp/issues/53)) ([f516f3d](https://github.com/Moonbase-sh/moonbase-cpp/commit/f516f3d6f033b1d6a9980b435af261158a56227d))
+
 ## [4.13.4](https://github.com/Moonbase-sh/moonbase-cpp/compare/v4.13.3...v4.13.4) (2026-11-09)
 
 
