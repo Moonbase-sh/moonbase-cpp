@@ -694,6 +694,21 @@ int main(int argc, char* argv[])
                   { c.setPreviewState(Screen::Details, makeLicense(false),
                                       "Couldn't reach Moonbase to deactivate. Try again when online."); });
 
+    // A license only the seller can revoke: no Deactivate, the seat info takes its room.
+    writeSnapshot(outDir, "07e-details-seller-only", [](ActivationController& c)
+                  {
+                      auto lic = makeLicense(false);
+                      lic.revocable = false;
+                      c.setPreviewState(Screen::Details, lic);
+                  });
+
+    // Moonbase refused to deactivate: the seller turned the setting on after the
+    // license was last validated, so the button was still there.
+    writeSnapshot(outDir, "07f-details-not-revocable-error", [](ActivationController& c)
+                  { c.setPreviewState(Screen::Details, makeLicense(false),
+                                      "Only the developer can deactivate this computer. "
+                                      "Contact them to move your license to another one."); });
+
     writeSnapshot(outDir, "08-details-offline", [](ActivationController& c)
                   { c.setPreviewState(Screen::Details, makeOfflineLicense()); });
 

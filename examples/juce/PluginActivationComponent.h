@@ -173,6 +173,11 @@ ERUn++6CVMPvZo67jVbTY+GCXYfW4gGVZQIDAQAB
                     unlockStatus_.clearLicense();
                     refreshLabel();
                     break;
+                case O::SellerOnly:
+                    // The license stays: only the seller can free this seat.
+                    refreshLabel("Only the developer can deactivate this computer. "
+                                 "Contact them to move your license to another one.");
+                    break;
                 case O::Unreachable:
                     refreshLabel("Could not reach Moonbase to revoke. Try again when online.");
                     break;
@@ -242,6 +247,14 @@ ERUn++6CVMPvZo67jVbTY+GCXYfW4gGVZQIDAQAB
 
     void refreshLabel(const juce::String& explicitMessage = {})
     {
+        // No Deactivate for a license only the seller can revoke. Offline
+        // licenses and trials keep it, to forget them on this device.
+        const auto current = unlockStatus_.moonbaseLicense();
+        deactivateButton_.setVisible(! current
+                                     || current->method == moonbase::activation_method::offline
+                                     || current->trial
+                                     || moonbase::is_revocable(*current));
+
         if (explicitMessage.isNotEmpty())
         {
             statusLabel_.setText(explicitMessage, juce::dontSendNotification);

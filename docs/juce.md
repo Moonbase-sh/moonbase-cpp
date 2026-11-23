@@ -254,6 +254,7 @@ The callback receives a `RevokeOutcome`:
 | `Revoked` | Seat freed server-side (or token was already gone). Bridge is now locked. |
 | `NoLicense` | No license loaded — nothing to do. |
 | `NotRevokable` | Token is offline-activated or a trial. Bridge state unchanged. Call `clearLicense()` if you still want a local forget. |
+| `SellerOnly` | Only the seller can revoke this activation (`moonbase::is_revocable` is false, or Moonbase said so). Bridge state unchanged. Keep the license; don't `clearLicense()`. Hide your Deactivate button when `is_revocable` is false. |
 | `Unreachable` | Transport failure. Bridge state unchanged so the user can retry. |
 
 ```cpp

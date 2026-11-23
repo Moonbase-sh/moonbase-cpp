@@ -124,6 +124,29 @@ inline bool require_boolish(const nlohmann::json& json, const char* key)
     throw license_invalid_error(std::string("License token claim is not boolean: ") + key);
 }
 
+// A boolean claim, read as require_boolish reads one. Anything else, absent or
+// not, reads as absent rather than failing the license.
+inline std::optional<bool> optional_boolish(const nlohmann::json& json, const char* key)
+{
+    if (!json.contains(key)) {
+        return std::nullopt;
+    }
+    const auto& value = json.at(key);
+    if (value.is_boolean()) {
+        return value.get<bool>();
+    }
+    if (value.is_string()) {
+        const auto text = value.get<std::string>();
+        if (text == "true" || text == "True") {
+            return true;
+        }
+        if (text == "false" || text == "False") {
+            return false;
+        }
+    }
+    return std::nullopt;
+}
+
 inline long long require_integer(const nlohmann::json& json, const char* key)
 {
     if (!json.contains(key) || !json.at(key).is_number_integer()) {
@@ -522,6 +545,7 @@ private:
         result.id = detail::require_string(payload, "l:id");
         result.trial = detail::require_boolish(payload, "trial");
         result.method = activation_method_from_string(detail::require_string(payload, "method"));
+        result.revocable = detail::optional_boolish(payload, "revocable");
         result.issued_at = detail::from_epoch_seconds(detail::require_integer(payload, "iat"));
         if (auto exp = detail::optional_integer(payload, "exp")) {
             result.expires_at = detail::from_epoch_seconds(*exp);

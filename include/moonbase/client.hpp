@@ -389,6 +389,17 @@ inline void throw_if_revoked(const problem_details& problem, const std::string& 
     }
 }
 
+// Moonbase's refusal to revoke an activation that only the seller can revoke.
+// Read by its errorType alone, whatever the status: a 403 without it (another
+// customer's license, a proxy) stays what throw_for_problem makes of it.
+inline void throw_if_not_revocable(const http_response& response)
+{
+    const auto problem = parse_problem(response.body);
+    if (problem.error_type == "LicenseNotRevocable") {
+        throw license_not_revocable_error(problem_message(response.status_code, problem));
+    }
+}
+
 [[noreturn]] inline void throw_api_error(const http_response& response, const problem_details& problem)
 {
     throw api_error(
@@ -409,7 +420,9 @@ inline void throw_if_revoked(const problem_details& problem, const std::string& 
 // license that no longer exists or changed hands. Their body is stock ASP.NET
 // ProblemDetails with no errorType, which a misrouted request gets from any other
 // ASP.NET service too, and reading it as final would skip the offline grace
-// period and lock a valid license over a routing fault.
+// period and lock a valid license over a routing fault. A refusal that carries
+// one of Moonbase's own errorTypes is read by it instead, as revoke_activation
+// reads LicenseNotRevocable.
 [[noreturn]] inline void throw_for_problem(const http_response& response)
 {
     const auto problem = parse_problem(response.body);
@@ -784,6 +797,7 @@ public:
 
         const auto response = transport_->send(request);
         if (response.status_code < 200 || response.status_code >= 300) {
+            detail::throw_if_not_revocable(response);
             throw_for_license_problem(response);
         }
         // Success is an empty 200. A web page in its place means something in

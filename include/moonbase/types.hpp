@@ -166,6 +166,14 @@ struct license {
     std::optional<license_release_access> release_access;
     nlohmann::json properties = nlohmann::json::object();
     std::string token;
+    // Whether the customer may revoke (deactivate) this device's activation, as
+    // the license's revocable claim says. False for an offline license, a trial,
+    // and a product whose seller alone frees seats. Empty in a license issued
+    // before Moonbase sent the claim, and in one read back from the store that an
+    // older release of this SDK wrote, although its token carries the claim. So
+    // decide from a license read from its token, with is_revocable. Last, so that
+    // code initializing the fields above in order keeps compiling.
+    std::optional<bool> revocable;
 };
 
 // The add-on as the license lists it, or nullptr when it doesn't. Takes the
@@ -196,6 +204,17 @@ struct license {
 {
     const auto* entry = find_sub_product(value, sub_product_id);
     return entry != nullptr && entry->active && (!entry->expires_at || *entry->expires_at > now);
+}
+
+// Whether the customer may revoke (deactivate) this device's activation, which
+// licensing::revoke_activation does: an online license that is not a trial, and
+// whose revocable claim is not false. A license from before the claim counts as
+// revocable, unless it is offline or a trial. Show a "Deactivate" action only
+// when this is true; an offline license or a trial can still be forgotten on
+// the device.
+[[nodiscard]] inline bool is_revocable(const license& value) noexcept
+{
+    return value.method == activation_method::online && !value.trial && value.revocable.value_or(true);
 }
 
 struct activation_request {
@@ -560,6 +579,9 @@ inline void to_json(nlohmann::json& json, const license& value)
     if (value.release_access) {
         json["releaseAccess"] = *value.release_access;
     }
+    if (value.revocable) {
+        json["revocable"] = *value.revocable;
+    }
 }
 
 inline void from_json(const nlohmann::json& json, license& value)
@@ -609,6 +631,12 @@ inline void from_json(const nlohmann::json& json, license& value)
         value.release_access = json.at("releaseAccess").get<license_release_access>();
     } else {
         value.release_access.reset();
+    }
+    // Absent in a license stored before the claim was read.
+    if (json.contains("revocable") && json.at("revocable").is_boolean()) {
+        value.revocable = json.at("revocable").get<bool>();
+    } else {
+        value.revocable.reset();
     }
     value.properties = json.value("properties", nlohmann::json::object());
     json.at("token").get_to(value.token);

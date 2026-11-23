@@ -348,7 +348,9 @@ public:
 
     //== Deactivate / forget ===================================================
     void deactivate();   // server-side revoke (async); local forget fallback. Also hands
-                         // back the seat of a license that doesn't cover this version
+                         // back the seat of a license that doesn't cover this version.
+                         // A license only the seller can revoke (moonbase::is_revocable)
+                         // is kept, with a status message, and Moonbase isn't asked.
     void clearLicense(); // local-only forget
 
     //== Navigation (screens not driven purely by license state) ===============

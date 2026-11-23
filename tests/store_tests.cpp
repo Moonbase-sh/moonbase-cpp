@@ -4,6 +4,7 @@
 #include <chrono>
 #include <filesystem>
 #include <fstream>
+#include <optional>
 #include <string>
 #include <thread>
 #include <vector>
@@ -87,6 +88,36 @@ TEST_CASE("a license without seat data round-trips to no seat data")
     REQUIRE(loaded.has_value());
     CHECK_FALSE(loaded->seat_count.has_value());
     CHECK_FALSE(loaded->seats_used.has_value());
+}
+
+TEST_CASE("a license takes its first fields in the order they have always had")
+{
+    // Code that initializes a license in order keeps compiling: a field added
+    // later goes last.
+    const license value{"license-123", "activation-123", false, activation_method::online,
+                        product{"demo-app", "Demo Product"}};
+    CHECK(value.licensed_product.id == "demo-app");
+    CHECK_FALSE(value.revocable.has_value());
+}
+
+TEST_CASE("a license keeps whether it is revocable through its stored form")
+{
+    for (const std::optional<bool> revocable : {std::optional<bool>{true}, std::optional<bool>{false}}) {
+        auto value = sample_license();
+        value.revocable = revocable;
+        const nlohmann::json stored = value;
+        CHECK(stored.at("revocable") == *revocable);
+        CHECK(stored.get<license>().revocable == revocable);
+    }
+
+    // Left out when the license doesn't say, as one stored before the claim was
+    // read doesn't; read back that way, and as not saying when it is not a boolean.
+    auto value = sample_license();
+    nlohmann::json stored = value;
+    CHECK_FALSE(stored.contains("revocable"));
+    CHECK_FALSE(stored.get<license>().revocable.has_value());
+    stored["revocable"] = "false";
+    CHECK_FALSE(stored.get<license>().revocable.has_value());
 }
 
 TEST_CASE("file_license_store round-trips and deletes")

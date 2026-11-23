@@ -481,13 +481,16 @@ public:
         NoLicense,      // No license is currently loaded — nothing to revoke. Bridge state unchanged.
         NotRevokable,   // Token is offline-activated or a trial. Bridge state unchanged.
                         // Caller can fall back to clearLicense() for a local-only forget.
+        SellerOnly,     // Only the seller can revoke this activation (moonbase::is_revocable
+                        // is false, or Moonbase said so). Bridge state unchanged; keep the
+                        // license rather than clearLicense().
         Unreachable,    // Transport failure (network down, 5xx). Bridge state unchanged so the
                         // caller can retry; no seat has been freed server-side.
     };
 
     // Server-side revoke of the currently loaded activation. On success, frees
     // the seat on the Moonbase backend and clears the local store + bridge
-    // state. On NotRevokable / Unreachable the bridge state is left alone so
+    // state. On NotRevokable / SellerOnly / Unreachable the bridge state is left alone so
     // the caller can decide between a local-only fallback (clearLicense()) or
     // a retry.
     //
@@ -524,6 +527,10 @@ public:
         try
         {
             licensing_->revoke_activation(token);
+        }
+        catch (const moonbase::license_not_revocable_error&)
+        {
+            return RevokeOutcome::SellerOnly;
         }
         catch (const moonbase::operation_not_supported_error&)
         {
@@ -616,6 +623,10 @@ public:
                 try
                 {
                     licensingHandle->revoke_activation(token);
+                }
+                catch (const moonbase::license_not_revocable_error&)
+                {
+                    outcome = RevokeOutcome::SellerOnly;
                 }
                 catch (const moonbase::operation_not_supported_error&)
                 {

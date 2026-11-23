@@ -162,7 +162,10 @@ The screens:
   progress bar; `trialIsEndless()` tells you which one is loaded.
 - **License details** — issued-to / email / plan / activation / expiry, a seat counter,
   and a Deactivate action (server-side `revoke_activation`, with a local-forget fallback
-  for offline or trial licenses). With `config.showAddOns`, an "Add-ons" row too.
+  for offline or trial licenses). The action is hidden for a license only the seller can
+  revoke (`moonbase::is_revocable` is false), and `controller.deactivate()` keeps such a
+  license, with a status message, without asking Moonbase. With `config.showAddOns`, an
+  "Add-ons" row too.
 - **Add-ons** (opt-in): the product's add-ons, each with where it stands on this
   computer and a Try free, Buy or Activate action. See [Add-ons](#add-ons).
 - **Trial expired** — a locked "trial has ended" screen with Unlock / Activate offline.
