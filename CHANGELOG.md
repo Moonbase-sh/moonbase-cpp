@@ -1,3 +1,10 @@
+# [4.15.0](https://github.com/Moonbase-sh/moonbase-cpp/compare/v4.14.0...v4.15.0) (2026-11-23)
+
+
+### Features
+
+* support the revocable claim, hiding Deactivate when it is false ([#54](https://github.com/Moonbase-sh/moonbase-cpp/issues/54)) ([89a2da0](https://github.com/Moonbase-sh/moonbase-cpp/commit/89a2da0b1c31b6d9514eb4dc1400b080e26d692c))
+
 # [4.14.0](https://github.com/Moonbase-sh/moonbase-cpp/compare/v4.13.4...v4.14.0) (2026-11-20)
 
 
