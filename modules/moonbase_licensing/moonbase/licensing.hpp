@@ -372,6 +372,13 @@ public:
         return client_->list_sub_products(token);
     }
 
+    // Frees this device's seat on the server, then deletes the license from the
+    // store. Throws operation_not_supported_error for an offline license or a
+    // trial, and license_not_revocable_error for one only the seller can revoke
+    // (is_revocable is false), both without contacting the API. Moonbase's own
+    // refusal of the latter, for a license last validated before the seller
+    // changed the setting, is license_not_revocable_error too. Whatever it
+    // throws, the stored license is left alone.
     void revoke_activation(std::string_view token) const
     {
         // allow_expired: a long-running app may click "Deactivate" after the
@@ -386,6 +393,10 @@ public:
         if (local.trial) {
             throw operation_not_supported_error(
                 "Trial licenses cannot be revoked");
+        }
+        if (!is_revocable(local)) {
+            throw license_not_revocable_error(
+                "Activations of this product can only be revoked by the seller");
         }
 
         client_->revoke_activation(token);

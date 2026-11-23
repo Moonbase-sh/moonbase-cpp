@@ -2,6 +2,7 @@
 
 #include <chrono>
 #include <memory>
+#include <optional>
 #include <string>
 #include <utility>
 #include <vector>
@@ -141,6 +142,66 @@ TEST_CASE("trial tokens use trial properties")
 
     CHECK(result.trial);
     CHECK(result.properties.at("days") == 14);
+}
+
+TEST_CASE("the revocable claim is read as given, and left empty when absent")
+{
+    auto key = moonbase::tests::generate_key();
+    const auto validator = make_validator(key.public_pem);
+    const auto revocable = [&](const nlohmann::json& value) {
+        auto claims = moonbase::tests::default_claims();
+        claims["revocable"] = value;
+        return validator.validate_token(moonbase::tests::make_token(key.key.get(), claims)).revocable;
+    };
+
+    CHECK(revocable(true) == std::optional<bool>{true});
+    CHECK(revocable(false) == std::optional<bool>{false});
+    // As the trial claim may come, as a string.
+    CHECK(revocable("false") == std::optional<bool>{false});
+    CHECK(revocable("True") == std::optional<bool>{true});
+    // Anything else reads as absent rather than failing the license.
+    CHECK_FALSE(revocable(0).has_value());
+    CHECK_FALSE(revocable("no").has_value());
+    CHECK_FALSE(revocable(nullptr).has_value());
+
+    // A token from before the claim.
+    const auto older = validator.validate_token(
+        moonbase::tests::make_token(key.key.get(), moonbase::tests::default_claims()));
+    CHECK_FALSE(older.revocable.has_value());
+}
+
+TEST_CASE("is_revocable follows the claim, and the activation without one")
+{
+    license value;
+    value.method = activation_method::online;
+
+    SUBCASE("a license from before the claim")
+    {
+        CHECK(is_revocable(value));
+        value.method = activation_method::offline;
+        CHECK_FALSE(is_revocable(value));
+        value.method = activation_method::online;
+        value.trial = true;
+        CHECK_FALSE(is_revocable(value));
+    }
+
+    SUBCASE("a license with the claim")
+    {
+        value.revocable = true;
+        CHECK(is_revocable(value));
+        value.revocable = false;
+        CHECK_FALSE(is_revocable(value));
+    }
+
+    SUBCASE("never offline or a trial, whatever the claim says")
+    {
+        value.revocable = true;
+        value.method = activation_method::offline;
+        CHECK_FALSE(is_revocable(value));
+        value.method = activation_method::online;
+        value.trial = true;
+        CHECK_FALSE(is_revocable(value));
+    }
 }
 
 TEST_CASE("custom properties carry array values")

@@ -794,6 +794,100 @@ TEST_CASE("deactivate() keeps the license when the store has closed")
     CHECK(fx.licenseFile.existsAsFile());
 }
 
+// What the activation UI says, in every Moonbase SDK, when the customer can't
+// revoke the license.
+const juce::String kNotRevocableMessage =
+    "Only the developer can deactivate this computer. Contact them to move your license to another one.";
+
+TEST_CASE("deactivate() on a license only the seller can revoke keeps it without asking Moonbase")
+{
+    controller_fixture fx;
+    auto claims = default_claims();
+    claims["revocable"] = false;
+    fx.seedStored(fx.token(claims));
+    ActivationController controller(fx.config, fx.makeLicensing());
+    controller.start();
+    REQUIRE(pumpUntil([&] { return controller.screen() == Screen::Details; }));
+    const auto requestsBefore = fx.transport->requests.size();
+
+    controller.deactivate();
+    pumpFor(50);
+
+    CHECK_FALSE(controller.isBusy());
+    CHECK(controller.screen() == Screen::Details);
+    REQUIRE(controller.license().has_value());
+    CHECK(controller.licensedFlag().load());
+    CHECK(controller.statusMessage() == kNotRevocableMessage);
+    CHECK(fx.licenseFile.existsAsFile());
+    CHECK(fx.transport->requests.size() == requestsBefore);
+}
+
+TEST_CASE("deactivate() keeps the license when Moonbase says only the seller can revoke it")
+{
+    // Validated before the seller turned the setting on, so the license still
+    // says the customer may revoke it.
+    controller_fixture fx;
+    fx.seedStored(fx.token(default_claims()));
+    ActivationController controller(fx.config, fx.makeLicensing());
+    controller.start();
+    REQUIRE(pumpUntil([&] { return controller.screen() == Screen::Details; }));
+
+    fx.transport->responses.push_back(moonbase::http_response{
+        403,
+        {},
+        R"({"title":"Not allowed","status":403,"detail":"Activations of this product can only be revoked by the seller","errorType":"LicenseNotRevocable"})"});
+    controller.deactivate();
+
+    REQUIRE(pumpUntil([&] { return ! controller.isBusy(); }));
+    CHECK(controller.screen() == Screen::Details);
+    REQUIRE(controller.license().has_value());
+    CHECK(controller.licensedFlag().load());
+    CHECK(controller.statusMessage() == kNotRevocableMessage);
+    CHECK(fx.licenseFile.existsAsFile());
+    CHECK(fx.transport->requests.back().url.find("/revoke?") != std::string::npos);
+}
+
+TEST_CASE("deactivate() treats a 403 without Moonbase's errorType as before")
+{
+    // A license that changed hands, or a proxy: no word that only the seller
+    // can revoke it, so the usual retry message, and the license stays.
+    controller_fixture fx;
+    fx.seedStored(fx.token(default_claims()));
+    ActivationController controller(fx.config, fx.makeLicensing());
+    controller.start();
+    REQUIRE(pumpUntil([&] { return controller.screen() == Screen::Details; }));
+
+    fx.transport->responses.push_back(moonbase::http_response{
+        403, {}, R"({"title":"Not allowed","status":403,"detail":"User does not own license"})"});
+    controller.deactivate();
+
+    REQUIRE(pumpUntil([&] { return ! controller.isBusy(); }));
+    CHECK(controller.screen() == Screen::Details);
+    REQUIRE(controller.license().has_value());
+    CHECK(controller.statusMessage().contains("Couldn't reach Moonbase to deactivate"));
+    CHECK(controller.statusMessage() != kNotRevocableMessage);
+    CHECK(fx.licenseFile.existsAsFile());
+}
+
+TEST_CASE("deactivate() on a trial still forgets it here, though no trial is revocable")
+{
+    controller_fixture fx;
+    auto claims = default_claims();
+    claims["trial"] = true;
+    claims["revocable"] = false;
+    fx.seedStored(fx.token(claims));
+    ActivationController controller(fx.config, fx.makeLicensing());
+    controller.start();
+    REQUIRE(pumpUntil([&] { return controller.license().has_value(); }));
+
+    controller.deactivate();
+
+    REQUIRE(pumpUntil([&] { return controller.screen() == Screen::Welcome; }));
+    CHECK_FALSE(controller.license().has_value());
+    CHECK_FALSE(fx.licenseFile.existsAsFile());
+    CHECK(controller.lockReason() == LockReason::Deactivated);
+}
+
 //==============================================================================
 // Offline activation flow (machine file out, license file in)
 //==============================================================================
@@ -4183,6 +4277,55 @@ bool offersActivate(juce::Component& root)
     return false;
 }
 } // namespace
+
+namespace
+{
+// Whether the shown screen (visible all the way down) has a Deactivate button.
+bool offersDeactivate(juce::Component& root)
+{
+    for (auto* child : root.getChildren())
+    {
+        if (! child->isVisible())
+            continue;
+        if (auto* button = dynamic_cast<juce::Button*>(child);
+            button != nullptr && button->getButtonText().startsWith("Deactivate"))
+            return true;
+        if (offersDeactivate(*child))
+            return true;
+    }
+    return false;
+}
+} // namespace
+
+TEST_CASE("the license screen offers Deactivate unless only the seller can revoke the license")
+{
+    controller_fixture fx;
+    fx.seedStored(fx.token(default_claims()));
+    ActivationController controller(fx.config, fx.makeLicensing());
+    controller.start();
+    REQUIRE(pumpUntil([&] { return controller.screen() == Screen::Details; }));
+    ActivationComponent component(controller);
+    component.setSize(560, 640);
+
+    const auto show = [&](std::optional<bool> revocable, bool trial, moonbase::activation_method method)
+    {
+        auto license = *controller.license();
+        license.revocable = revocable;
+        license.trial = trial;
+        license.method = method;
+        controller.setPreviewState(Screen::Details, std::move(license));
+        pumpFor(50);
+        return offersDeactivate(component);
+    };
+
+    const auto online = moonbase::activation_method::online;
+    CHECK(show(std::nullopt, false, online)); // a license from before the claim
+    CHECK(show(true, false, online));
+    CHECK_FALSE(show(false, false, online));
+    // As before: a trial keeps it (to forget the trial here), an offline license has none.
+    CHECK(show(false, true, online));
+    CHECK_FALSE(show(false, false, moonbase::activation_method::offline));
+}
 
 TEST_CASE("the add-ons screen goes by the license for a seat here, and offers Activate while a seat may be free")
 {

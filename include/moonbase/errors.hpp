@@ -31,6 +31,8 @@ enum class error_type {
     /// The license is valid but doesn't cover this version of the app; see
     /// release_not_covered_error in release_access.hpp.
     release_not_covered,
+    /// Only the seller can revoke this device's activation of the license.
+    license_not_revocable,
 };
 
 class moonbase_error : public std::runtime_error {
@@ -173,6 +175,24 @@ class no_eligible_license_error : public moonbase_error {
 public:
     explicit no_eligible_license_error(const std::string& message)
         : moonbase_error(error_type::no_eligible_license, message)
+    {
+    }
+};
+
+// The customer can't revoke this device's activation: the product lets only the
+// seller free a seat. licensing::revoke_activation throws it without contacting
+// the API for a license whose revocable claim is false (see is_revocable), and
+// when Moonbase refuses with errorType LicenseNotRevocable, which it does when
+// the setting changed after the license was last validated.
+//
+// The license is as good as it was, so keep it, and keep this device activated.
+// Not an operation_not_supported_error, which revoking an offline license or a
+// trial throws and which apps answer by forgetting the license locally, and not
+// a license_invalid_error, which apps lock on.
+class license_not_revocable_error : public moonbase_error {
+public:
+    explicit license_not_revocable_error(const std::string& message)
+        : moonbase_error(error_type::license_not_revocable, message)
     {
     }
 };

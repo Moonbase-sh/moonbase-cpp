@@ -361,6 +361,30 @@ online-activated paid licenses; calling it for offline or trial tokens raises
 same way they do for `validate_token_online`, but with no grace-period
 fallback — revoke is a one-shot operation.
 
+A product can let only the seller revoke its activations. Its licenses say so in their
+`revocable` claim, read into `license::revocable` (empty in a license issued before
+Moonbase sent it). `is_revocable(license)` decides from it: true for an online license
+that is not a trial and whose claim isn't false. Show "Deactivate" only when it is true.
+
+Decide from a license the SDK read from its token, such as the one
+`validate_token_online` returned, rather than from the stored copy: a license that an
+older release of this SDK stored has no `revocable` field, although its token carries
+the claim that `revoke_activation` goes by.
+
+```cpp
+if (auto local = licensing.store().load_local_license()) {
+    // Read from the token, as revoke_activation reads it.
+    const auto current = licensing.validate_token_local_allow_expired(local->token);
+    show_deactivate_button(moonbase::is_revocable(current)); // your UI
+}
+```
+
+For a license whose claim is false, `revoke_activation` throws
+`license_not_revocable_error` without contacting the API. It throws the same when
+Moonbase refuses with `errorType: LicenseNotRevocable`, which happens when the seller
+turned the setting on after the license was last validated. Either way the stored
+license is kept, and the device stays activated.
+
 ## Add-ons
 
 An add-on (a sub-product, with a product ID like `my-app.drum-kit`) that the
@@ -467,6 +491,7 @@ trying again can help:
 | `store_closed_error` | The merchant closed their Moonbase account. No verdict on the license | Treat it like being offline |
 | `activation_request_error` | A browser activation request can never complete | Start a new request |
 | `no_eligible_license_error` | No seat of an add-on to give. No verdict on the license | Offer to buy the add-on or free a seat |
+| `license_not_revocable_error` | `revoke_activation` on a license only the seller can revoke. No verdict on the license | Keep the license, and hide the "Deactivate" action (`is_revocable`) |
 | `operation_not_supported_error` | The call can't apply to this license: revoking an offline or trial license, or an add-on it can't take. From `request_trial`: the product offers no trial this call can start | Keep the license. For trials that need an account, use `request_activation` |
 | `configuration_error` | Bad options, or a device id resolver that returned an empty id | Fix the setup |
 
@@ -482,7 +507,8 @@ How each call maps what the API returns:
 | `get_requested_activation` | 204 or 404 | `std::nullopt` |
 | | 400 | `activation_request_error` |
 | `validate_token_online`, `revoke_activation` | 400 | `license_invalid_error` (`license_expired_error` when `errorType` is `LicenseExpired`, `release_not_covered_error` when it is `ReleaseNotCovered`, `license_revoked_error` when it is `LicenseRevoked` or `LicenseActivationRevoked`) |
-| | 403 or 404 | `api_error`, covered by the grace period |
+| `revoke_activation` | any status with `errorType: LicenseNotRevocable` | `license_not_revocable_error` |
+| `validate_token_online`, `revoke_activation` | any other 403, or a 404 | `api_error`, covered by the grace period |
 | `activate_sub_product`, `request_sub_product_trial`, `list_sub_products` | 400 with `errorType` `LicenseInvalid`, `LicenseRevoked` or `LicenseActivationRevoked` | `license_invalid_error` (`license_revoked_error` for the two revoked codes, `license_expired_error` for `LicenseExpired`) |
 | | 400 with `errorType: NoEligibleLicense` | `no_eligible_license_error` |
 | | any other 400 | `operation_not_supported_error` with the server's reason |
@@ -499,7 +525,9 @@ belongs, is an `api_error`. So is a 403 or 404, although `/validate` and
 `/revoke` send those for a license that no longer exists or changed hands: their
 body is stock ASP.NET ProblemDetails with no `errorType`, which a misrouted
 request gets from any other ASP.NET service too. A license deleted on the server
-therefore keeps working until the grace period runs out.
+therefore keeps working until the grace period runs out. A refusal that carries
+Moonbase's own `errorType` is read by it instead, whatever the status, as
+`LicenseNotRevocable` is.
 
 The message of each exception carries the server's reason where it gave one:
 the problem's `detail`, the first field error of a validation failure, or the

@@ -678,6 +678,133 @@ TEST_CASE("revoke_activation refuses trial tokens without contacting the API")
     CHECK(fixture.transport->requests.empty());
 }
 
+TEST_CASE("revoke_activation refuses a license only the seller can revoke, and keeps it")
+{
+    facade_fixture fixture;
+    auto claims = moonbase::tests::default_claims();
+    claims["revocable"] = false;
+    const auto token = fixture.make_token(claims);
+    fixture.instance.store().store_local_license(fixture.instance.validator().validate_token(token));
+
+    try {
+        fixture.instance.revoke_activation(token);
+        FAIL("expected license_not_revocable_error");
+    } catch (const license_not_revocable_error& ex) {
+        CHECK(ex.type() == error_type::license_not_revocable);
+        CHECK(std::string(ex.what()) == "Activations of this product can only be revoked by the seller");
+    }
+    CHECK(fixture.transport->requests.empty());
+    REQUIRE(fixture.instance.store().load_local_license().has_value());
+    CHECK(fixture.instance.store().load_local_license()->token == token);
+}
+
+TEST_CASE("a license an older release stored is judged by its token")
+{
+    // The stored copy has no revocable field, as an older release wrote it, but
+    // its token says only the seller can revoke the license.
+    facade_fixture fixture;
+    auto claims = moonbase::tests::default_claims();
+    claims["revocable"] = false;
+    const auto token = fixture.make_token(claims);
+    auto older = fixture.instance.validator().validate_token(token);
+    older.revocable.reset();
+    fixture.instance.store().store_local_license(older);
+
+    const auto stored = fixture.instance.store().load_local_license();
+    REQUIRE(stored.has_value());
+    CHECK_FALSE(stored->revocable.has_value());
+
+    // Read from the token, as the docs show and as revoke_activation reads it.
+    CHECK_FALSE(is_revocable(fixture.instance.validate_token_local_allow_expired(stored->token)));
+    CHECK_THROWS_AS(fixture.instance.revoke_activation(stored->token), license_not_revocable_error);
+    CHECK(fixture.transport->requests.empty());
+}
+
+TEST_CASE("revoke_activation refuses an aged-out license only the seller can revoke")
+{
+    facade_fixture fixture;
+    auto claims = moonbase::tests::default_claims();
+    claims["exp"] = moonbase::tests::now_seconds() - 60;
+    claims["revocable"] = false;
+
+    CHECK_THROWS_AS(fixture.instance.revoke_activation(fixture.make_token(claims)), license_not_revocable_error);
+    CHECK(fixture.transport->requests.empty());
+}
+
+TEST_CASE("revoke_activation still says a trial or offline license can't be revoked when the claim says so too")
+{
+    // Their own reason, which apps answer by forgetting the license on the device.
+    for (const auto* kind : {"trial", "offline"}) {
+        CAPTURE(kind);
+        facade_fixture fixture;
+        auto claims = moonbase::tests::default_claims();
+        claims["revocable"] = false;
+        if (std::string(kind) == "trial") {
+            claims["trial"] = true;
+        } else {
+            claims["method"] = "Offline";
+        }
+
+        CHECK_THROWS_AS(fixture.instance.revoke_activation(fixture.make_token(claims)),
+                        operation_not_supported_error);
+        CHECK(fixture.transport->requests.empty());
+    }
+}
+
+TEST_CASE("revoke_activation posts for a license the customer may revoke")
+{
+    facade_fixture fixture;
+    auto claims = moonbase::tests::default_claims();
+    claims["revocable"] = true;
+    const auto token = fixture.make_token(claims);
+    fixture.instance.store().store_local_license(fixture.instance.validator().validate_token(token));
+    fixture.transport->responses.push_back(http_response{200, {}, ""});
+
+    fixture.instance.revoke_activation(token);
+
+    CHECK(fixture.transport->requests.size() == 1);
+    CHECK_FALSE(fixture.instance.store().load_local_license().has_value());
+}
+
+TEST_CASE("revoke_activation keeps the license when Moonbase says only the seller can revoke it")
+{
+    // The license was validated before the seller turned the setting on.
+    facade_fixture fixture;
+    const auto token = fixture.make_token(moonbase::tests::default_claims());
+    fixture.instance.store().store_local_license(fixture.instance.validator().validate_token(token));
+    fixture.transport->responses.push_back(http_response{
+        403,
+        {},
+        R"({"title":"Not allowed","status":403,"detail":"Activations of this product can only be revoked by the seller","errorType":"LicenseNotRevocable"})"});
+
+    CHECK_THROWS_WITH_AS(fixture.instance.revoke_activation(token),
+                         "Activations of this product can only be revoked by the seller",
+                         license_not_revocable_error);
+    CHECK(fixture.transport->requests.size() == 1);
+    REQUIRE(fixture.instance.store().load_local_license().has_value());
+    CHECK(fixture.instance.store().load_local_license()->token == token);
+}
+
+TEST_CASE("revoke_activation keeps the license through a 403 that doesn't say only the seller can revoke it")
+{
+    facade_fixture fixture;
+    const auto token = fixture.make_token(moonbase::tests::default_claims());
+    fixture.instance.store().store_local_license(fixture.instance.validator().validate_token(token));
+    fixture.transport->responses.push_back(http_response{
+        403, {}, R"({"title":"Not allowed","status":403,"detail":"User does not own license"})"});
+
+    try {
+        fixture.instance.revoke_activation(token);
+        FAIL("expected the revoke to throw");
+    } catch (const license_not_revocable_error&) {
+        FAIL("a 403 without errorType LicenseNotRevocable must stay an api_error");
+    } catch (const api_error& ex) {
+        CHECK(ex.status_code() == 403);
+    }
+    REQUIRE(fixture.instance.store().load_local_license().has_value());
+    CHECK(fixture.instance.store().load_local_license()->token == token);
+}
+
 TEST_CASE("revoke_activation calls the API and clears the matching local license")
 {
     facade_fixture fixture;

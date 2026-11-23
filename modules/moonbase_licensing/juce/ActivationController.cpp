@@ -15,6 +15,11 @@ constexpr int kPollIntervalMs = 2000;
 // compare), so this costs next to nothing.
 constexpr int kLicenseWatchIntervalMs = 2000;
 
+// Shown when deactivating a license that only the seller can revoke. The same
+// words as the activation UI of the other Moonbase SDKs.
+constexpr const char* kNotRevocableMessage =
+    "Only the developer can deactivate this computer. Contact them to move your license to another one.";
+
 // Diagnostic-only error text. For transport failures (moonbase::api_error) the
 // SDK stashes actionable guidance (e.g. the macOS network entitlement hint) in
 // the detail field; append it so it reaches onDiagnostic without ever appearing
@@ -1240,6 +1245,15 @@ void ActivationController::deactivate()
         return;
     }
 
+    // Only the seller can free this seat, so the license stays, as does this
+    // computer's activation. The details screen hides its button for it.
+    if (! moonbase::is_revocable(*current))
+    {
+        emitDiagnostic("deactivate: only the seller can revoke this activation, license kept.");
+        setScreen(screenForCurrentLicense(), kNotRevocableMessage);
+        return;
+    }
+
     busy_ = true;
     statusMessage_.clear(); // progress is shown by the inline spinner in the deactivate button
     sendChangeMessage();
@@ -1263,6 +1277,14 @@ void ActivationController::deactivate()
         try
         {
             licensing->revoke_activation(token);
+        }
+        catch (const moonbase::license_not_revocable_error& ex)
+        {
+            // Moonbase refused: the seller turned the setting on since this
+            // license was validated. Kept, like an unreachable server.
+            outcome = Outcome::Unreachable;
+            diag = juce::String::fromUTF8(ex.what());
+            userMessage = kNotRevocableMessage;
         }
         catch (const moonbase::operation_not_supported_error& ex) { outcome = Outcome::NotRevokable; diag = juce::String::fromUTF8(ex.what()); }
         catch (const moonbase::license_invalid_error&)            { outcome = Outcome::Revoked; }

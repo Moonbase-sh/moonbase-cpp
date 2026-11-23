@@ -8,6 +8,8 @@
 #include <string>
 #include <thread>
 #include <type_traits>
+#include <utility>
+#include <vector>
 
 #include <nlohmann/json.hpp>
 
@@ -585,6 +587,63 @@ TEST_CASE("a 403 or 404 on validate or revoke stays retryable, even as ProblemDe
         } catch (const api_error& ex) {
             CHECK(ex.status_code() == 403);
             CHECK(std::string(ex.what()) == "User does not own license");
+        }
+    }
+}
+
+TEST_CASE("revoke_activation reads LicenseNotRevocable as a license only the seller can revoke")
+{
+    constexpr const char* seller_only =
+        R"({"title":"Not allowed","status":403,"detail":"Activations of this product can only be revoked by the seller","errorType":"LicenseNotRevocable"})";
+
+    SUBCASE("as Moonbase sends it, with a 403")
+    {
+        client_fixture fixture({http_response{403, {}, seller_only}});
+        try {
+            fixture.client.revoke_activation("token");
+            FAIL("expected license_not_revocable_error");
+        } catch (const license_not_revocable_error& ex) {
+            CHECK(ex.type() == error_type::license_not_revocable);
+            CHECK(std::string(ex.what()) == "Activations of this product can only be revoked by the seller");
+            // Neither a verdict on the license nor a reason to forget it here.
+            CHECK(dynamic_cast<const license_invalid_error*>(&ex) == nullptr);
+            CHECK(dynamic_cast<const operation_not_supported_error*>(&ex) == nullptr);
+            CHECK(dynamic_cast<const api_error*>(&ex) == nullptr);
+        }
+    }
+
+    SUBCASE("by its errorType alone, whatever the status and the words")
+    {
+        client_fixture fixture({http_response{
+            400, {}, R"({"title":"Not allowed","status":400,"errorType":"LicenseNotRevocable"})"}});
+        CHECK_THROWS_WITH_AS(fixture.client.revoke_activation("token"), "Not allowed", license_not_revocable_error);
+    }
+}
+
+TEST_CASE("every other 403 from revoke_activation stays retryable")
+{
+    const std::vector<std::pair<const char*, std::string>> bodies{
+        {"the seller-only words without the errorType",
+         R"({"title":"Not allowed","status":403,"detail":"Activations of this product can only be revoked by the seller"})"},
+        {"a license that changed hands",
+         R"({"title":"Not allowed","status":403,"detail":"User does not own license"})"},
+        {"a proxy or firewall page", "<!DOCTYPE html><html><body>Request blocked</body></html>"},
+        {"the gateway's own answer", R"({"message":"Forbidden"})"},
+    };
+    for (const auto& entry : bodies) {
+        const std::string name = entry.first;
+        const std::string& body = entry.second;
+        CAPTURE(name);
+        client_fixture fixture({http_response{403, {}, body}});
+        try {
+            fixture.client.revoke_activation("token");
+            FAIL("expected the revoke to throw");
+        } catch (const license_not_revocable_error&) {
+            FAIL("only errorType LicenseNotRevocable says the seller alone can revoke");
+        } catch (const license_invalid_error&) {
+            FAIL("a 403 without Moonbase's errorType is no verdict");
+        } catch (const api_error& ex) {
+            CHECK(ex.status_code() == 403);
         }
     }
 }

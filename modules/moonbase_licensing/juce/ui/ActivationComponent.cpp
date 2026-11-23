@@ -1841,8 +1841,9 @@ public:
 
     void refresh() override
     {
-        // Offline licenses are permanent: no seats, no server-side revoke.
-        deactivate->setVisible(! isOffline());
+        // Offline licenses are permanent: no seats, no server-side revoke. Nor
+        // can the customer revoke one that only the seller frees.
+        deactivate->setVisible(offersDeactivate());
         addOnsRow->setVisible(showsAddOns());
         addOnsRow->repaint(); // the count of active add-ons may have moved
         if (controller.config().reduceMotion)
@@ -2014,6 +2015,19 @@ private:
         return lic && lic->method == moonbase::activation_method::offline;
     }
 
+    // Whether the Deactivate button shows: not for an offline license, nor for
+    // an online one only the seller can revoke. A trial keeps it, to forget the
+    // trial here.
+    [[nodiscard]] bool offersDeactivate() const
+    {
+        auto& lic = controller.license();
+        if (! lic)
+            return true;
+        if (lic->method == moonbase::activation_method::offline)
+            return false;
+        return lic->trial || moonbase::is_revocable(*lic);
+    }
+
     [[nodiscard]] std::optional<Seats> seats() const
     {
         auto& lic = controller.license();
@@ -2033,7 +2047,8 @@ private:
 
         auto inner = box.reduced(16, 12);
         const int bw = juce::jmin(180, inner.getWidth() / 2);
-        inner.removeFromRight(bw + 14); // make room for the deactivate button
+        if (offersDeactivate())
+            inner.removeFromRight(bw + 14); // make room for the deactivate button
 
         if (auto s = seats())
         {
