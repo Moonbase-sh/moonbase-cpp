@@ -5,6 +5,7 @@
 #include "juce_http_transport.h"
 
 #include <fstream>
+#include <set>
 
 namespace moonbase::juce_integration {
 
@@ -117,6 +118,180 @@ juce::String addOnFailure(const std::exception& ex, const juce::String& lead, co
         case Failure::Unexpected:  break;
     }
     return unexpectedFailure(lead, ex);
+}
+
+// License files, process-wide: what the license migration remembers in this
+// process alone. Keyed by license file, which names one product's store.
+class LicenseFileSet
+{
+public:
+    bool contains(const std::string& key) const
+    {
+        const std::lock_guard<std::mutex> guard(mutex_);
+        return keys_.count(key) != 0;
+    }
+
+    void add(const std::string& key)
+    {
+        const std::lock_guard<std::mutex> guard(mutex_);
+        keys_.insert(key);
+    }
+
+private:
+    mutable std::mutex mutex_;
+    std::set<std::string> keys_;
+};
+
+// The licenses whose migration failed in this process. Of the plugin instances
+// a session opens, the first asks Moonbase and the rest don't send a request
+// that would fail the same way, which offline could hold each of them on the
+// loading screen until it timed out. The next session tries again, which is
+// what picks up a fix: the network back, customers imported into Moonbase
+// since, the validation endpoint up again.
+LicenseFileSet& failedMigrations()
+{
+    static LicenseFileSet failed;
+    return failed;
+}
+
+// The migrations settled in this process whose marker file couldn't be
+// written, so that this process, at least, doesn't bring the removed license
+// back.
+LicenseFileSet& unsavedSettlements()
+{
+    static LicenseFileSet unsaved;
+    return unsaved;
+}
+
+// Where a controller keeps what the license migration needs, beside the
+// license file and named after the whole of its name, so stores that share a
+// folder keep theirs apart.
+struct MigrationFiles
+{
+    std::string key;            // the license file
+    juce::File settled;         // exists once the migration is settled
+    std::filesystem::path lock; // serialises migrations across instances and processes
+};
+
+MigrationFiles migrationFilesFor(const juce::File& licenseFile)
+{
+    const auto beside = [&licenseFile](const char* suffix)
+    {
+        return licenseFile.getSiblingFile(licenseFile.getFileName() + suffix);
+    };
+    return { licenseFile.getFullPathName().toStdString(), beside(".migration-settled"),
+             compat::toFilesystemPath(beside(".migration.lock")) };
+}
+
+// Looked at on disk on every call, so a sibling's settlement counts. Any thread.
+bool migrationSettled(const MigrationFiles& files)
+{
+    return unsavedSettlements().contains(files.key) || files.settled.existsAsFile();
+}
+
+// Records that the migration is settled: a file of its own, which nothing else
+// rewrites, so no other state written meanwhile can take it back. False when
+// it couldn't be created, which leaves only this process knowing. Any thread.
+bool settleMigration(const MigrationFiles& files)
+{
+    if (! files.settled.existsAsFile())
+        static_cast<void>(files.settled.create());
+    if (files.settled.existsAsFile())
+        return true;
+    unsavedSettlements().add(files.key);
+    return false;
+}
+
+struct Migration
+{
+    std::optional<moonbase::license> license; // migrated; stored unless superseded or the save failed
+    bool storedMeanwhile = false;              // another instance stored a license: load that instead
+    juce::String diag;
+};
+
+// Exchanges `legacy`, the license an earlier licensing system left, for a
+// Moonbase license and stores it. `current` says whether the start this runs
+// for still is, and `closing` that the controller is being destroyed.
+// `onLicenseFile` runs under the store's lock whenever the license file holds
+// the license start() goes on with: the one written, or another instance's.
+Migration migrateLicense(moonbase::licensing& licensing, const std::string& legacy, const MigrationFiles& files,
+                         const std::atomic<bool>& closing, const std::function<bool()>& current,
+                         const std::function<void()>& onLicenseFile)
+{
+    Migration out;
+
+    // One migration at a time, across instances and processes, so of instances
+    // starting together one sends the request and the others load what it
+    // stored. A lock of its own, not the store's: the request lasts as long as
+    // Moonbase and the validation endpoint take, and storing a license on the
+    // message thread (an offline activation, say) waits for the store's lock.
+    // Given up on, with storage_error, when the controller closes.
+    const moonbase::detail::file_lock migrating(files.lock, closing);
+
+    // Whether to migrate still, looked at under the store's lock. A license
+    // removed here records that the migration is settled before it goes, so
+    // an empty store is never one whose license was just removed.
+    const auto stillWanted = [&]
+    {
+        if (licensing.store().load_local_license())
+        {
+            out.storedMeanwhile = true;
+            onLicenseFile();
+            return false;
+        }
+        return ! migrationSettled(files);
+    };
+
+    {
+        const auto guard = licensing.store().lock_for_update();
+        if (! stillWanted())
+            return out;
+    }
+    if (failedMigrations().contains(files.key))
+        return out;
+
+    try
+    {
+        out.license = licensing.migrate_license(legacy);
+    }
+    catch (const std::exception& ex)
+    {
+        // Not when closing, which cancelled the request: that says nothing
+        // about the migration, and the plugin may open again in this process.
+        if (! closing.load())
+            failedMigrations().add(files.key);
+        out.diag = "Migrating the license from the earlier licensing system failed; the next session tries again: "
+                 + describeError(ex);
+        return out;
+    }
+
+    out.diag = "Migrated the license from the earlier licensing system to Moonbase license "
+             + juce::String(out.license->id) + ".";
+    try
+    {
+        const auto guard = licensing.store().lock_for_update();
+        // A license stored, or one removed, while the request was out wins.
+        if (! stillWanted())
+        {
+            out.diag << (out.storedMeanwhile ? " Another instance stored a license meanwhile, which is kept."
+                                             : " A license was removed here meanwhile, so it wasn't stored.");
+            out.license.reset();
+            return out;
+        }
+        // Not when superseded: whatever moved the generation on settles the
+        // license. A failed save leaves it for the next start to migrate again,
+        // which finds the same activation.
+        if (current())
+        {
+            licensing.store().store_local_license(*out.license);
+            onLicenseFile();
+        }
+    }
+    catch (const moonbase::storage_error& ex)
+    {
+        out.diag << " It couldn't be saved, so the next start migrates it again: " << describeError(ex);
+    }
+    return out;
 }
 } // namespace
 
@@ -243,6 +418,7 @@ std::optional<moonbase::device_id_description> ActivationController::describeDev
 
 ActivationController::~ActivationController()
 {
+    closing_->store(true);
     stopLicenseWatch();
     stopTimer();
     ++updateGeneration_;     // drop any queued update-flow continuations
@@ -309,9 +485,20 @@ void ActivationController::start()
     juce::WeakReference<ActivationController> safe(this);
     auto licensing = licensing_;
 
-    threadPool_.addJob([safe, generation, licensing]() mutable
+    // Moving from another licensing system: finds the license it left, which is
+    // migrated while nothing is stored here, unless this module has since
+    // removed a license of its own.
+    const auto migration = migrationFilesFor(config_.resolvedLicenseFile());
+    std::function<juce::String()> findLicenseToMigrate;
+    if (config_.findLicenseToMigrate && ! migrationSettled(migration))
+        findLicenseToMigrate = config_.findLicenseToMigrate;
+
+    threadPool_.addJob([safe, generation, generations = generations_, closing = closing_, licensing,
+                        findLicenseToMigrate, migration, settle = migrationSettler(),
+                        licensePath = watchedFile_]() mutable
     {
         std::optional<moonbase::license> result;
+        std::optional<FileStamp> migratedStamp; // the license file as the migration last saw it
         std::optional<moonbase::license> expiredTrial;
         std::optional<NotCoveredInfo> notCovered;
         bool deleteExpiredOffline = false;
@@ -320,6 +507,43 @@ void ActivationController::start()
         try
         {
             auto stored = licensing->store().load_local_license();
+
+            // Nothing stored here yet: migrate the license the earlier licensing
+            // system left, if there is one and it didn't fail in this process.
+            if (! stored && findLicenseToMigrate && ! failedMigrations().contains(migration.key))
+            {
+                juce::String found;
+                try
+                {
+                    found = findLicenseToMigrate();
+                }
+                catch (const std::exception& ex)
+                {
+                    diag = "ActivationConfig::findLicenseToMigrate threw, so no license was migrated: "
+                         + juce::String::fromUTF8(ex.what());
+                }
+                catch (...)
+                {
+                    diag = "ActivationConfig::findLicenseToMigrate threw, so no license was migrated.";
+                }
+
+                if (found.trim().isNotEmpty())
+                {
+                    auto migrated = migrateLicense(*licensing, found.toStdString(), migration, *closing,
+                                                   [&] { return generations->load() == generation; },
+                                                   [&]
+                                                   {
+                                                       if (licensePath)
+                                                           migratedStamp = stampOf(*licensePath);
+                                                   });
+                    diag = migrated.diag;
+                    if (migrated.storedMeanwhile)
+                        stored = licensing->store().load_local_license();
+                    else
+                        result = std::move(migrated.license);
+                }
+            }
+
             if (stored)
             {
                 // Peek without throwing on a past `exp` so we can tell an expired
@@ -422,7 +646,7 @@ void ActivationController::start()
                         // removal for another instance's.
                         diag = juce::String("Re-validating stored license failed: ") + describeError(ex);
                         reason = LockReason::Invalid;
-                        diag << (deleteRevoked(*licensing, *peek)
+                        diag << (deleteRevoked(*licensing, *peek, settle)
                                      ? " Removed it."
                                      : " The license file has changed since, so it stays.");
                     }
@@ -455,13 +679,19 @@ void ActivationController::start()
         }
 
         juce::MessageManager::callAsync([safe, generation, result, expiredTrial, notCovered, deleteExpiredOffline,
-                                         reason, diag]() mutable
+                                         migratedStamp, reason, diag]() mutable
         {
             auto* self = safe.get();
             if (self == nullptr || generation != self->generation_.load())
                 return;
             if (diag.isNotEmpty())
                 self->emitDiagnostic(diag);
+            // The watch's first look was taken before the migration, when no
+            // license was stored. From the migration's own look on, a sibling
+            // that removes the license (deactivating, say) before the next one
+            // locks this instance too, as for any license it found stored.
+            if (migratedStamp)
+                self->watchedStamp_ = migratedStamp;
             if (deleteExpiredOffline)
                 self->deleteStoredLicense();
             if (expiredTrial)
@@ -1008,9 +1238,9 @@ void ActivationController::refreshLicense(bool force, std::function<void(bool)> 
                     // process for a whole request. The license is dropped by
                     // now, so the license watch won't take the removal for
                     // another instance's.
-                    self->threadPool_.addJob([safe, licensing, currentLicense]
+                    self->threadPool_.addJob([safe, licensing, currentLicense, settle = self->migrationSettler()]
                     {
-                        const bool removed = deleteRevoked(*licensing, currentLicense);
+                        const bool removed = deleteRevoked(*licensing, currentLicense, settle);
                         juce::MessageManager::callAsync([safe, removed]
                         {
                             if (auto* owner = safe.get())
@@ -1264,8 +1494,14 @@ void ActivationController::deactivate()
     juce::WeakReference<ActivationController> safe(this);
     auto licensing = licensing_;
 
-    threadPool_.addJob([safe, generation, token, activationId, licensing]() mutable
+    threadPool_.addJob([safe, generation, token, activationId, licensing, settle = migrationSettler()]() mutable
     {
+        // Before the revoke, which deletes the license once Moonbase frees the
+        // seat: closing the plugin before the answer reaches the message thread
+        // must not leave a migration that would take the seat back.
+        if (settle)
+            settle();
+
         enum class Outcome { Revoked, NotRevokable, Unreachable };
         Outcome outcome = Outcome::Revoked;
         juce::String diag;
@@ -1337,8 +1573,33 @@ void ActivationController::clearLicense()
     lock(LockReason::Deactivated);
 }
 
+std::function<bool()> ActivationController::migrationSettler() const
+{
+    if (! config_.findLicenseToMigrate)
+        return {};
+    return [files = migrationFilesFor(config_.resolvedLicenseFile())]
+    {
+        return settleMigration(files);
+    };
+}
+
+void ActivationController::settleLicenseMigration()
+{
+    // Migrating the earlier licensing system's license would bring back the
+    // license this module removed, which was the customer's or Moonbase's call.
+    // Before the removal, which a migration looks for under the store's lock.
+    if (const auto settle = migrationSettler(); settle && ! settle())
+    {
+        const auto marker = migrationFilesFor(config_.resolvedLicenseFile()).settled;
+        emitDiagnostic("Couldn't create " + marker.getFullPathName()
+                       + ", so only this process knows not to migrate the earlier licensing system's "
+                         "license again now that a license was removed here.");
+    }
+}
+
 void ActivationController::deleteStoredLicense()
 {
+    settleLicenseMigration();
     try
     {
         auto guard = licensing_->store().lock_for_update();
@@ -1351,6 +1612,7 @@ void ActivationController::deleteStoredLicense()
 
 void ActivationController::deleteStoredMatching(const juce::String& activationId)
 {
+    settleLicenseMigration(); // as deleteStoredLicense does
     try
     {
         auto guard = licensing_->store().lock_for_update();
@@ -1365,7 +1627,8 @@ void ActivationController::deleteStoredMatching(const juce::String& activationId
     }
 }
 
-bool ActivationController::deleteRevoked(moonbase::licensing& licensing, const moonbase::license& refused)
+bool ActivationController::deleteRevoked(moonbase::licensing& licensing, const moonbase::license& refused,
+                                         const std::function<bool()>& settleMigration)
 {
     // Only the refused copy, or an older one of the same license and activation.
     // Activating this computer again keeps its activation id (Moonbase derives it
@@ -1379,6 +1642,10 @@ bool ActivationController::deleteRevoked(moonbase::licensing& licensing, const m
             stored && stored->id == refused.id && stored->activation_id == refused.activation_id
             && (stored->token == refused.token || stored->validated_at < refused.validated_at))
         {
+            // Here, under the lock, and not left to the message thread: the
+            // controller may be gone by then, and the license with it.
+            if (settleMigration)
+                settleMigration();
             licensing.store().delete_local_license();
             return true;
         }
@@ -1448,13 +1715,18 @@ void ActivationController::stopLicenseWatch()
 
 ActivationController::FileStamp ActivationController::stampLicenseFile() const
 {
+    return stampOf(*watchedFile_);
+}
+
+ActivationController::FileStamp ActivationController::stampOf(const std::filesystem::path& file)
+{
     std::error_code ec;
     FileStamp stamp;
-    stamp.exists = std::filesystem::is_regular_file(*watchedFile_, ec);
+    stamp.exists = std::filesystem::is_regular_file(file, ec);
     if (stamp.exists)
     {
-        stamp.size = std::filesystem::file_size(*watchedFile_, ec);
-        stamp.modified = std::filesystem::last_write_time(*watchedFile_, ec);
+        stamp.size = std::filesystem::file_size(file, ec);
+        stamp.modified = std::filesystem::last_write_time(file, ec);
     }
     return stamp;
 }

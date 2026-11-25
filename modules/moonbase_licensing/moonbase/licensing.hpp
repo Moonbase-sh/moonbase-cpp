@@ -135,6 +135,26 @@ public:
         return client_->request_trial(options);
     }
 
+    // Exchanges a license from the system the product was licensed with before
+    // Moonbase (a license key, the contents of its license file) for a Moonbase
+    // license on this device, and returns it, so a customer moving to this build
+    // doesn't activate again. Store it with store().store_local_license(...), as
+    // an activated license, and validate it like one from then on.
+    //
+    // Needs license migration set up in the Moonbase account: a validation
+    // endpoint of the merchant's own that checks the license and answers with
+    // the product, the customer and this device, which Moonbase activates as it
+    // would through the browser. license_client::migrate_license describes what
+    // the endpoint is sent and what it must answer, and throws as this does.
+    //
+    // Moonbase's activation ids are derived from the customer, product and
+    // device, so migrating the same license on the same device again finds the
+    // activation it made the first time rather than taking another seat.
+    [[nodiscard]] license migrate_license(std::string_view legacy_license) const
+    {
+        return client_->migrate_license(legacy_license);
+    }
+
     // Signature, device binding, expiry and, for a license that covers only some
     // versions, application_version (release_not_covered_error), with no network.
     [[nodiscard]] license validate_token_local(std::string_view token) const

@@ -26,7 +26,8 @@ enum class error_type {
     activation_request_ended,
     /// The store the product is sold through has closed its Moonbase account.
     store_closed,
-    /// The customer has no license of an add-on with a seat free for this device.
+    /// The customer has no license of an add-on, or of a product a license is
+    /// migrated to, with a seat free for this device.
     no_eligible_license,
     /// The license is valid but doesn't cover this version of the app; see
     /// release_not_covered_error in release_access.hpp.
@@ -171,6 +172,10 @@ public:
 //
 // Not a license_invalid_error: it is about the add-on, and the license the
 // request carried is as good as it was.
+//
+// licensing::migrate_license throws it too, when the customer the license
+// belongs to has no license of the product in Moonbase with a seat free for
+// this device.
 class no_eligible_license_error : public moonbase_error {
 public:
     explicit no_eligible_license_error(const std::string& message)

@@ -261,6 +261,25 @@ struct ActivationConfig
     // static metadata + analytics capture.
     std::function<void(std::map<std::string, std::string>&)> onCollectMetadata;
 
+    //== License migration =====================================================
+    // Moving from another licensing system: returns the license it left on this
+    // computer (a license key, or the contents of its license file, as UTF-8
+    // text), or an empty string when there is none. While no license is stored
+    // here, start() exchanges it through Moonbase's license migration for a
+    // license of this module's own, so the customer doesn't activate again:
+    // Moonbase has the validation endpoint you set up for it check the license,
+    // then activates this computer for the customer it names.
+    //
+    // A migration that fails is tried again by the next process to load the
+    // plugin, such as the host's next session, rather than by every instance in
+    // this one. None is tried once this module has removed a license of its own
+    // (the customer deactivated here, say), which migrating would bring back.
+    // Called on a background thread. See docs/license-migration.md.
+    //
+    // After every other field, so a config initialised positionally still
+    // compiles.
+    std::function<juce::String()> findLicenseToMigrate;
+
     //== Resolved display names ================================================
     // The product / manufacturer shown throughout the UI and used for the
     // default license path. Prefer the explicit config field; otherwise fall

@@ -5296,6 +5296,489 @@ TEST_CASE("storing a trial waits for another instance's lock off the message thr
 }
 
 //==============================================================================
+// License migration: the license an earlier licensing system left
+//==============================================================================
+namespace {
+
+int migrateRequests(const controller_fixture& fx)
+{
+    int count = 0;
+    for (const auto& request : fx.transport->requests)
+        if (request.url.find("/api/client/licenses/migrate") != std::string::npos)
+            ++count;
+    return count;
+}
+
+juce::File settledMarkerOf(const juce::File& licenseFile)
+{
+    return licenseFile.getSiblingFile(licenseFile.getFileName() + ".migration-settled");
+}
+
+juce::File settledMarkerOf(const controller_fixture& fx)
+{
+    return settledMarkerOf(fx.licenseFile);
+}
+
+bool migrationSettledOnDisk(const controller_fixture& fx)
+{
+    return settledMarkerOf(fx).existsAsFile();
+}
+
+// What removing a license does first, as another instance would.
+void settleAsSiblingWould(const controller_fixture& fx)
+{
+    static_cast<void>(settledMarkerOf(fx).create());
+}
+
+moonbase::http_response revokedAnswer()
+{
+    return moonbase::http_response{
+        400, {}, R"({"title":"Revoked","status":400,"detail":"License has been revoked","errorType":"LicenseRevoked"})"};
+}
+
+} // namespace
+
+TEST_CASE("start() migrates the license an earlier licensing system left, and stores it")
+{
+    controller_fixture fx;
+    juce::StringArray diags;
+    fx.config.onDiagnostic = [&](const juce::String& m) { diags.add(m); };
+    fx.config.findLicenseToMigrate = [] { return juce::String("ABCD-1234-EFGH-5678"); };
+    const auto token = fx.token(default_claims());
+    fx.transport->responses.push_back(moonbase::http_response{200, {}, token});
+
+    ActivationController controller(fx.config, fx.makeLicensing());
+    controller.start();
+
+    REQUIRE(pumpUntil([&] { return settled(controller); }));
+    CHECK(controller.screen() == Screen::Details);
+    REQUIRE(controller.license().has_value());
+    CHECK(controller.license()->token == token);
+    CHECK(controller.lockReason() == LockReason::None);
+    CHECK(storedToken(fx) == juce::String(token));
+
+    REQUIRE(fx.transport->requests.size() == 1);
+    const auto body = nlohmann::json::parse(fx.transport->requests.front().body);
+    CHECK(body.at("license") == "ABCD-1234-EFGH-5678");
+    CHECK(body.at("deviceSignature") == "device-id");
+    CHECK(body.at("productId") == "demo-app");
+    CHECK(diags.joinIntoString(" ").contains("Migrated the license from the earlier licensing system"));
+}
+
+TEST_CASE("start() looks for no license to migrate while one is stored")
+{
+    controller_fixture fx;
+    fx.seedStored(fx.token(default_claims()));
+    std::atomic<bool> looked{ false };
+    fx.config.findLicenseToMigrate = [&] { looked = true; return juce::String("ABCD-1234"); };
+
+    ActivationController controller(fx.config, fx.makeLicensing());
+    controller.start();
+
+    REQUIRE(pumpUntil([&] { return settled(controller); }));
+    CHECK(controller.screen() == Screen::Details);
+    CHECK_FALSE(looked.load());
+    CHECK(fx.transport->requests.empty());
+}
+
+TEST_CASE("start() with no license to migrate routes to Welcome without asking Moonbase")
+{
+    controller_fixture fx;
+
+    SUBCASE("the earlier system left none")
+    {
+        fx.config.findLicenseToMigrate = [] { return juce::String(); };
+    }
+
+    SUBCASE("only whitespace")
+    {
+        fx.config.findLicenseToMigrate = [] { return juce::String(" \r\n"); };
+    }
+
+    SUBCASE("finding it threw")
+    {
+        fx.config.findLicenseToMigrate = []() -> juce::String { throw std::runtime_error("no such key"); };
+    }
+
+    ActivationController controller(fx.config, fx.makeLicensing());
+    controller.start();
+
+    REQUIRE(pumpUntil([&] { return settled(controller); }));
+    CHECK(controller.screen() == Screen::Welcome);
+    CHECK(controller.lockReason() == LockReason::None);
+    CHECK(fx.transport->requests.empty());
+}
+
+TEST_CASE("a migration that failed isn't tried again in this process")
+{
+    controller_fixture fx;
+    juce::StringArray diags;
+    fx.config.onDiagnostic = [&](const juce::String& m) { diags.add(m); };
+    std::atomic<int> looked{ 0 };
+    fx.config.findLicenseToMigrate = [&] { ++looked; return juce::String("ABCD-1234"); };
+
+    SUBCASE("refused")
+    {
+        fx.transport->responses.push_back(moonbase::http_response{
+            400, {}, R"({"title":"Invalid license","status":400,"detail":"License is not valid","errorType":"LicenseInvalid"})"});
+    }
+
+    SUBCASE("unreachable")
+    {
+        // Nothing queued: the transport fails as a dropped connection does.
+    }
+
+    {
+        ActivationController controller(fx.config, fx.makeLicensing());
+        controller.start();
+        REQUIRE(pumpUntil([&] { return settled(controller); }));
+        CHECK(controller.screen() == Screen::Welcome);
+        CHECK(controller.lockReason() == LockReason::None);
+        CHECK_FALSE(controller.license().has_value());
+    }
+    CHECK(migrateRequests(fx) == 1);
+    CHECK(diags.joinIntoString(" ").contains("the next session tries again"));
+    CHECK_FALSE(fx.licenseFile.existsAsFile());
+
+    // Another instance of this session, and this one starting again.
+    ActivationController sibling(fx.config, fx.makeLicensing());
+    sibling.start();
+    REQUIRE(pumpUntil([&] { return settled(sibling); }));
+    sibling.start();
+    REQUIRE(pumpUntil([&] { return settled(sibling); }));
+
+    CHECK(sibling.screen() == Screen::Welcome);
+    CHECK(migrateRequests(fx) == 1);
+    CHECK(looked.load() == 1);
+    // Not settled: the next session tries again.
+    CHECK_FALSE(migrationSettledOnDisk(fx));
+}
+
+TEST_CASE("a migration loads the license another instance stored first instead")
+{
+    controller_fixture fx;
+    const auto theirs = fx.token(default_claims());
+    // The other instance stores its license while this one is looking for the
+    // earlier system's, before it takes the store's lock.
+    fx.config.findLicenseToMigrate = [&]
+    {
+        fx.seedStored(theirs);
+        return juce::String("ABCD-1234");
+    };
+
+    ActivationController controller(fx.config, fx.makeLicensing());
+    controller.start();
+
+    REQUIRE(pumpUntil([&] { return settled(controller); }));
+    CHECK(controller.screen() == Screen::Details);
+    REQUIRE(controller.license().has_value());
+    CHECK(controller.license()->token == theirs);
+    CHECK(fx.transport->requests.empty()); // validated moments ago, so not even that
+}
+
+TEST_CASE("removing a license settles the migration, so it isn't brought back")
+{
+    controller_fixture fx;
+    std::atomic<int> looked{ 0 };
+    fx.config.findLicenseToMigrate = [&] { ++looked; return juce::String("ABCD-1234"); };
+
+    SUBCASE("deactivated")
+    {
+        fx.seedStored(fx.token(default_claims()));
+        ActivationController controller(fx.config, fx.makeLicensing());
+        controller.start();
+        REQUIRE(pumpUntil([&] { return controller.screen() == Screen::Details; }));
+
+        fx.transport->responses.push_back(moonbase::http_response{200, {}, ""}); // revoke OK
+        controller.deactivate();
+        REQUIRE(pumpUntil([&] { return controller.screen() == Screen::Welcome; }));
+    }
+
+    SUBCASE("forgotten here")
+    {
+        fx.seedStored(fx.token(default_claims()));
+        ActivationController controller(fx.config, fx.makeLicensing());
+        controller.start();
+        REQUIRE(pumpUntil([&] { return controller.screen() == Screen::Details; }));
+        controller.clearLicense();
+    }
+
+    SUBCASE("revoked by Moonbase")
+    {
+        auto claims = default_claims();
+        claims["validated"] = now_seconds() - 3600; // past the check interval, so start() asks
+        fx.seedStored(fx.token(claims));
+        fx.transport->responses.push_back(revokedAnswer());
+        ActivationController controller(fx.config, fx.makeLicensing());
+        controller.start();
+        REQUIRE(pumpUntil([&] { return settled(controller); }));
+        REQUIRE(controller.lockReason() == LockReason::Invalid);
+        REQUIRE_FALSE(fx.licenseFile.existsAsFile());
+    }
+
+    CHECK(migrationSettledOnDisk(fx));
+    const auto requestsBefore = fx.transport->requests.size();
+
+    ActivationController next(fx.config, fx.makeLicensing());
+    next.start();
+    REQUIRE(pumpUntil([&] { return settled(next); }));
+    CHECK(next.screen() == Screen::Welcome);
+    CHECK(looked.load() == 0);
+    CHECK(fx.transport->requests.size() == requestsBefore);
+}
+
+TEST_CASE("a migration cancelled by closing the plugin is tried again in this process")
+{
+    controller_fixture fx;
+    fx.config.findLicenseToMigrate = [] { return juce::String("ABCD-1234"); };
+
+    auto blocking = std::make_shared<blocking_transport>();
+    {
+        auto licensing = std::make_shared<moonbase::licensing>(
+            fx.config.toLicensingOptions(), fx.store, fx.fingerprint, blocking);
+        ActivationController closing(fx.config, licensing, "dev", [blocking] { blocking->cancel(); });
+        closing.start();
+        REQUIRE(pumpUntil([&] { return blocking->entered.load(); }));
+        // Closed with the request out, which cancels it.
+    }
+
+    const auto token = fx.token(default_claims());
+    fx.transport->responses.push_back(moonbase::http_response{200, {}, token});
+    ActivationController reopened(fx.config, fx.makeLicensing());
+    reopened.start();
+
+    REQUIRE(pumpUntil([&] { return settled(reopened); }));
+    CHECK(reopened.screen() == Screen::Details);
+    CHECK(migrateRequests(fx) == 1);
+    CHECK(storedToken(fx) == juce::String(token));
+}
+
+TEST_CASE("a migration looks again, under the store's lock, for a license removed since start()")
+{
+    controller_fixture fx;
+    // Another instance removes its license after this one's start() has looked:
+    // it records that the migration is settled before the license goes.
+    fx.config.findLicenseToMigrate = [&]
+    {
+        settleAsSiblingWould(fx);
+        return juce::String("ABCD-1234");
+    };
+
+    ActivationController controller(fx.config, fx.makeLicensing());
+    controller.start();
+
+    REQUIRE(pumpUntil([&] { return settled(controller); }));
+    CHECK(controller.screen() == Screen::Welcome);
+    CHECK(fx.transport->requests.empty());
+}
+
+TEST_CASE("the migration request leaves the store's lock free, and keeps a removal made meanwhile")
+{
+    controller_fixture fx;
+    fx.config.findLicenseToMigrate = [] { return juce::String("ABCD-1234"); };
+    auto gated = std::make_shared<gated_transport>();
+    gated->responses.push_back(moonbase::http_response{200, {}, fx.token(default_claims())});
+    auto licensing = std::make_shared<moonbase::licensing>(
+        fx.config.toLicensingOptions(), fx.store, fx.fingerprint, gated);
+
+    ActivationController controller(fx.config, licensing);
+    controller.start();
+    REQUIRE(pumpUntil([&] { return gated->entered.load(); }));
+
+    // While the request is out, another instance takes the store's lock, as
+    // storing an offline activation does, and removes a license under it.
+    std::atomic<bool> locked{ false };
+    std::thread sibling([&]
+    {
+        moonbase::file_license_store other(compat::toFilesystemPath(fx.licenseFile));
+        const auto guard = other.lock_for_update();
+        settleAsSiblingWould(fx);
+        locked = true;
+    });
+    const bool tookLock = pumpUntil([&] { return locked.load(); }, 3000);
+    gated->release();
+    sibling.join();
+
+    CHECK(tookLock);
+    REQUIRE(pumpUntil([&] { return settled(controller); }));
+    CHECK(controller.screen() == Screen::Welcome);
+    CHECK_FALSE(controller.license().has_value());
+    CHECK_FALSE(fx.licenseFile.existsAsFile());
+    CHECK(gated->requests.load() == 1);
+}
+
+TEST_CASE("a revoked license removed as the plugin closes still settles the migration")
+{
+    controller_fixture fx;
+    fx.config.findLicenseToMigrate = [] { return juce::String("ABCD-1234"); };
+    auto claims = default_claims();
+    claims["validated"] = now_seconds() - 3600; // past the check interval, so start() asks
+    fx.seedStored(fx.token(claims));
+
+    auto gated = std::make_shared<gated_transport>();
+    gated->responses.push_back(revokedAnswer());
+    auto licensing = std::make_shared<moonbase::licensing>(
+        fx.config.toLicensingOptions(), fx.store, fx.fingerprint, gated);
+    {
+        ActivationController controller(fx.config, licensing);
+        controller.start();
+        REQUIRE(pumpUntil([&] { return gated->entered.load(); }));
+        // Closed before the message loop delivers the answer: the worker removes
+        // the license as the controller waits for it.
+        gated->release();
+    }
+    pumpFor(100);
+
+    CHECK_FALSE(fx.licenseFile.existsAsFile());
+    CHECK(migrationSettledOnDisk(fx));
+}
+
+TEST_CASE("a settlement that can't be saved still keeps this process from bringing the license back")
+{
+    controller_fixture fx;
+    juce::StringArray diags;
+    fx.config.onDiagnostic = [&](const juce::String& m) { diags.add(m); };
+    std::atomic<int> looked{ 0 };
+    fx.config.findLicenseToMigrate = [&] { ++looked; return juce::String("ABCD-1234"); };
+    fx.seedStored(fx.token(default_claims()));
+    // A folder where the marker goes, so it can't be created.
+    REQUIRE(settledMarkerOf(fx).createDirectory());
+
+    {
+        ActivationController controller(fx.config, fx.makeLicensing());
+        controller.start();
+        REQUIRE(pumpUntil([&] { return controller.screen() == Screen::Details; }));
+        controller.clearLicense();
+    }
+    CHECK_FALSE(fx.licenseFile.existsAsFile());
+    CHECK(diags.joinIntoString(" ").contains("only this process knows"));
+
+    ActivationController next(fx.config, fx.makeLicensing());
+    next.start();
+    REQUIRE(pumpUntil([&] { return settled(next); }));
+    CHECK(next.screen() == Screen::Welcome);
+    CHECK(looked.load() == 0);
+    CHECK(fx.transport->requests.empty());
+}
+
+TEST_CASE("state written by another instance doesn't take a settled migration back")
+{
+    controller_fixture fx;
+    std::atomic<int> looked{ 0 };
+    fx.config.findLicenseToMigrate = [&] { ++looked; return juce::String("ABCD-1234"); };
+    fx.seedStored(fx.token(default_claims()));
+    {
+        ActivationController controller(fx.config, fx.makeLicensing());
+        controller.start();
+        REQUIRE(pumpUntil([&] { return controller.screen() == Screen::Details; }));
+        controller.clearLicense();
+    }
+
+    // Another instance skips an update with the state it read before the
+    // removal, writing it back whole.
+    const auto stateFile = fx.licenseFile.getSiblingFile(fx.licenseFile.getFileNameWithoutExtension() + ".state.json");
+    REQUIRE(stateFile.replaceWithText(R"({"ignoredUpdates":["2.0.0"]})"));
+
+    ActivationController next(fx.config, fx.makeLicensing());
+    next.start();
+    REQUIRE(pumpUntil([&] { return settled(next); }));
+    CHECK(next.screen() == Screen::Welcome);
+    CHECK(looked.load() == 0);
+    CHECK(fx.transport->requests.empty());
+}
+
+TEST_CASE("each license file settles its own migration, whatever folder it shares")
+{
+    controller_fixture fx;
+    fx.config.findLicenseToMigrate = [] { return juce::String("ABCD-1234"); };
+    fx.seedStored(fx.token(default_claims()));
+    {
+        ActivationController controller(fx.config, fx.makeLicensing());
+        controller.start();
+        REQUIRE(pumpUntil([&] { return controller.screen() == Screen::Details; }));
+        controller.clearLicense();
+    }
+
+    // Another store beside it, with the same name but for its extension.
+    auto other = fx.config;
+    other.licenseFile = fx.licenseFile.withFileExtension(".other");
+    auto otherStore = std::make_shared<moonbase::file_license_store>(compat::toFilesystemPath(other.licenseFile));
+    const auto token = fx.token(default_claims());
+    fx.transport->responses.push_back(moonbase::http_response{200, {}, token});
+
+    ActivationController controller(other, std::make_shared<moonbase::licensing>(
+                                               other.toLicensingOptions(), otherStore, fx.fingerprint, fx.transport));
+    controller.start();
+
+    REQUIRE(pumpUntil([&] { return settled(controller); }));
+    CHECK(controller.screen() == Screen::Details);
+    CHECK(migrateRequests(fx) == 1);
+    CHECK_FALSE(settledMarkerOf(other.licenseFile).exists());
+}
+
+TEST_CASE("a migrated license removed before it reaches the screen still locks")
+{
+    controller_fixture fx;
+    fx.config.findLicenseToMigrate = [] { return juce::String("ABCD-1234"); };
+    fx.transport->responses.push_back(moonbase::http_response{200, {}, fx.token(default_claims())});
+
+    ActivationController controller(fx.config, fx.makeLicensing());
+    controller.start();
+
+    // The message loop doesn't run yet, so the answer waits there while
+    // another instance deactivates the license the migration just stored.
+    const auto waitedFrom = juce::Time::getMillisecondCounter();
+    while (! fx.licenseFile.existsAsFile() && juce::Time::getMillisecondCounter() - waitedFrom < 5000)
+        std::this_thread::sleep_for(std::chrono::milliseconds(5));
+    REQUIRE(fx.licenseFile.existsAsFile());
+    {
+        // Under the store's lock, as a sibling removes it: taken once the
+        // migration has let go of it.
+        const auto guard = fx.store->lock_for_update();
+        settleAsSiblingWould(fx);
+        REQUIRE(fx.licenseFile.deleteFile());
+    }
+
+    REQUIRE(pumpUntil([&] { return settled(controller); }));
+    CHECK(pumpUntil([&] { return controller.screen() == Screen::Welcome; }));
+    CHECK_FALSE(controller.license().has_value());
+    CHECK(controller.lockReason() == LockReason::Deactivated);
+}
+
+TEST_CASE("ActivationConfig keeps the order of its fields for positional initialisation")
+{
+    // New fields go last: a config built positionally must keep compiling, and
+    // keep meaning what it did.
+   #if defined(__GNUC__)
+    #pragma GCC diagnostic push
+    #pragma GCC diagnostic ignored "-Wmissing-field-initializers"
+   #endif
+    const ActivationConfig config{ "https://demo.moonbase.sh", "demo-app", "key", "tenant-1", "1.2.3", "Host/1.0",
+                                   std::chrono::seconds(60), std::chrono::seconds(30),
+                                   std::chrono::milliseconds(1000), std::chrono::milliseconds(2000), false,
+                                   juce::File(), "Solstice", "Helio Audio" };
+   #if defined(__GNUC__)
+    #pragma GCC diagnostic pop
+   #endif
+    CHECK(config.licenseFile == juce::File());
+    CHECK(config.productName == "Solstice");
+    CHECK(config.manufacturerName == "Helio Audio");
+    CHECK_FALSE(config.findLicenseToMigrate);
+}
+
+TEST_CASE("an app that migrates nothing leaves the migration unsettled when a license is removed")
+{
+    controller_fixture fx;
+    fx.seedStored(fx.token(default_claims()));
+    ActivationController controller(fx.config, fx.makeLicensing());
+    controller.start();
+    REQUIRE(pumpUntil([&] { return controller.screen() == Screen::Details; }));
+    controller.clearLicense();
+
+    CHECK_FALSE(settledMarkerOf(fx).exists());
+}
+
+//==============================================================================
 int main(int argc, char** argv)
 {
     juce::ScopedJuceInitialiser_GUI gui; // gives this thread a MessageManager

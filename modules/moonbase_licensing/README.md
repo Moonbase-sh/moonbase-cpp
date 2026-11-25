@@ -175,6 +175,10 @@ out, say) locks too, but stays stored, and the modal offers the upgrade.
   release. It pops automatically on open (`config.autoPresentUpdate`), downloads installers
   into `config.downloadDirectory` (defaults to Downloads), and is fully optional
   (`config.enableUpdatePrompt = false`).
+- **Licenses from another system.** `config.findLicenseToMigrate` returns the license an
+  earlier licensing system left, and `start()` exchanges it for a Moonbase license so the
+  customer doesn't activate again. See
+  [`docs/license-migration.md`](../../docs/license-migration.md).
 - **Persistence** — the validated license is stored at
   `userApplicationDataDirectory/<manufacturer>/<product>/license.mb` by default
   (override with `config.licenseFile`).
