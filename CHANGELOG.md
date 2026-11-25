@@ -1,3 +1,10 @@
+# [4.16.0](https://github.com/Moonbase-sh/moonbase-cpp/compare/v4.15.0...v4.16.0) (2026-11-25)
+
+
+### Features
+
+* migrate licenses from another licensing system ([#55](https://github.com/Moonbase-sh/moonbase-cpp/issues/55)) ([41bf4cd](https://github.com/Moonbase-sh/moonbase-cpp/commit/41bf4cd444fb167504727c0360d17abb48c44882))
+
 # [4.15.0](https://github.com/Moonbase-sh/moonbase-cpp/compare/v4.14.0...v4.15.0) (2026-11-23)
 
 
