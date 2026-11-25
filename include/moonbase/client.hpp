@@ -97,6 +97,13 @@ inline std::string revoke_path(const licensing_options& options)
         "/revoke";
 }
 
+// Not under the product: the merchant's validation endpoint says which product
+// the license is for.
+inline std::string migrate_path(const licensing_options& options)
+{
+    return trim_trailing_slashes(options.endpoint) + "/api/client/licenses/migrate";
+}
+
 inline std::string sub_products_path(const licensing_options& options)
 {
     return trim_trailing_slashes(options.endpoint) +
@@ -759,6 +766,80 @@ public:
         return trial;
     }
 
+    // POST /api/client/licenses/migrate: exchanges a license from the system the
+    // product was licensed with before Moonbase for a Moonbase license on this
+    // device. Moonbase passes what this sends to the validation endpoint the
+    // merchant set up for license migration, which decides whether the license is
+    // good, whose it is and what it unlocks, and names the device to activate.
+    // This sends it as JSON:
+    //
+    //   {"license": "...", "productId": "...", "deviceSignature": "...", "deviceName": "..."}
+    //
+    // with productId the product this client is for, which the endpoint checks
+    // against the product the license is for rather than trust, and
+    // deviceSignature this device's id. Moonbase binds the license to the device
+    // the endpoint names, so the endpoint answers with the deviceSignature it was
+    // sent, or the license fails to validate here (license_device_mismatch_error)
+    // with a seat taken.
+    // Doesn't store it; licensing::migrate_license says more.
+    //
+    // Throws configuration_error, unsent, for a blank license or one that is not
+    // UTF-8 text (encode a binary license, as base64 say, and decode it at the
+    // endpoint). Otherwise as an activation does: license_invalid_error when the
+    // license is refused, by the endpoint (any answer but a 2xx) or by Moonbase,
+    // no_eligible_license_error when the customer has no license of the product
+    // with a seat free for this device, release_not_covered_error when none of
+    // their licenses covers application_version, and license_expired_error for a
+    // license that has ended. A 404, which Moonbase answers when it has no such
+    // customer or product, and every other failure stay an api_error.
+    [[nodiscard]] license migrate_license(std::string_view legacy_license) const
+    {
+        const auto text = std::string(legacy_license);
+        if (detail::trim_ascii_whitespace(text).empty()) {
+            throw configuration_error("A license to migrate is required");
+        }
+        if (detail::replace_invalid_utf8(text) != text) {
+            throw configuration_error(
+                "The license to migrate is not UTF-8 text; encode a binary license, as base64 say, first");
+        }
+
+        auto payload = device_payload();
+        payload["license"] = text;
+        payload["productId"] = options_.product_id;
+
+        http_request request;
+        request.method = "POST";
+        request.url = detail::append_query(detail::migrate_path(options_), detail::client_query(options_));
+        request.headers = detail::default_headers(options_, "application/json");
+        request.connect_timeout = options_.http_connect_timeout;
+        request.request_timeout = options_.http_request_timeout;
+        request.body = payload.dump();
+
+        const auto response = transport_->send(request);
+        if (response.status_code < 200 || response.status_code >= 300) {
+            const auto problem = detail::parse_problem(response.body);
+            detail::throw_if_store_closed(problem);
+            if (problem.error_type == "NoEligibleLicense") {
+                throw no_eligible_license_error(detail::problem_message(response.status_code, problem));
+            }
+            throw_for_license_problem(response);
+        }
+        detail::ensure_token_response(response);
+
+        // Moonbase activates only a license that covers the version the request
+        // named, as for an activation, so the device doesn't judge it again.
+        try {
+            return validator_->validate_token_ignoring_release_access(response.body);
+        } catch (const license_device_mismatch_error& ex) {
+            auto message = std::string(ex.what());
+            if (!message.empty() && message.back() == '.') {
+                message.pop_back();
+            }
+            throw license_device_mismatch_error(
+                message + ". The license migration endpoint named a device other than the deviceSignature it was sent");
+        }
+    }
+
     [[nodiscard]] license validate_token_online(std::string_view token) const
     {
         const auto url = detail::append_query(
@@ -908,13 +989,13 @@ public:
     }
 
 private:
-    // The device an activation request or a trial is for, as both endpoints take
-    // it. The API refuses a blank device name or id outright. The name is only a
-    // label, so stand in for one the host could not supply (a failed host name
-    // lookup, a custom resolver), and let a byte in it that is not UTF-8 cost a
-    // replacement character rather than the request. The id is the binding
-    // itself, and a resolver that returns none, or one that is not UTF-8, is
-    // misconfigured.
+    // The device an activation request, a trial or a migration is for, as those
+    // endpoints take it. The API refuses a blank device name or id outright. The
+    // name is only a label, so stand in for one the host could not supply (a
+    // failed host name lookup, a custom resolver), and let a byte in it that is
+    // not UTF-8 cost a replacement character rather than the request. The id is
+    // the binding itself, and a resolver that returns none, or one that is not
+    // UTF-8, is misconfigured.
     [[nodiscard]] nlohmann::json device_payload() const
     {
         auto device_name = detail::replace_invalid_utf8(device_ids_->device_name());

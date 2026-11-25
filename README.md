@@ -153,13 +153,14 @@ fallback. It vendors the bridge header verbatim from this repo:
 
 | | |
 | --- | --- |
-| [Core SDK](docs/core-sdk.md) | Install, CMake options, activation, validation, revocation, add-ons, offline licenses, custom storage |
+| [Core SDK](docs/core-sdk.md) | Install, CMake options, activation, validation, revocation, add-ons, offline licenses, license migration, custom storage |
 | [JUCE module](docs/juce-module.md) | Setup, the flow, gating, add-ons, theming, updates, diagnostics, telemetry |
 | [`OnlineUnlockStatus` bridge](docs/juce.md) | Wiring, async activation, deactivation, gating, metadata |
 | [Device identity](docs/device-identity.md) | What the device id is made of, failure modes, diagnostics |
 | [Fingerprint spec](FINGERPRINT_SPEC.md) | The normative cross-SDK algorithm and stability contract |
 | [Security](docs/security.md) | What the SDK guarantees, what it leaves to you, and how to gate well |
 | [Migrating from 3.x](docs/migration-3x.md) | The 4.0.0 device id change, and how to migrate a shipped fleet |
+| [License migration](docs/license-migration.md) | Carrying customers' licenses over from another licensing system |
 | [Contributing](CONTRIBUTING.md) | Build, test, generated files, CI, releases |
 | Samples | [core](examples/activation.cpp), [JUCE module](examples/juce-native/), [bridge](examples/juce/), [UI snapshots](tests/visual/) |
 

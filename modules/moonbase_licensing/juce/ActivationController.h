@@ -525,6 +525,7 @@ private:
     //== License watch (no network) ============================================
     void watchLicense();                 // one tick: file changes, then deadlines
     [[nodiscard]] FileStamp stampLicenseFile() const; // watchedFile_ must be set
+    [[nodiscard]] static FileStamp stampOf(const std::filesystem::path& file); // any thread
     void checkLicenseFile();
     void checkLicenseDeadlines();
     void checkCountdowns();
@@ -552,8 +553,16 @@ private:
     void deleteStoredMatching(const juce::String& activationId);
     // Deletes the stored copy of a license Moonbase revoked, unless the file has
     // moved on since. Waits for the store's lock: never on the message thread.
-    static bool deleteRevoked(moonbase::licensing& licensing, const moonbase::license& refused);
+    // Records, first, that the license migration is settled (see
+    // migrationSettler()), when it deletes it.
+    static bool deleteRevoked(moonbase::licensing& licensing, const moonbase::license& refused,
+                              const std::function<bool()>& settleMigration);
     void deleteStoredLicense(); // best-effort delete of the local license file
+    void settleLicenseMigration(); // never migrate the earlier system's license from here on
+    // settleLicenseMigration() for any thread, for a removal off the message
+    // thread. False when the marker file couldn't be created. Empty when the app
+    // migrates nothing.
+    [[nodiscard]] std::function<bool()> migrationSettler() const;
     void setDeviceLabel(juce::String deviceName);
     void emitDiagnostic(const juce::String& message); // message-thread only
     bool ensureReady(); // false (+ Error screen) when misconfigured / not built
@@ -644,6 +653,10 @@ private:
     // storing an answer, so a superseded one never reaches the store.
     std::shared_ptr<std::atomic<std::uint64_t>> generations_ = std::make_shared<std::atomic<std::uint64_t>>(0);
     std::atomic<std::uint64_t>& generation_ = *generations_;
+    // Set as the destructor starts, before it cancels what is in flight: a
+    // worker that sees a request fail then knows it was cancelled, and a wait
+    // for the license migration's lock gives up.
+    std::shared_ptr<std::atomic<bool>> closing_ = std::make_shared<std::atomic<bool>>(false);
 
     //== Update flow ===========================================================
     UpdateInfo updateInfo_;

@@ -214,6 +214,29 @@ it. The call is ignored while a license is loaded, until `start()` has checked t
 stored one, and while an activation is in progress. A license another instance stores
 while the request is out is kept, and shown, instead of the trial.
 
+### Carrying over licenses from another system
+
+A plugin moving to Moonbase from another licensing system can carry its customers'
+activations over. Return the license the earlier system left on the computer, and
+`start()` exchanges it for a Moonbase license while nothing is stored, so the customer
+doesn't activate again:
+
+```cpp
+config.findLicenseToMigrate = [] {
+    const auto file = juce::File::getSpecialLocation (juce::File::userApplicationDataDirectory)
+                          .getChildFile ("Helio Audio/Solstice/license.key");
+    juce::MemoryBlock bytes; // byte for byte: loadFileAsString() drops a byte order mark
+    if (! file.loadFileAsData (bytes))
+        return juce::String();
+    return juce::String::fromUTF8 (static_cast<const char*> (bytes.getData()), (int) bytes.getSize());
+};
+```
+
+It needs license migration set up in your Moonbase account, with a validation endpoint
+of your own that checks the earlier license. [Migrating licenses from another
+system](license-migration.md) covers the endpoint, when the module tries again after a
+failure, and why it stops for good once the customer deactivates the computer.
+
 ## Gating
 
 For correctness in a plugin, give the **processor** the controller (so license state

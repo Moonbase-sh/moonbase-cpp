@@ -178,6 +178,7 @@ if(NOT MOONBASE_JUCE_MODULE_ONLY)
             tests/header_smoke_tests.cpp
             tests/inventory_tests.cpp
             tests/licensing_tests.cpp
+            tests/migration_tests.cpp
             tests/process_dedup_tests.cpp
             tests/release_access_tests.cpp
             tests/store_tests.cpp

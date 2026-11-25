@@ -257,6 +257,22 @@ UTM tags of the link its installer was downloaded from. Moonbase puts the trial
 down to them, so the merchant can see which marketing brings trials. A tag left
 empty is not sent.
 
+## Migrating a license from another system
+
+An app moving to Moonbase from another licensing system can exchange the license
+that system left on the device for a Moonbase license, so the customer doesn't
+activate again:
+
+```cpp
+auto license = licensing.migrate_license(earlier_license_text);
+licensing.store().store_local_license(license);
+```
+
+Moonbase passes the license, with this device's id, to a validation endpoint of
+the merchant's own, which says whose it is and what it unlocks. [Migrating
+licenses from another system](license-migration.md) covers setting that up, what
+the endpoint is sent and must answer, and the errors.
+
 ## Licenses that cover some versions
 
 A license bought outright can cover only some versions of your app: the releases
@@ -490,7 +506,7 @@ trying again can help:
 | `trial_expired_error` | `request_trial` found this device's trial has ended. A `license_expired_error`; `trial()` has the ended trial | Say when it ended, and offer to buy |
 | `store_closed_error` | The merchant closed their Moonbase account. No verdict on the license | Treat it like being offline |
 | `activation_request_error` | A browser activation request can never complete | Start a new request |
-| `no_eligible_license_error` | No seat of an add-on to give. No verdict on the license | Offer to buy the add-on or free a seat |
+| `no_eligible_license_error` | No seat of an add-on to give, or, from `migrate_license`, no license of the product with a seat free. No verdict on the license | Offer to buy, or to free a seat |
 | `license_not_revocable_error` | `revoke_activation` on a license only the seller can revoke. No verdict on the license | Keep the license, and hide the "Deactivate" action (`is_revocable`) |
 | `operation_not_supported_error` | The call can't apply to this license: revoking an offline or trial license, or an add-on it can't take. From `request_trial`: the product offers no trial this call can start | Keep the license. For trials that need an account, use `request_activation` |
 | `configuration_error` | Bad options, or a device id resolver that returned an empty id | Fix the setup |
@@ -504,6 +520,10 @@ How each call maps what the API returns:
 | `request_trial` | 400, 401 or 403 with Moonbase's problem (no trials, or trials only for a signed-in or opted-in customer) | `operation_not_supported_error` with the server's reason |
 | | 2xx with a trial that has ended | `trial_expired_error` |
 | | 404, or a 400, 401 or 403 that isn't Moonbase's problem, such as the gateway's `{"message": ...}` or a proxy's page | `api_error` |
+| `migrate_license` | 400 (the merchant's validation endpoint or Moonbase refused the license) | `license_invalid_error` (`license_expired_error` when `errorType` is `LicenseExpired`, `release_not_covered_error` when it is `ReleaseNotCovered`) |
+| | any status with `errorType: NoEligibleLicense` | `no_eligible_license_error` |
+| | 2xx with a license bound to another device | `license_device_mismatch_error` |
+| | 404 (no such customer or product), 409, 500 (migration not set up) | `api_error` |
 | `get_requested_activation` | 204 or 404 | `std::nullopt` |
 | | 400 | `activation_request_error` |
 | `validate_token_online`, `revoke_activation` | 400 | `license_invalid_error` (`license_expired_error` when `errorType` is `LicenseExpired`, `release_not_covered_error` when it is `ReleaseNotCovered`, `license_revoked_error` when it is `LicenseRevoked` or `LicenseActivationRevoked`) |
