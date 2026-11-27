@@ -2672,6 +2672,26 @@ TEST_CASE("a lock does not replay the appear animation on an overlay already up"
     CHECK(component.isVisible());
 }
 
+TEST_CASE("appear() on an overlay already up does not replay the fade")
+{
+    controller_fixture fx; // motion on: a replayed fade would drop the alpha to 0
+    ActivationController shared(fx.config, fx.makeLicensing());
+    shared.start();
+    REQUIRE(pumpUntil([&] { return shared.screen() == Screen::Welcome; }));
+
+    ActivationComponent component(shared);
+    component.setVisible(true); // as with addAndMakeVisible
+    component.appear();         // e.g. a host's own license check
+    CHECK(component.isVisible());
+    CHECK(component.getAlpha() == doctest::Approx(1.0f));
+
+    // Hidden, it still fades in from the start.
+    component.setVisible(false);
+    component.appear();
+    CHECK(component.isVisible());
+    CHECK(component.getAlpha() == doctest::Approx(0.0f));
+}
+
 TEST_CASE("LicenseGate gates click-free: pass-through licensed, ramp to silence unlicensed")
 {
     LicenseGate gate;

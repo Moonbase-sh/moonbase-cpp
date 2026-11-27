@@ -3486,12 +3486,17 @@ struct ActivationComponent::Impl : public juce::ChangeListener,
     // button), so keys must not reach the controls the overlay now covers. When
     // it is elsewhere (the DAW), taking it would make this window the key
     // window and pull the host's shortcuts, like the space bar, away from it.
+    // On an overlay that is already up the fade doesn't replay, and focus
+    // already inside it stays put. Mid-dismiss counts as hidden.
     void appear()
     {
         auto* peer = owner.getPeer();
         const bool focusIsHere = peer != nullptr && peer->isFocused();
+        const bool alreadyUp = owner.isVisible() && appearTarget_ > 0.0f;
         owner.setVisible(true);
-        owner.toFront(focusIsHere);
+        owner.toFront(focusIsHere && ! owner.hasKeyboardFocus(true));
+        if (alreadyUp)
+            return;
         if (controller.config().reduceMotion || ! appearAnim)
         {
             appear_ = 1.0f;
@@ -3505,9 +3510,8 @@ struct ActivationComponent::Impl : public juce::ChangeListener,
         appearAnim->start();
     }
 
-    // An auto-present: appear(), but only when the overlay isn't already up
-    // (appear() restarts the fade). Mid-dismiss counts as hidden. Returns
-    // whether it presented.
+    // An auto-present: appear(), but only when the overlay isn't already up.
+    // Mid-dismiss counts as hidden. Returns whether it presented.
     bool present()
     {
         if (owner.isVisible() && appearTarget_ > 0.0f)
@@ -3598,7 +3602,9 @@ struct ActivationComponent::Impl : public juce::ChangeListener,
 
     void startTransition(int dir)
     {
-        slideDir = dir;
+        // The first screen after Loading has nothing to slide away from, so it
+        // fades in where it lands.
+        slideDir = outgoing != nullptr ? dir : 0;
         const int w = screenHost.getWidth();
 
         if (active == nullptr)
