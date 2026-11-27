@@ -1,3 +1,10 @@
+## [4.16.1](https://github.com/Moonbase-sh/moonbase-cpp/compare/v4.16.0...v4.16.1) (2026-11-27)
+
+
+### Bug Fixes
+
+* **juce:** fade the first screen in place and keep appear() from replaying the fade ([#56](https://github.com/Moonbase-sh/moonbase-cpp/issues/56)) ([cc60fcc](https://github.com/Moonbase-sh/moonbase-cpp/commit/cc60fcc1c6837c607bed11fadd0163ac9d3ddc7a))
+
 # [4.16.0](https://github.com/Moonbase-sh/moonbase-cpp/compare/v4.15.0...v4.16.0) (2026-11-25)
 
 
