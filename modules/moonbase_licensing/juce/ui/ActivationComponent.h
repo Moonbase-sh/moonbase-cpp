@@ -65,6 +65,11 @@ public:
     // itself whenever the plugin is locked, so a dismissed overlay comes back
     // when the license is lost. If the license then comes back from elsewhere
     // (another instance), the overlay closes again on its own, without onClose.
+    //
+    // Calling appear() on an overlay that is already up doesn't replay the
+    // animation. The focus rule above still applies (focus already inside the
+    // overlay stays put), and the call counts as asked for: an overlay that
+    // opened for a lock then stays up when the license comes back.
     void appear();
     void dismiss();
 

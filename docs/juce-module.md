@@ -347,6 +347,13 @@ you add hidden with `addChildComponent` shows when it is needed.
 - **It presents once per lock**, not on every change while the plugin stays locked, and
   it doesn't replay the appear animation over an overlay that is already up.
 
+So your own license checks don't need to call `appear()`: have them gate features with
+`licensedFlag()` and leave presenting to the component. A check that runs before
+`start()` has settled reads `false` even for a licensed user. And `appear()` always
+counts as asked for, so the overlay it opens, or one already up for a lock, stays up
+when the license loads or comes back. On an overlay that is already up, `appear()`
+doesn't replay the animation, but it still follows the focus rule above.
+
 Set `config.autoPresentOnLock = false` to present it yourself, for example from
 `onActivationChanged(false)` after your own "license ended" notice.
 
